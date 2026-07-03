@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.IO;
 using System.Text;
 using UnityEditor;
 using UnityEditor.Compilation;
@@ -24,13 +23,13 @@ namespace Pi.UnityHarness.Editor
         private const string SessionKey_PendingCompileId = "PiUnityHarness_PendingCompileId";
         private const string SessionKey_CompileCallbackFired = "PiUnityHarness_CompileCallbackFired";
         private const string SessionKey_CompileHasErrors = "PiUnityHarness_CompileHasErrors";
-        private const string SessionKey_CompileErrorsJson = "PiUnityHarness_CompileErrorsJson";
         private const string SessionKey_CompileErrorSummary = "PiUnityHarness_CompileErrorSummary";
 
         private static string s_pendingRequestId;
         private static List<CompilerMessage> s_collectedMessages;
         private static bool s_callbackFired;
         private static bool s_callbacksRegistered;
+        private static int s_deferredNoCompileChecks;
         private static Action<string, bool, string, string> s_onComplete;
 
         /// <summary>
@@ -40,6 +39,13 @@ namespace Pi.UnityHarness.Editor
             string requestId,
             Action<string, bool, string, string> onComplete)
         {
+            string persistedPendingId = SessionState.GetString(SessionKey_PendingCompileId, "");
+            if (!string.IsNullOrEmpty(s_pendingRequestId) || !string.IsNullOrEmpty(persistedPendingId))
+            {
+                onComplete(requestId, false, "busy", "compile request already in progress");
+                return;
+            }
+
             Log("[PiUnityHarness] compile start id=" + requestId);
 
             s_pendingRequestId = requestId;
@@ -52,37 +58,16 @@ namespace Pi.UnityHarness.Editor
             SessionState.SetString(SessionKey_PendingCompileId, requestId);
             SessionState.SetBool(SessionKey_CompileCallbackFired, false);
             SessionState.SetBool(SessionKey_CompileHasErrors, false);
-            SessionState.SetString(SessionKey_CompileErrorsJson, "");
             SessionState.SetString(SessionKey_CompileErrorSummary, "");
 
             // 触发刷新——可能导致编译 + 域重载
             AssetDatabase.Refresh();
 
-            // 如果执行到这里，没有域重载发生。
-            // 检查是否编译已经被触发并完成。
+            // Unity 2019.3+ 可能在后续 editor update 才进入 isCompiling。
+            // 延迟数帧再判断“没有触发编译”，避免过早返回成功。
             if (!s_callbackFired && !EditorApplication.isCompiling)
-            {
-                // 没有编译被触发，或同步完成。
-                // 检查 Console 窗口是否有编译错误。
-                string consoleErrors = TryGetConsoleCompileErrors();
-                if (!string.IsNullOrEmpty(consoleErrors))
-                {
-                    s_callbackFired = true;
-                    SessionState.SetBool(SessionKey_CompileCallbackFired, true);
-                    SessionState.SetBool(SessionKey_CompileHasErrors, true);
-                    SessionState.SetString(SessionKey_CompileErrorSummary, consoleErrors);
-                    SessionState.SetString(SessionKey_CompileErrorsJson, "[]");
-                    onComplete(requestId, false, "compilation_failed", consoleErrors);
-                    s_pendingRequestId = null;
-                    return;
-                }
-
-                // 无错误，编译成功
-                onComplete(requestId, true, "compilation_succeeded", "");
-                s_pendingRequestId = null;
-                ClearSessionState();
-            }
-            // 如果 isCompiling 仍为 true，等待 compilationFinished 回调
+                ScheduleDeferredNoCompileCheck(2);
+            // 如果 isCompiling 为 true，等待 compilationFinished 回调
         }
 
         /// <summary>
@@ -122,6 +107,47 @@ namespace Pi.UnityHarness.Editor
 
             ClearSessionState();
             return true;
+        }
+
+        private static void ScheduleDeferredNoCompileCheck(int frames)
+        {
+            s_deferredNoCompileChecks = Math.Max(1, frames);
+            EditorApplication.delayCall += OnDeferredNoCompileCheck;
+        }
+
+        private static void OnDeferredNoCompileCheck()
+        {
+            if (string.IsNullOrEmpty(s_pendingRequestId) || s_callbackFired)
+                return;
+
+            if (EditorApplication.isCompiling)
+                return;
+
+            s_deferredNoCompileChecks--;
+            if (s_deferredNoCompileChecks > 0)
+            {
+                EditorApplication.delayCall += OnDeferredNoCompileCheck;
+                return;
+            }
+
+            string requestId = s_pendingRequestId;
+            string consoleErrors = TryGetConsoleCompileErrors();
+            if (!string.IsNullOrEmpty(consoleErrors))
+            {
+                s_callbackFired = true;
+                SessionState.SetBool(SessionKey_CompileCallbackFired, true);
+                SessionState.SetBool(SessionKey_CompileHasErrors, true);
+                SessionState.SetString(SessionKey_CompileErrorSummary, consoleErrors);
+                s_onComplete?.Invoke(requestId, false, "compilation_failed", consoleErrors);
+            }
+            else
+            {
+                s_onComplete?.Invoke(requestId, true, "compilation_succeeded", "");
+            }
+
+            s_pendingRequestId = null;
+            s_onComplete = null;
+            ClearSessionState();
         }
 
         // --- 编译管线回调 ---
@@ -207,7 +233,7 @@ namespace Pi.UnityHarness.Editor
             Log("[PiUnityHarness] compile finished id=" + requestId +
                 " hasErrors=" + hasErrors + " errors=" + errors.Count);
 
-            // 直接通过回调发送结果（如果没有域重载）
+            // 直接通过回调发送结果。结果进入 native broker 后即可清理 SessionState，避免后续域重载重复处理。
             if (s_onComplete != null)
             {
                 if (hasErrors)
@@ -215,6 +241,8 @@ namespace Pi.UnityHarness.Editor
                 else
                     s_onComplete(requestId, true, "compilation_succeeded", "");
             }
+            s_onComplete = null;
+            ClearSessionState();
         }
 
         // --- Console 编译错误读取 ---
@@ -263,22 +291,16 @@ namespace Pi.UnityHarness.Editor
                         object logEntry = Activator.CreateInstance(logEntryType);
                         getEntryMethod.Invoke(null, new object[] { i, logEntry });
 
-                        System.Reflection.FieldInfo modeField = logEntryType.GetField("mode");
-                        int mode = modeField != null ? (int)modeField.GetValue(logEntry) : 0;
-
-                        // mode == 2 通常是 ScriptCompilation 错误
-                        if (mode == 2)
+                        // LogEntry.mode 是位掩码且 Unity 版本差异大；直接按消息内容过滤编译错误。
+                        System.Reflection.FieldInfo messageField = logEntryType.GetField("message");
+                        string message = messageField != null ? (string)messageField.GetValue(logEntry) : "";
+                        if (!string.IsNullOrEmpty(message) &&
+                            (message.Contains("error CS") || message.Contains(": error ")))
                         {
-                            System.Reflection.FieldInfo messageField = logEntryType.GetField("message");
-                            string message = messageField != null ? (string)messageField.GetValue(logEntry) : "";
-                            if (!string.IsNullOrEmpty(message) &&
-                                (message.Contains("error CS") || message.Contains(": error ")))
-                            {
-                                if (errorsFound > 0)
-                                    errors.Append("\n");
-                                errors.Append(message);
-                                errorsFound++;
-                            }
+                            if (errorsFound > 0)
+                                errors.Append("\n");
+                            errors.Append(message);
+                            errorsFound++;
                         }
                     }
                 }
@@ -303,7 +325,6 @@ namespace Pi.UnityHarness.Editor
             SessionState.EraseString(SessionKey_PendingCompileId);
             SessionState.EraseBool(SessionKey_CompileCallbackFired);
             SessionState.EraseBool(SessionKey_CompileHasErrors);
-            SessionState.EraseString(SessionKey_CompileErrorsJson);
             SessionState.EraseString(SessionKey_CompileErrorSummary);
         }
 
