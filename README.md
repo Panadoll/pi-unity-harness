@@ -1,0 +1,119 @@
+# pi-unity-harness
+
+`pi-unity-harness` 把 `pi-coding-agent`、`unity-harness` 的 Editor 主线程执行模型，以及 Locus 的 reload-stable native broker 架构组合到一起。
+
+当前仓库提供一个最小闭环：
+
+- `native/` — Rust `cdylib`，在 Unity 进程内持有 named pipe server，域重载期间不销毁
+- `unity/com.pi.unity-harness/` — Unity Editor 包，C# 侧负责主线程执行与域重载生命周期
+- `.pi/extensions/pi-unity-harness/` — pi TypeScript 扩展，给 LLM 暴露 `unity_ping` / `unity_status` / `unity_eval` 工具
+
+## 架构
+
+```text
+pi-coding-agent (TS extension)
+  -> named pipe client
+Rust native broker (Unity process, survives domain reload)
+  -> background request queue
+Unity C# worker
+  -> main-thread execute on EditorApplication.update
+```
+
+## 与两个上游的关系
+
+- 借鉴了 `unity-harness` 的思路：
+  - C# 侧主线程执行
+  - `EditorApplication.update` drain 队列
+  - `PostMessage` / `PostThreadMessage` 唤醒 Editor 消息泵
+  - `Application.runInBackground = true` 降低失焦后 update 停摆概率
+  - Mono.CSharp evaluator 做轻量 `eval`
+- 借鉴了 Locus 的思路：
+  - native broker 作为 Unity 进程内稳定连接层
+  - managed 侧只负责 poll / execute / complete
+  - 域重载时 pipe 不换名
+
+## 当前能力
+
+- `unity_ping`：检查 native broker 是否在线
+- `unity_status`：查看 broker / managed state / pending queue
+- `unity_eval`：在 Unity Editor 主线程执行 C# 代码
+- `bridge.json`：Unity 启动后写入 `Library/PiUnityHarness/bridge.json`，供 pi 扩展发现 pipe 与 token
+- 后台保活：Editor 启动 bridge 时临时启用 `Application.runInBackground`，后台线程收到请求后用 `WM_NULL` 唤醒消息泵
+- 最小化恢复：收到请求时如果主窗口处于最小化状态，会先调用 `ShowWindow(SW_RESTORE)` 再唤醒消息泵
+- 状态面：`unity_status` 返回 `focusState`、`windowState`、`heartbeatAgeMs`、`heartbeatTimedOut`
+- 超时保护：native broker 检测 heartbeat 超时与请求超时，避免 Editor 停泵后请求永久悬挂
+
+## 构建 native DLL
+
+```powershell
+./scripts/build-native.ps1
+```
+
+生成并复制到：
+
+```text
+unity/com.pi.unity-harness/Editor/Plugins/x86_64/pi_unity_harness_native.dll
+```
+
+## 在 Unity 中安装
+
+把 `unity/com.pi.unity-harness` 作为本地 UPM 包加入 Unity 项目，例如 `Packages/manifest.json`：
+
+```json
+{
+  "dependencies": {
+    "com.pi.unity-harness": "file:../pi-unity-harness/unity/com.pi.unity-harness"
+  }
+}
+```
+
+Unity Editor 启动后会自动：
+
+- 初始化 native broker
+- 写入 `Library/PiUnityHarness/bridge.json`
+- 域重载前上报 `reloading`
+- 域重载后重连并恢复请求 pump
+
+## 在 pi 中安装扩展
+
+把仓库里的扩展目录放到项目 `.pi/extensions/`，或者直接在当前仓库里运行 pi。
+
+扩展入口：
+
+```text
+.pi/extensions/pi-unity-harness/index.ts
+```
+
+如果当前 cwd 不是 Unity 项目根目录，需要设置：
+
+```bash
+export PI_UNITY_PROJECT=/path/to/UnityProject
+```
+
+也可以直接指定 bridge 文件：
+
+```bash
+export PI_UNITY_BRIDGE_FILE=/path/to/UnityProject/Library/PiUnityHarness/bridge.json
+```
+
+## 工具示例
+
+```text
+unity_ping
+unity_status
+unity_eval { code: "UnityEngine.Debug.Log(123); 123" }
+```
+
+## 当前限制
+
+- 目前不包含 Locus 那种 engine-level background hook；失焦依赖 `runInBackground` 与 Win32 唤醒，最小化时采用恢复窗口兜底
+- `unity_eval` 使用 Mono.CSharp evaluator，偏向 REPL / 轻量主线程诊断，不是完整 Roslyn 编译管线
+- 目前只实现了 Windows named pipe 路径
+
+## 下一步
+
+建议优先补三件事：
+
+1. `unity_recompile` / `unity_refresh` 工具
+2. 更强的请求分类与错误码（`managed_reloading`、`managed_not_ready`、`compile_failed`）
+3. 可选的 Locus 级 background hook（若需要避免恢复最小化窗口）

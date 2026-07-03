@@ -1,0 +1,11 @@
+{
+  "name": "pi-unity-harness-extension",
+  "private": true,
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "^0.34.41"
+  },
+  "pi": {
+    "extensions": ["./index.ts"]
+  }
+}
