@@ -83,6 +83,7 @@ namespace Pi.UnityHarness.Editor
             public string id;
             public string type;
             public string token;
+            public int timeoutMs;
             public ExecutePayload payload;
         }
 
@@ -232,6 +233,8 @@ namespace Pi.UnityHarness.Editor
         {
             PublishManagedState(ManagedStateReloading, "reloading");
             StopNativePumpThread();
+            s_pump?.Dispose();
+            s_pump = null;
         }
 
         private static void OnAfterReload()
@@ -427,7 +430,7 @@ namespace Pi.UnityHarness.Editor
             long evalStart = Stopwatch.GetTimestamp();
             PiUnityEvaluator.EvalResult result = s_evaluator.Eval(request.payload.code);
             timing.EvalMs = RequestTiming.TicksToMs(Stopwatch.GetTimestamp() - evalStart);
-            TryCompleteEvalOrCoroutine(request.id, result, timing);
+            TryCompleteEvalOrCoroutine(request.id, result, timing, request.timeoutMs);
         }
 
         private static void ExecuteFile(NativeRequest request, RequestTiming timing)
@@ -439,7 +442,7 @@ namespace Pi.UnityHarness.Editor
             long evalStart = Stopwatch.GetTimestamp();
             PiUnityEvaluator.EvalResult result = s_evaluator.Eval(code);
             timing.EvalMs = RequestTiming.TicksToMs(Stopwatch.GetTimestamp() - evalStart);
-            TryCompleteEvalOrCoroutine(request.id, result, timing);
+            TryCompleteEvalOrCoroutine(request.id, result, timing, request.timeoutMs);
         }
 
         private static void ValidateExecuteCode(NativeRequest request, RequestTiming timing)
@@ -450,7 +453,7 @@ namespace Pi.UnityHarness.Editor
                 return;
             }
 
-            CompleteValidateThenEvalResult(request.id, request.payload.code, timing);
+            CompleteValidateThenEvalResult(request.id, request.payload.code, timing, request.timeoutMs);
         }
 
         private static void ValidateExecuteFile(NativeRequest request, RequestTiming timing)
@@ -459,7 +462,7 @@ namespace Pi.UnityHarness.Editor
             if (!TryReadPayloadFile(request, out code))
                 return;
 
-            CompleteValidateThenEvalResult(request.id, code, timing);
+            CompleteValidateThenEvalResult(request.id, code, timing, request.timeoutMs);
         }
 
         private static void ValidateCode(NativeRequest request)
@@ -512,18 +515,16 @@ namespace Pi.UnityHarness.Editor
         /// 如果 EvalResult 包含 IEnumerator 协程，将其交给 CoroutinePump；
         /// 否则作为同步结果直接完成。
         /// </summary>
-        private static void TryCompleteEvalOrCoroutine(string id, PiUnityEvaluator.EvalResult result, RequestTiming timing)
+        private static void TryCompleteEvalOrCoroutine(string id, PiUnityEvaluator.EvalResult result, RequestTiming timing, int timeoutMs)
         {
             if (result.IsCoroutine && result.Coroutine != null)
             {
                 // 协程结果：交给 pump 逐帧驱动
-                bool queued = s_pump.Enqueue(result.Coroutine, id,
-                    (text, typeName) =>
+                int coroutineTimeoutMs = timeoutMs > 0 ? timeoutMs : 60000;
+                bool queued = s_pump != null && s_pump.Enqueue(result.Coroutine, id,
+                    (success, text, typeName) =>
                     {
-                        bool ok = !text.StartsWith("RUNTIME ERROR", StringComparison.Ordinal) &&
-                                  !text.StartsWith("TIMEOUT", StringComparison.Ordinal) &&
-                                  !text.StartsWith("CANCELLED", StringComparison.Ordinal);
-                        if (ok)
+                        if (success)
                         {
                             string timingFragment = timing != null ? ",\"timing\":" + timing.ToJsonFragment() : string.Empty;
                             string payload =
@@ -537,7 +538,7 @@ namespace Pi.UnityHarness.Editor
                             CompleteJson(id,
                                 "{\"reply_to\":" + JsonString(id) + ",\"ok\":false,\"error_type\":" + JsonString(typeName ?? "runtime_error") + ",\"error\":" + JsonString(text ?? "coroutine_failed") + "}");
                         }
-                    });
+                    }, coroutineTimeoutMs);
                 if (!queued)
                 {
                     CompleteJson(id,
@@ -568,9 +569,10 @@ namespace Pi.UnityHarness.Editor
                     }
                     else
                     {
+                        string errorType = string.Equals(resultText, "busy", StringComparison.Ordinal) ? "busy" : "compile_error";
                         string errorPayload =
                             "{\"reply_to\":" + JsonString(compileId) +
-                            ",\"ok\":false,\"error_type\":\"compile_error\",\"error\":" +
+                            ",\"ok\":false,\"error_type\":" + JsonString(errorType) + ",\"error\":" +
                             JsonString(errorSummary ?? "Compilation failed") + "}";
                         CompleteJson(compileId, errorPayload);
                     }
@@ -638,7 +640,7 @@ namespace Pi.UnityHarness.Editor
             CompleteJson(id, payload);
         }
 
-        private static void CompleteValidateThenEvalResult(string id, string code, RequestTiming timing)
+        private static void CompleteValidateThenEvalResult(string id, string code, RequestTiming timing, int timeoutMs)
         {
             long validateStart = Stopwatch.GetTimestamp();
             string validation = s_evaluator.Validate(code);
@@ -653,7 +655,7 @@ namespace Pi.UnityHarness.Editor
             long evalStart = Stopwatch.GetTimestamp();
             PiUnityEvaluator.EvalResult result = s_evaluator.Eval(code);
             timing.EvalMs = RequestTiming.TicksToMs(Stopwatch.GetTimestamp() - evalStart);
-            TryCompleteEvalOrCoroutine(id, result, timing);
+            TryCompleteEvalOrCoroutine(id, result, timing, timeoutMs);
         }
 
         private static void CompleteValidationResult(string id, string validation)
