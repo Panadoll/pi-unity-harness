@@ -2,7 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import net from "node:net";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
 
 interface BridgeInfo {
@@ -33,6 +33,7 @@ const STATE_PLANE_HEADER_SIZE = 64;
 const STATE_PLANE_SLOT_COUNT = 2;
 const STATE_PLANE_SLOT_SIZE = 64 * 1024;
 const STATE_PLANE_SLOT_PAYLOAD_OFFSET = 24;
+const INLINE_EVAL_CODE_LIMIT_BYTES = 512 * 1024;
 
 function parseEditorStatus(value: unknown): { editorStatus: string; focusState?: string; windowState?: string } {
   const raw = String(value ?? "unknown");
@@ -109,14 +110,41 @@ function discoverUnityInstances(): UnityInstance[] {
 
 // ---- 安装 pi-unity-harness ----
 
+function scratchReplDir(projectPath: string): string {
+  return join(projectPath, "Temp", "PiUnityHarness", "AgentScratch");
+}
+
 function writeScratchRepl(projectPath: string, code: string): string {
-  const dir = join(projectPath, "Temp", "PiUnityHarness", "AgentScratch");
+  const dir = scratchReplDir(projectPath);
   mkdirSync(dir, { recursive: true });
   const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const filePath = join(dir, `pi-eval-${id}.repl`);
   const source = code.trimStart().startsWith("// #repl-mode:") ? code : `// #repl-mode: auto\n${code}`;
   writeFileSync(filePath, source, "utf8");
   return relative(projectPath, filePath).replace(/\\/g, "/");
+}
+
+function removeScratchRepl(projectPath: string, filePath: string) {
+  const dir = resolve(scratchReplDir(projectPath));
+  const fullPath = resolve(projectPath, filePath);
+  const rel = relative(dir, fullPath);
+  if (!rel || rel.startsWith("..") || rel.includes(":") || !basename(fullPath).startsWith("pi-eval-") || !fullPath.endsWith(".repl")) {
+    return;
+  }
+
+  try { unlinkSync(fullPath); } catch { /* 请求超时或外部清理时忽略 */ }
+}
+
+function cleanupScratchRepls(projectPath: string) {
+  const dir = scratchReplDir(projectPath);
+  if (!existsSync(dir)) return;
+
+  try {
+    for (const name of readdirSync(dir)) {
+      if (!name.startsWith("pi-eval-") || !name.endsWith(".repl")) continue;
+      try { unlinkSync(join(dir, name)); } catch { /* 文件可能正被外部进程清理 */ }
+    }
+  } catch { /* 目录不可读时不影响 bridge 使用 */ }
 }
 
 function installPiUnityHarness(projectPath: string, packageSourceDir?: string): { ok: boolean; message: string } {
@@ -181,7 +209,10 @@ class UnityBridgeClient {
 
   configure(cwd: string) { this.cwd = cwd; }
 
-  setProjectRoot(path: string) { this.projectRootOverride = resolve(path); }
+  setProjectRoot(path: string) {
+    this.projectRootOverride = resolve(path);
+    cleanupScratchRepls(this.projectRootOverride);
+  }
 
   getProjectRoot(): string | undefined {
     try { return this.resolveUnityProjectRoot(); } catch { return undefined; }
@@ -225,7 +256,6 @@ class UnityBridgeClient {
 
   async status(pipeTimeoutMs = 2000) {
     const bridge = this.loadBridgeInfo();
-    const snapshot = this.readStatePlaneSnapshot(bridge);
 
     let pipeConnected = false;
     let pipeStatus = "disconnected";
@@ -251,23 +281,30 @@ class UnityBridgeClient {
       pipeError = error?.message ?? "unknown_pipe_error";
     }
 
-    if (!snapshot) {
-      if (pipeConnected && pipeResult) {
-        return {
-          ...pipeResult,
-          source: "pipe",
-          editorStatus: pipeStatus,
-          focusState: pipeFocusState,
-          windowState: pipeWindowState,
-        };
-      }
+    if (pipeConnected && pipeResult) {
       return {
-        state: pipeConnected ? "unknown" : "disconnected",
+        ...pipeResult,
+        source: "pipe",
+        state: String(pipeResult.managedState ?? pipeStatus ?? "unknown"),
+        pipeReachable: true,
+        pipeLatencyMs,
+        editorStatus: pipeStatus,
+        focusState: pipeFocusState,
+        windowState: pipeWindowState,
+        capabilities: pipeCapabilities,
+      };
+    }
+
+    // PowerShell 读取共享内存只作为 pipe 失败后的降级路径，避免每次 status 都启动子进程。
+    const snapshot = this.readStatePlaneSnapshot(bridge);
+    if (!snapshot) {
+      return {
+        state: "disconnected",
         source: "inference",
-        pipeReachable: pipeConnected,
+        pipeReachable: false,
         pipeLatencyMs,
         pipeError,
-        editorStatus: pipeConnected ? pipeStatus : "disconnected",
+        editorStatus: "disconnected",
       };
     }
 
@@ -278,7 +315,7 @@ class UnityBridgeClient {
         ...snapshot,
         source: "state_plane",
         state: lifecycleState,
-        pipeReachable: pipeConnected,
+        pipeReachable: false,
         pipeLatencyMs,
         pipeError: pipeError ?? `native broker reports managed domain generation ${snapshot.managedGeneration} is ${lifecycleState}`,
         editorStatus: lifecycleState,
@@ -287,18 +324,17 @@ class UnityBridgeClient {
 
     if (lifecycleState === "ready") {
       const snapshotStatus = parseEditorStatus(snapshot.editorStatus ?? "editing");
-      const editorStatus = pipeConnected ? pipeStatus : snapshotStatus.editorStatus;
       return {
         ...snapshot,
-        source: pipeConnected ? "pipe" : "state_plane",
+        source: "state_plane",
         state: "ready",
-        pipeReachable: pipeConnected,
+        pipeReachable: false,
         pipeLatencyMs,
         pipeError,
-        editorStatus,
-        focusState: pipeFocusState ?? snapshot.focusState ?? snapshotStatus.focusState,
-        windowState: pipeWindowState ?? snapshot.windowState ?? snapshotStatus.windowState,
-        capabilities: pipeConnected ? pipeCapabilities : (snapshot.capabilities ?? []),
+        editorStatus: snapshotStatus.editorStatus,
+        focusState: snapshot.focusState ?? snapshotStatus.focusState,
+        windowState: snapshot.windowState ?? snapshotStatus.windowState,
+        capabilities: snapshot.capabilities ?? [],
       };
     }
 
@@ -306,7 +342,7 @@ class UnityBridgeClient {
       ...snapshot,
       source: "state_plane",
       state: lifecycleState,
-      pipeReachable: pipeConnected,
+      pipeReachable: false,
       pipeLatencyMs,
       pipeError,
     };
@@ -724,14 +760,18 @@ export default function (pi: ExtensionAPI) {
     async execute(_toolCallId, params) {
       const timeoutMs = typeof params.timeoutMs === "number" ? params.timeoutMs : 20000;
       const projectRoot = client.getProjectRoot();
+      const codeSize = Buffer.byteLength(params.code, "utf8");
       let result;
-      if (projectRoot) {
-        const filePath = writeScratchRepl(projectRoot, params.code);
-        await client.request("validate_file", { filePath }, timeoutMs);
-        result = await client.request("execute_file", { filePath }, timeoutMs);
+      if (projectRoot && codeSize > INLINE_EVAL_CODE_LIMIT_BYTES) {
+        let filePath: string | undefined;
+        try {
+          filePath = writeScratchRepl(projectRoot, params.code);
+          result = await client.request("validate_execute_file", { filePath }, timeoutMs);
+        } finally {
+          if (filePath) removeScratchRepl(projectRoot, filePath);
+        }
       } else {
-        await client.request("validate_code", { code: params.code }, timeoutMs);
-        result = await client.request("execute_code", { code: params.code }, timeoutMs);
+        result = await client.request("validate_execute_code", { code: params.code }, timeoutMs);
       }
       return {
         content: [{ type: "text", text: String(result?.output ?? "(ok)") }],

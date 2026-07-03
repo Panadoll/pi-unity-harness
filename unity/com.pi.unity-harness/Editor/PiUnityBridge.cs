@@ -103,7 +103,46 @@ namespace Pi.UnityHarness.Editor
             public string statePlaneName;
         }
 
-        private static readonly ConcurrentQueue<string> PendingRequests = new ConcurrentQueue<string>();
+        private struct PendingLine
+        {
+            public string Line;
+            public long PolledAtTicks;
+        }
+
+        private sealed class RequestTiming
+        {
+            public long PolledAtTicks;
+            public long DequeuedAtTicks;
+            public double ValidateMs = -1;
+            public double EvalMs = -1;
+
+            public string ToJsonFragment()
+            {
+                double pollToUpdateMs = TicksToMs(DequeuedAtTicks - PolledAtTicks);
+                double managedTotalMs = TicksToMs(Stopwatch.GetTimestamp() - PolledAtTicks);
+                StringBuilder sb = new StringBuilder(128);
+                sb.Append("{\"nativePollToUpdateMs\":").Append(FormatMs(pollToUpdateMs));
+                if (ValidateMs >= 0)
+                    sb.Append(",\"validateMs\":").Append(FormatMs(ValidateMs));
+                if (EvalMs >= 0)
+                    sb.Append(",\"evalMs\":").Append(FormatMs(EvalMs));
+                sb.Append(",\"managedTotalMs\":").Append(FormatMs(managedTotalMs));
+                sb.Append('}');
+                return sb.ToString();
+            }
+
+            public static double TicksToMs(long ticks)
+            {
+                return ticks * 1000.0 / Stopwatch.Frequency;
+            }
+
+            private static string FormatMs(double ms)
+            {
+                return ms.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
+            }
+        }
+
+        private static readonly ConcurrentQueue<PendingLine> PendingRequests = new ConcurrentQueue<PendingLine>();
         private static Thread s_nativePumpThread;
         private static CancellationTokenSource s_nativePumpCts;
         private static PiUnityEvaluator s_evaluator;
@@ -215,9 +254,9 @@ namespace Pi.UnityHarness.Editor
             }
 
             int processed = 0;
-            while (processed < MaxRequestsPerUpdate && PendingRequests.TryDequeue(out string line))
+            while (processed < MaxRequestsPerUpdate && PendingRequests.TryDequeue(out PendingLine pending))
             {
-                HandleRequestLine(line);
+                HandleRequestLine(pending);
                 processed++;
             }
 
@@ -279,7 +318,7 @@ namespace Pi.UnityHarness.Editor
                 if (result == 1 && required > 0)
                 {
                     string line = Encoding.UTF8.GetString(s_nativeBuffer, 0, required);
-                    PendingRequests.Enqueue(line);
+                    PendingRequests.Enqueue(new PendingLine { Line = line, PolledAtTicks = Stopwatch.GetTimestamp() });
                     EnsureEditorWindowCanPump();
                     continue;
                 }
@@ -288,12 +327,18 @@ namespace Pi.UnityHarness.Editor
             }
         }
 
-        private static void HandleRequestLine(string line)
+        private static void HandleRequestLine(PendingLine pending)
         {
+            RequestTiming timing = new RequestTiming
+            {
+                PolledAtTicks = pending.PolledAtTicks,
+                DequeuedAtTicks = Stopwatch.GetTimestamp(),
+            };
+
             NativeRequest request;
             try
             {
-                request = JsonUtility.FromJson<NativeRequest>(line);
+                request = JsonUtility.FromJson<NativeRequest>(pending.Line);
             }
             catch (Exception ex)
             {
@@ -310,10 +355,16 @@ namespace Pi.UnityHarness.Editor
             switch (request.type)
             {
                 case "execute_code":
-                    ExecuteCode(request);
+                    ExecuteCode(request, timing);
                     return;
                 case "execute_file":
-                    ExecuteFile(request);
+                    ExecuteFile(request, timing);
+                    return;
+                case "validate_execute_code":
+                    ValidateExecuteCode(request, timing);
+                    return;
+                case "validate_execute_file":
+                    ValidateExecuteFile(request, timing);
                     return;
                 case "validate_code":
                     ValidateCode(request);
@@ -327,7 +378,7 @@ namespace Pi.UnityHarness.Editor
             }
         }
 
-        private static void ExecuteCode(NativeRequest request)
+        private static void ExecuteCode(NativeRequest request, RequestTiming timing)
         {
             if (request.payload == null || string.IsNullOrEmpty(request.payload.code))
             {
@@ -335,16 +386,42 @@ namespace Pi.UnityHarness.Editor
                 return;
             }
 
-            CompleteEvalResult(request.id, s_evaluator.Eval(request.payload.code));
+            long evalStart = Stopwatch.GetTimestamp();
+            PiUnityEvaluator.EvalResult result = s_evaluator.Eval(request.payload.code);
+            timing.EvalMs = RequestTiming.TicksToMs(Stopwatch.GetTimestamp() - evalStart);
+            CompleteEvalResult(request.id, result, timing);
         }
 
-        private static void ExecuteFile(NativeRequest request)
+        private static void ExecuteFile(NativeRequest request, RequestTiming timing)
         {
             string code;
             if (!TryReadPayloadFile(request, out code))
                 return;
 
-            CompleteEvalResult(request.id, s_evaluator.Eval(code));
+            long evalStart = Stopwatch.GetTimestamp();
+            PiUnityEvaluator.EvalResult result = s_evaluator.Eval(code);
+            timing.EvalMs = RequestTiming.TicksToMs(Stopwatch.GetTimestamp() - evalStart);
+            CompleteEvalResult(request.id, result, timing);
+        }
+
+        private static void ValidateExecuteCode(NativeRequest request, RequestTiming timing)
+        {
+            if (request.payload == null || string.IsNullOrEmpty(request.payload.code))
+            {
+                CompleteError(request.id, "empty_code");
+                return;
+            }
+
+            CompleteValidateThenEvalResult(request.id, request.payload.code, timing);
+        }
+
+        private static void ValidateExecuteFile(NativeRequest request, RequestTiming timing)
+        {
+            string code;
+            if (!TryReadPayloadFile(request, out code))
+                return;
+
+            CompleteValidateThenEvalResult(request.id, code, timing);
         }
 
         private static void ValidateCode(NativeRequest request)
@@ -391,7 +468,7 @@ namespace Pi.UnityHarness.Editor
             return true;
         }
 
-        private static void CompleteEvalResult(string id, PiUnityEvaluator.EvalResult result)
+        private static void CompleteEvalResult(string id, PiUnityEvaluator.EvalResult result, RequestTiming timing)
         {
             if (!result.Ok)
             {
@@ -400,17 +477,35 @@ namespace Pi.UnityHarness.Editor
                 return;
             }
 
+            string timingFragment = timing != null ? ",\"timing\":" + timing.ToJsonFragment() : string.Empty;
             string payload =
                 "{\"reply_to\":" + JsonString(id) +
                 ",\"ok\":true,\"result\":{\"output\":" + JsonString(result.Output ?? string.Empty) +
-                ",\"typeName\":" + JsonString(result.TypeName ?? string.Empty) + "}}";
+                ",\"typeName\":" + JsonString(result.TypeName ?? string.Empty) + timingFragment + "}}";
             CompleteJson(id, payload);
+        }
+
+        private static void CompleteValidateThenEvalResult(string id, string code, RequestTiming timing)
+        {
+            long validateStart = Stopwatch.GetTimestamp();
+            string validation = s_evaluator.Validate(code);
+            timing.ValidateMs = RequestTiming.TicksToMs(Stopwatch.GetTimestamp() - validateStart);
+            if (!IsValidationOk(validation))
+            {
+                CompleteJson(id,
+                    "{\"reply_to\":" + JsonString(id) + ",\"ok\":false,\"error\":" + JsonString(validation ?? "validate_failed") + "}");
+                return;
+            }
+
+            long evalStart = Stopwatch.GetTimestamp();
+            PiUnityEvaluator.EvalResult result = s_evaluator.Eval(code);
+            timing.EvalMs = RequestTiming.TicksToMs(Stopwatch.GetTimestamp() - evalStart);
+            CompleteEvalResult(id, result, timing);
         }
 
         private static void CompleteValidationResult(string id, string validation)
         {
-            bool ok = !string.IsNullOrEmpty(validation) && !validation.StartsWith("COMPILE ERROR", StringComparison.Ordinal);
-            if (!ok)
+            if (!IsValidationOk(validation))
             {
                 CompleteJson(id,
                     "{\"reply_to\":" + JsonString(id) + ",\"ok\":false,\"error\":" + JsonString(validation ?? "validate_failed") + "}");
@@ -422,6 +517,11 @@ namespace Pi.UnityHarness.Editor
                 ",\"ok\":true,\"result\":{\"output\":" + JsonString(validation) +
                 ",\"typeName\":\"validation\"}}";
             CompleteJson(id, payload);
+        }
+
+        private static bool IsValidationOk(string validation)
+        {
+            return !string.IsNullOrEmpty(validation) && !validation.StartsWith("COMPILE ERROR", StringComparison.Ordinal);
         }
 
         private static void PublishManagedState(int state, string editorStatus)
