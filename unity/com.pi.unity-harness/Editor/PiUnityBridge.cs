@@ -10,6 +10,7 @@ using System.Threading;
 using UnityEditor;
 using UnityEditorInternal;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 
 namespace Pi.UnityHarness.Editor
 {
@@ -146,6 +147,7 @@ namespace Pi.UnityHarness.Editor
         private static Thread s_nativePumpThread;
         private static CancellationTokenSource s_nativePumpCts;
         private static PiUnityEvaluator s_evaluator;
+        private static PiUnityCoroutinePump s_pump;
         private static byte[] s_nativeBuffer;
         private static bool s_started;
         private static string s_projectPath;
@@ -184,6 +186,7 @@ namespace Pi.UnityHarness.Editor
                 s_mainWindowHandle = Process.GetCurrentProcess().MainWindowHandle;
                 EnableRunInBackground();
                 s_evaluator = new PiUnityEvaluator();
+                s_pump = new PiUnityCoroutinePump();
                 s_nativeBuffer = new byte[NativeInitialBufferSize];
 
                 if (pi_unity_init(Utf8(s_projectPath), ByteLen(s_projectPath), Utf8(s_pipeName), ByteLen(s_pipeName), Utf8(s_token), ByteLen(s_token), NativeProtocolVersion) != 0)
@@ -214,6 +217,8 @@ namespace Pi.UnityHarness.Editor
             EditorApplication.update -= OnUpdate;
             PublishManagedState(ManagedStateQuitting, "quitting");
             RestoreRunInBackground();
+            s_pump?.Dispose();
+            s_pump = null;
             try
             {
                 pi_unity_shutdown();
@@ -232,6 +237,26 @@ namespace Pi.UnityHarness.Editor
         private static void OnAfterReload()
         {
             Start();
+            // 完成域重载前挂起的编译请求（Start 后才可发送响应）
+            PiUnityCompileCoordinator.FinalizeAfterReload((id, success, result, errorSummary) =>
+            {
+                if (success)
+                {
+                    string payload =
+                        "{\"reply_to\":" + JsonString(id) +
+                        ",\"ok\":true,\"result\":{\"output\":" + JsonString(result ?? "compilation_succeeded") +
+                        ",\"typeName\":\"compile_status\"}}";
+                    CompleteJson(id, payload);
+                }
+                else
+                {
+                    string payload =
+                        "{\"reply_to\":" + JsonString(id) +
+                        ",\"ok\":false,\"error_type\":\"compile_error\",\"error\":" +
+                        JsonString(errorSummary ?? "Compilation failed") + "}";
+                    CompleteJson(id, payload);
+                }
+            });
         }
 
         private static void ForceReadyAfterStartup()
@@ -253,6 +278,9 @@ namespace Pi.UnityHarness.Editor
                 PublishHeartbeat();
             }
 
+            // 驱动协程泵
+            s_pump?.Tick();
+
             int processed = 0;
             while (processed < MaxRequestsPerUpdate && PendingRequests.TryDequeue(out PendingLine pending))
             {
@@ -260,7 +288,7 @@ namespace Pi.UnityHarness.Editor
                 processed++;
             }
 
-            if (!PendingRequests.IsEmpty)
+            if (!PendingRequests.IsEmpty || s_pump != null && s_pump.PendingCount > 0)
             {
                 EditorApplication.QueuePlayerLoopUpdate();
                 InternalEditorUtility.RepaintAllViews();
@@ -342,13 +370,13 @@ namespace Pi.UnityHarness.Editor
             }
             catch (Exception ex)
             {
-                CompleteError("", "request_parse_failed: " + ex.Message);
+                CompleteError("", "request_parse_failed: " + ex.Message, "usage");
                 return;
             }
 
             if (request == null || string.IsNullOrEmpty(request.id) || string.IsNullOrEmpty(request.type))
             {
-                CompleteError(request != null ? request.id : "", "missing_request_id_or_type");
+                CompleteError(request != null ? request.id : "", "missing_request_id_or_type", "usage");
                 return;
             }
 
@@ -372,8 +400,18 @@ namespace Pi.UnityHarness.Editor
                 case "validate_file":
                     ValidateFile(request);
                     return;
+                case "recompile":
+                    Recompile(request);
+                    return;
+                case "ping":
+                    CompleteJson(request.id,
+                        "{\"reply_to\":" + JsonString(request.id) + ",\"ok\":true,\"result\":{\"output\":\"pong\",\"typeName\":\"string\"}}");
+                    return;
+                case "status":
+                    Status(request);
+                    return;
                 default:
-                    CompleteError(request.id, "unsupported_request_type");
+                    CompleteError(request.id, "unsupported_request_type", "usage");
                     return;
             }
         }
@@ -382,14 +420,14 @@ namespace Pi.UnityHarness.Editor
         {
             if (request.payload == null || string.IsNullOrEmpty(request.payload.code))
             {
-                CompleteError(request.id, "empty_code");
+                CompleteError(request.id, "empty_code", "usage");
                 return;
             }
 
             long evalStart = Stopwatch.GetTimestamp();
             PiUnityEvaluator.EvalResult result = s_evaluator.Eval(request.payload.code);
             timing.EvalMs = RequestTiming.TicksToMs(Stopwatch.GetTimestamp() - evalStart);
-            CompleteEvalResult(request.id, result, timing);
+            TryCompleteEvalOrCoroutine(request.id, result, timing);
         }
 
         private static void ExecuteFile(NativeRequest request, RequestTiming timing)
@@ -401,14 +439,14 @@ namespace Pi.UnityHarness.Editor
             long evalStart = Stopwatch.GetTimestamp();
             PiUnityEvaluator.EvalResult result = s_evaluator.Eval(code);
             timing.EvalMs = RequestTiming.TicksToMs(Stopwatch.GetTimestamp() - evalStart);
-            CompleteEvalResult(request.id, result, timing);
+            TryCompleteEvalOrCoroutine(request.id, result, timing);
         }
 
         private static void ValidateExecuteCode(NativeRequest request, RequestTiming timing)
         {
             if (request.payload == null || string.IsNullOrEmpty(request.payload.code))
             {
-                CompleteError(request.id, "empty_code");
+                CompleteError(request.id, "empty_code", "usage");
                 return;
             }
 
@@ -428,7 +466,7 @@ namespace Pi.UnityHarness.Editor
         {
             if (request.payload == null || string.IsNullOrEmpty(request.payload.code))
             {
-                CompleteError(request.id, "empty_code");
+                CompleteError(request.id, "empty_code", "usage");
                 return;
             }
 
@@ -449,7 +487,7 @@ namespace Pi.UnityHarness.Editor
             code = null;
             if (request.payload == null || string.IsNullOrEmpty(request.payload.filePath))
             {
-                CompleteError(request.id, "empty_file_path");
+                CompleteError(request.id, "empty_file_path", "usage");
                 return false;
             }
 
@@ -460,7 +498,7 @@ namespace Pi.UnityHarness.Editor
 
             if (!File.Exists(path))
             {
-                CompleteError(request.id, "file_not_found: " + path);
+                CompleteError(request.id, "file_not_found: " + path, "usage");
                 return false;
             }
 
@@ -468,12 +506,127 @@ namespace Pi.UnityHarness.Editor
             return true;
         }
 
+        // --- 协程结果处理 ---
+
+        /// <summary>
+        /// 如果 EvalResult 包含 IEnumerator 协程，将其交给 CoroutinePump；
+        /// 否则作为同步结果直接完成。
+        /// </summary>
+        private static void TryCompleteEvalOrCoroutine(string id, PiUnityEvaluator.EvalResult result, RequestTiming timing)
+        {
+            if (result.IsCoroutine && result.Coroutine != null)
+            {
+                // 协程结果：交给 pump 逐帧驱动
+                bool queued = s_pump.Enqueue(result.Coroutine, id,
+                    (text, typeName) =>
+                    {
+                        bool ok = !text.StartsWith("RUNTIME ERROR", StringComparison.Ordinal) &&
+                                  !text.StartsWith("TIMEOUT", StringComparison.Ordinal) &&
+                                  !text.StartsWith("CANCELLED", StringComparison.Ordinal);
+                        if (ok)
+                        {
+                            string timingFragment = timing != null ? ",\"timing\":" + timing.ToJsonFragment() : string.Empty;
+                            string payload =
+                                "{\"reply_to\":" + JsonString(id) +
+                                ",\"ok\":true,\"result\":{\"output\":" + JsonString(text ?? string.Empty) +
+                                ",\"typeName\":" + JsonString(typeName ?? "void") + timingFragment + "}}";
+                            CompleteJson(id, payload);
+                        }
+                        else
+                        {
+                            CompleteJson(id,
+                                "{\"reply_to\":" + JsonString(id) + ",\"ok\":false,\"error_type\":" + JsonString(typeName ?? "runtime_error") + ",\"error\":" + JsonString(text ?? "coroutine_failed") + "}");
+                        }
+                    });
+                if (!queued)
+                {
+                    CompleteJson(id,
+                        "{\"reply_to\":" + JsonString(id) + ",\"ok\":false,\"error_type\":\"busy\",\"error\":\"coroutine queue full\"}");
+                }
+                return;
+            }
+
+            CompleteEvalResult(id, result, timing);
+        }
+
+        // --- 编译请求 ---
+
+        private static void Recompile(NativeRequest request)
+        {
+            UnityEngine.Debug.Log("[PiUnityHarness] recompile request id=" + request.id);
+
+            PiUnityCompileCoordinator.StartCompile(request.id,
+                (compileId, success, resultText, errorSummary) =>
+                {
+                    if (success)
+                    {
+                        string successPayload =
+                            "{\"reply_to\":" + JsonString(compileId) +
+                            ",\"ok\":true,\"result\":{\"output\":" + JsonString(resultText ?? "compilation_succeeded") +
+                            ",\"typeName\":\"compile_status\"}}";
+                        CompleteJson(compileId, successPayload);
+                    }
+                    else
+                    {
+                        string errorPayload =
+                            "{\"reply_to\":" + JsonString(compileId) +
+                            ",\"ok\":false,\"error_type\":\"compile_error\",\"error\":" +
+                            JsonString(errorSummary ?? "Compilation failed") + "}";
+                        CompleteJson(compileId, errorPayload);
+                    }
+                });
+        }
+
+        // --- 状态查询 ---
+
+        private static void Status(NativeRequest request)
+        {
+            string statusJson = BuildStatusResponse(request.id);
+            CompleteJson(request.id, statusJson);
+        }
+
+        private static string BuildStatusResponse(string replyTo)
+        {
+            Scene scene = SceneManager.GetActiveScene();
+            GameObject[] roots = scene.IsValid() ? scene.GetRootGameObjects() : new GameObject[0];
+            Camera mainCamera = Camera.main;
+
+            StringBuilder sb = new StringBuilder();
+            sb.Append("{\"reply_to\":\"");
+            sb.Append(EscapeJson(replyTo));
+            sb.Append("\",\"ok\":true,\"result\":{");
+            sb.Append("\"unity_version\":\"");
+            sb.Append(EscapeJson(Application.unityVersion));
+            sb.Append("\",\"platform\":\"");
+            sb.Append(EscapeJson(Application.platform.ToString()));
+            sb.Append("\",\"project\":\"");
+            sb.Append(EscapeJson(Application.dataPath));
+            sb.Append("\",\"playing\":");
+            sb.Append(EditorApplication.isPlaying ? "true" : "false");
+            sb.Append(",\"scene\":{\"name\":\"");
+            sb.Append(EscapeJson(scene.name));
+            sb.Append("\",\"path\":\"");
+            sb.Append(EscapeJson(scene.path));
+            sb.Append("\",\"root_count\":");
+            sb.Append(roots.Length);
+            sb.Append("},\"main_camera\":");
+            sb.Append(mainCamera != null ? "true" : "false");
+            sb.Append(",\"is_compiling\":");
+            sb.Append(EditorApplication.isCompiling ? "true" : "false");
+            sb.Append(",\"is_updating\":");
+            sb.Append(EditorApplication.isUpdating ? "true" : "false");
+            sb.Append(",\"pump_pending\":");
+            sb.Append(s_pump != null ? s_pump.PendingCount : 0);
+            sb.Append("}}");
+            return sb.ToString();
+        }
+
         private static void CompleteEvalResult(string id, PiUnityEvaluator.EvalResult result, RequestTiming timing)
         {
             if (!result.Ok)
             {
                 CompleteJson(id,
-                    "{\"reply_to\":" + JsonString(id) + ",\"ok\":false,\"error\":" + JsonString(result.Error ?? "execute_failed") + "}");
+                    "{\"reply_to\":" + JsonString(id) + ",\"ok\":false,\"error_type\":\"runtime_error\",\"error\":" + JsonString(result.Error ?? "execute_failed") + "}");
                 return;
             }
 
@@ -493,14 +646,14 @@ namespace Pi.UnityHarness.Editor
             if (!IsValidationOk(validation))
             {
                 CompleteJson(id,
-                    "{\"reply_to\":" + JsonString(id) + ",\"ok\":false,\"error\":" + JsonString(validation ?? "validate_failed") + "}");
+                    "{\"reply_to\":" + JsonString(id) + ",\"ok\":false,\"error_type\":\"compile_error\",\"error\":" + JsonString(validation ?? "validate_failed") + "}");
                 return;
             }
 
             long evalStart = Stopwatch.GetTimestamp();
             PiUnityEvaluator.EvalResult result = s_evaluator.Eval(code);
             timing.EvalMs = RequestTiming.TicksToMs(Stopwatch.GetTimestamp() - evalStart);
-            CompleteEvalResult(id, result, timing);
+            TryCompleteEvalOrCoroutine(id, result, timing);
         }
 
         private static void CompleteValidationResult(string id, string validation)
@@ -550,9 +703,11 @@ namespace Pi.UnityHarness.Editor
             }
         }
 
-        private static void CompleteError(string id, string error)
+        private static void CompleteError(string id, string error, string errorType = "usage")
         {
-            string json = "{\"reply_to\":" + JsonString(id) + ",\"ok\":false,\"error\":" + JsonString(error) + "}";
+            string json = "{\"reply_to\":" + JsonString(id) +
+                ",\"ok\":false,\"error_type\":" + JsonString(errorType) +
+                ",\"error\":" + JsonString(error) + "}";
             CompleteJson(id, json);
         }
 
@@ -775,6 +930,32 @@ namespace Pi.UnityHarness.Editor
         private static int ByteLen(string value)
         {
             return Encoding.UTF8.GetByteCount(value ?? string.Empty);
+        }
+
+        private static string EscapeJson(string value)
+        {
+            if (value == null)
+                return "";
+            StringBuilder sb = new StringBuilder(value.Length);
+            for (int i = 0; i < value.Length; i++)
+            {
+                char c = value[i];
+                switch (c)
+                {
+                    case '\\': sb.Append("\\\\"); break;
+                    case '"': sb.Append("\\\""); break;
+                    case '\n': sb.Append("\\n"); break;
+                    case '\r': sb.Append("\\r"); break;
+                    case '\t': sb.Append("\\t"); break;
+                    default:
+                        if (c < 32)
+                            sb.Append("\\u").Append(((int)c).ToString("x4"));
+                        else
+                            sb.Append(c);
+                        break;
+                }
+            }
+            return sb.ToString();
         }
 
         private static string JsonString(string value)

@@ -538,7 +538,7 @@ finally {
   private handleLine(line: string) {
     const message = JSON.parse(line) as {
       reply_to?: string; ok?: boolean; result?: unknown; error?: string;
-      type?: string; event?: string; payload?: unknown;
+      error_type?: string; type?: string; event?: string; payload?: unknown;
     };
     if (message.type === "event") return;
 
@@ -551,7 +551,10 @@ finally {
     if (message.ok) {
       pending.resolve(message.result);
     } else {
-      pending.reject(new Error(message.error ?? "unity request failed"));
+      const errorType = message.error_type ?? "unknown";
+      const err = new Error(`[${errorType}] ${message.error ?? "unity request failed"}`);
+      (err as any).errorType = errorType;
+      pending.reject(err);
     }
   }
 
@@ -824,6 +827,29 @@ export default function (pi: ExtensionAPI) {
       } else {
         result = await client.request("validate_execute_code", { code: params.code }, timeoutMs);
       }
+      return {
+        content: [{ type: "text", text: String(result?.output ?? "(ok)") }],
+        details: result,
+      };
+    },
+  });
+
+  // ---- unity_recompile ----
+
+  pi.registerTool({
+    name: "unity_recompile",
+    label: "Unity Recompile",
+    description: "触发 Unity Editor 重新编译 C# 脚本，返回编译结果和错误信息。",
+    promptSnippet: "Use unity_recompile to trigger Unity script compilation and get compile errors.",
+    promptGuidelines: [
+      "Use unity_recompile after modifying C# scripts to trigger Unity compilation.",
+      "This call blocks until compilation completes (up to 120s). Check the returned result for error details.",
+      "On success: result.output is \"compilation_succeeded\". On failure: error_type is \"compile_error\" with the error summary.",
+    ],
+    parameters: Type.Object({}),
+    async execute(_toolCallId, _params) {
+      const timeoutMs = 120000; // 编译可能需要较长时间
+      const result = await client.request("recompile", {}, timeoutMs);
       return {
         content: [{ type: "text", text: String(result?.output ?? "(ok)") }],
         details: result,

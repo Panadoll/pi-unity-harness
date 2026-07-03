@@ -16,14 +16,21 @@ namespace Pi.UnityHarness.Editor
             public string Output;
             public string Error;
             public string TypeName;
+            public IEnumerator Coroutine;
+            public bool IsCoroutine;
 
             public static EvalResult FromValue(object value)
             {
-                if (value is IEnumerator)
+                if (value is IEnumerator coroutine)
                 {
-                    return Fail(
-                        "RUNTIME ERROR: coroutine results are not supported by pi-unity-harness yet",
-                        "unsupported");
+                    return new EvalResult
+                    {
+                        Ok = true,
+                        IsCoroutine = true,
+                        Coroutine = coroutine,
+                        Output = "(coroutine)",
+                        TypeName = "IEnumerator",
+                    };
                 }
 
                 return new EvalResult
