@@ -34,6 +34,8 @@ const STATE_PLANE_SLOT_COUNT = 2;
 const STATE_PLANE_SLOT_SIZE = 64 * 1024;
 const STATE_PLANE_SLOT_PAYLOAD_OFFSET = 24;
 const INLINE_EVAL_CODE_LIMIT_BYTES = 512 * 1024;
+const CLIENT_HEARTBEAT_INTERVAL_MS = 5000;
+const CLIENT_HEARTBEAT_TIMEOUT_MS = 5000;
 
 function parseEditorStatus(value: unknown): { editorStatus: string; focusState?: string; windowState?: string } {
   const raw = String(value ?? "unknown");
@@ -206,6 +208,8 @@ class UnityBridgeClient {
   private nextId = 1;
   private pending = new Map<string, PendingRequest>();
   private projectRootOverride?: string;
+  private heartbeatTimer?: NodeJS.Timeout;
+  private heartbeatInFlight = false;
 
   configure(cwd: string) { this.cwd = cwd; }
 
@@ -219,6 +223,7 @@ class UnityBridgeClient {
   }
 
   close() {
+    this.stopHeartbeat();
     if (this.socket) { this.socket.destroy(); this.socket = undefined; }
     if (this.connectPromise) this.connectPromise = undefined;
     for (const [id, pending] of this.pending) {
@@ -231,7 +236,7 @@ class UnityBridgeClient {
 
   async request(type: string, payload: Record<string, unknown>, timeoutMs = 20000) {
     const bridge = this.loadBridgeInfo();
-    await this.ensureConnected(bridge);
+    await this.ensureConnected(bridge, timeoutMs);
 
     const id = String(this.nextId++);
     const message = JSON.stringify({ id, type, token: bridge.token, timeoutMs, payload }) + "\n";
@@ -239,6 +244,11 @@ class UnityBridgeClient {
     return await new Promise<any>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
+        if (this.socket) {
+          this.stopHeartbeat();
+          this.socket.destroy();
+          this.socket = undefined;
+        }
         reject(new Error(`unity request timed out after ${timeoutMs}ms (${type})`));
       }, timeoutMs);
 
@@ -249,6 +259,11 @@ class UnityBridgeClient {
         if (!entry) return;
         clearTimeout(entry.timer);
         this.pending.delete(id);
+        if (this.socket) {
+          this.stopHeartbeat();
+          this.socket.destroy();
+          this.socket = undefined;
+        }
         reject(error);
       });
     });
@@ -372,6 +387,7 @@ class UnityBridgeClient {
       this.bridge.token !== info.token;
     this.bridge = info;
     if (changed && this.socket) {
+      this.stopHeartbeat();
       this.socket.destroy();
       this.socket = undefined;
       this.connectPromise = undefined;
@@ -453,23 +469,36 @@ finally {
     }
   }
 
-  private async ensureConnected(bridge: BridgeInfo) {
+  private async ensureConnected(bridge: BridgeInfo, timeoutMs = 5000) {
     if (this.socket && !this.socket.destroyed) return;
     if (this.connectPromise) { await this.connectPromise; return; }
 
     this.connectPromise = new Promise<void>((resolvePromise, rejectPromise) => {
       const socket = net.createConnection(bridge.pipe);
-      const cleanup = () => { socket.removeAllListeners("connect"); socket.removeAllListeners("error"); };
+      let timer: NodeJS.Timeout;
+      const cleanup = () => {
+        clearTimeout(timer);
+        socket.removeAllListeners("connect");
+        socket.removeAllListeners("error");
+      };
+      timer = setTimeout(() => {
+        cleanup();
+        socket.destroy();
+        this.connectPromise = undefined;
+        rejectPromise(new Error(`connect timed out after ${timeoutMs}ms ${bridge.pipe}`));
+      }, timeoutMs);
 
       socket.on("connect", () => {
         cleanup();
         this.socket = socket;
         this.installSocketHandlers(socket);
+        this.startHeartbeat();
         resolvePromise();
       });
 
       socket.on("error", (error) => {
         cleanup();
+        socket.destroy();
         this.connectPromise = undefined;
         rejectPromise(error);
       });
@@ -494,6 +523,8 @@ finally {
 
     socket.on("close", () => {
       this.socket = undefined;
+      this.stopHeartbeat();
+      this.lineBuffer = "";
       for (const [id, pending] of this.pending) {
         clearTimeout(pending.timer);
         pending.reject(new Error(`unity bridge disconnected before request ${id} completed`));
@@ -522,6 +553,26 @@ finally {
     } else {
       pending.reject(new Error(message.error ?? "unity request failed"));
     }
+  }
+
+  private startHeartbeat() {
+    if (this.heartbeatTimer) return;
+    this.heartbeatTimer = setInterval(() => {
+      if (!this.socket || this.socket.destroyed || this.heartbeatInFlight || this.pending.size > 0) return;
+      this.heartbeatInFlight = true;
+      this.request("ping", {}, CLIENT_HEARTBEAT_TIMEOUT_MS)
+        .catch(() => { /* request() 会负责销毁异常 socket */ })
+        .finally(() => { this.heartbeatInFlight = false; });
+    }, CLIENT_HEARTBEAT_INTERVAL_MS);
+    this.heartbeatTimer.unref?.();
+  }
+
+  private stopHeartbeat() {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = undefined;
+    }
+    this.heartbeatInFlight = false;
   }
 
   private resolveUnityProjectRoot(): string {

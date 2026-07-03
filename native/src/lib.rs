@@ -60,7 +60,8 @@ mod imp {
         STATE_PLANE_SLOT_SIZE - STATE_PLANE_SLOT_PAYLOAD_OFFSET;
     const HEARTBEAT_TIMEOUT_MS: i64 = 5_000;
     const REQUEST_TIMEOUT_MS: i64 = 60_000;
-    const CAPABILITIES: [&str; 8] = [
+    const CLIENT_HEARTBEAT_TIMEOUT_MS: i64 = 15_000;
+    const CAPABILITIES: [&str; 9] = [
         "native-broker",
         "direct-status",
         "reload-stable-pipe",
@@ -69,6 +70,7 @@ mod imp {
         "focus-state",
         "heartbeat-timeout",
         "request-timeout",
+        "client-heartbeat-timeout",
     ];
 
     type Bool = i32;
@@ -520,6 +522,12 @@ mod imp {
             self.publish_status_snapshot();
         }
 
+        fn has_active_work(&self) -> bool {
+            let pending = self.pending.lock().map(|q| q.len()).unwrap_or(0);
+            let in_flight = self.in_flight.lock().map(|m| m.len()).unwrap_or(0);
+            pending > 0 || in_flight > 0
+        }
+
         fn send_line(&self, bytes: Vec<u8>) {
             if let Ok(guard) = self.writer.lock() {
                 if let Some(tx) = guard.as_ref() {
@@ -751,20 +759,30 @@ mod imp {
         let mut reader = BufReader::new(read_half);
         let mut buf = Vec::<u8>::with_capacity(4096);
         let mut maintenance = tokio::time::interval(Duration::from_millis(250));
+        let mut last_client_activity_ms = now_ms();
         loop {
-            buf.clear();
-            let read = tokio::select! {
+            let read_result = tokio::select! {
                 _ = broker.shutdown_notify.notified() => break,
                 _ = maintenance.tick() => {
                     broker.reap_timeouts();
-                    continue;
+                    let idle_ms = now_ms().saturating_sub(last_client_activity_ms);
+                    if idle_ms > CLIENT_HEARTBEAT_TIMEOUT_MS && !broker.has_active_work() {
+                        eprintln!("[pi-unity-native] closing silent client after {idle_ms}ms");
+                        break;
+                    }
+                    None::<std::io::Result<usize>>
                 }
-                read = reader.read_until(b'\n', &mut buf) => read,
+                read = reader.read_until(b'\n', &mut buf) => Some(read),
             };
-            match read {
-                Ok(0) => break,
-                Ok(_) => broker.handle_line(&buf),
-                Err(error) => {
+            match read_result {
+                None => continue,
+                Some(Ok(0)) => break,
+                Some(Ok(_)) => {
+                    last_client_activity_ms = now_ms();
+                    broker.handle_line(&buf);
+                    buf.clear();
+                }
+                Some(Err(error)) => {
                     eprintln!("[pi-unity-native] pipe read error: {error}");
                     break;
                 }
@@ -909,7 +927,7 @@ mod imp {
         fn test_broker(name: &str) -> Broker {
             Broker::new(
                 format!("F:/Temp/PiUnityHarnessTests/{name}{}", now_ms()),
-                format!(r"\.\pipe\pi_unity_test_{name}"),
+                format!(r"\\.\pipe\pi_unity_test_{name}"),
                 "token".to_string(),
             )
         }
