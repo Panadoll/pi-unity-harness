@@ -1,0 +1,26 @@
+{
+  "name": "Pi.UnityHarness.Editor",
+  "rootNamespace": "Pi.UnityHarness.Editor",
+  "references": [
+    "Unity.Pipeline",
+    "Unity.Pipeline.Editor",
+    "Unity.Nuget.Newtonsoft-Json"
+  ],
+  "includePlatforms": [
+    "Editor"
+  ],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [
+    {
+      "name": "com.unity.pipeline",
+      "expression": "[0.2.0-exp.2,0.3.0)",
+      "define": "PI_UNITY_PIPELINE"
+    }
+  ],
+  "noEngineReferences": false
+}

@@ -1,5 +1,13 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import {
+  normalizePipelineToolName,
+  parseEditorStatus,
+  parseUnityMajorVersion,
+  pipelineCommandTimeoutMs,
+  schemaToTypeBox,
+  type PipelineParameterInfo,
+} from "./helpers.ts";
 import net from "node:net";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
@@ -27,6 +35,28 @@ interface PendingRequest {
   timer: NodeJS.Timeout;
 }
 
+interface PipelineCommandInfo {
+  name: string;
+  description?: string;
+  mainThreadRequired?: boolean;
+  runtimeOnly?: boolean;
+  schema?: Record<string, unknown> | null;
+  parameters?: PipelineParameterInfo[];
+}
+
+interface PipelineCommandList {
+  typeName?: string;
+  pipelineAvailable: boolean;
+  commands: PipelineCommandInfo[];
+  count?: number;
+}
+
+interface PipelineInstallStatus {
+  installed: boolean;
+  version?: string;
+  source?: string;
+}
+
 const STATE_PLANE_MAGIC = 0x48554950;
 const STATE_PLANE_VERSION = 1;
 const STATE_PLANE_HEADER_SIZE = 64;
@@ -36,21 +66,9 @@ const STATE_PLANE_SLOT_PAYLOAD_OFFSET = 24;
 const INLINE_EVAL_CODE_LIMIT_BYTES = 512 * 1024;
 const CLIENT_HEARTBEAT_INTERVAL_MS = 5000;
 const CLIENT_HEARTBEAT_TIMEOUT_MS = 5000;
-
-function parseEditorStatus(value: unknown): { editorStatus: string; focusState?: string; windowState?: string } {
-  const raw = String(value ?? "unknown");
-  const [editorStatus, ...parts] = raw.split(";").map((part) => part.trim()).filter(Boolean);
-  let focusState: string | undefined;
-  let windowState: string | undefined;
-
-  for (const part of parts) {
-    const [key, val] = part.split("=", 2).map((item) => item.trim());
-    if (key === "focus" && val) focusState = val;
-    if (key === "window" && val) windowState = val;
-  }
-
-  return { editorStatus: editorStatus || "unknown", focusState, windowState };
-}
+const PIPELINE_PACKAGE_NAME = "com.unity.pipeline";
+const PIPELINE_PACKAGE_VERSION = "0.2.0-exp.2";
+const PIPELINE_TOOL_EXCLUDE = new Set(["eval", "recompile", "recompile_status", "editor_status"]);
 
 // ---- 扫描运行中的 Unity 实例 ----
 
@@ -149,6 +167,73 @@ function cleanupScratchRepls(projectPath: string) {
   } catch { /* 目录不可读时不影响 bridge 使用 */ }
 }
 
+function readManifest(projectPath: string): any | null {
+  const manifestPath = join(projectPath, "Packages", "manifest.json");
+  if (!existsSync(manifestPath)) return null;
+  try {
+    let text = readFileSync(manifestPath, "utf8");
+    if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+function readProjectUnityVersion(projectPath: string): string | undefined {
+  const versionPath = join(projectPath, "ProjectSettings", "ProjectVersion.txt");
+  if (!existsSync(versionPath)) return undefined;
+  try {
+    const text = readFileSync(versionPath, "utf8");
+    return text.match(/m_EditorVersion:\s*([^\r\n]+)/)?.[1]?.trim();
+  } catch {
+    return undefined;
+  }
+}
+
+function getPipelineInstallStatus(projectPath: string): PipelineInstallStatus {
+  const manifest = readManifest(projectPath);
+  const manifestVersion = manifest?.dependencies?.[PIPELINE_PACKAGE_NAME];
+  const embeddedPackageJson = join(projectPath, "Packages", PIPELINE_PACKAGE_NAME, "package.json");
+
+  if (existsSync(embeddedPackageJson)) {
+    try {
+      let text = readFileSync(embeddedPackageJson, "utf8");
+      if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
+      const pkg = JSON.parse(text);
+      return { installed: true, version: pkg.version ?? manifestVersion, source: "embedded" };
+    } catch {
+      return { installed: true, version: manifestVersion, source: "embedded" };
+    }
+  }
+
+  if (manifestVersion) {
+    return { installed: true, version: manifestVersion, source: String(manifestVersion).startsWith("file:") ? "local" : "registry" };
+  }
+
+  return { installed: false };
+}
+
+function installUnityPipeline(projectPath: string): { ok: boolean; message: string } {
+  const manifestPath = join(projectPath, "Packages", "manifest.json");
+  const manifest = readManifest(projectPath);
+  if (!manifest) {
+    return { ok: false, message: `找不到或无法解析 Packages/manifest.json: ${projectPath}` };
+  }
+
+  manifest.dependencies ??= {};
+  if (manifest.dependencies[PIPELINE_PACKAGE_NAME]) {
+    return { ok: true, message: `${PIPELINE_PACKAGE_NAME} 已安装 (${manifest.dependencies[PIPELINE_PACKAGE_NAME]})` };
+  }
+
+  manifest.dependencies[PIPELINE_PACKAGE_NAME] = PIPELINE_PACKAGE_VERSION;
+  try {
+    writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n", "utf8");
+    return { ok: true, message: `已添加 ${PIPELINE_PACKAGE_NAME}@${PIPELINE_PACKAGE_VERSION}。Unity Editor 将自动解析包。` };
+  } catch (error: any) {
+    return { ok: false, message: `写入 manifest.json 失败: ${error.message}` };
+  }
+}
+
 function installPiUnityHarness(projectPath: string, packageSourceDir?: string): { ok: boolean; message: string } {
   const manifestPath = join(projectPath, "Packages", "manifest.json");
   if (!existsSync(manifestPath)) {
@@ -210,11 +295,17 @@ class UnityBridgeClient {
   private projectRootOverride?: string;
   private heartbeatTimer?: NodeJS.Timeout;
   private heartbeatInFlight = false;
+  private pipelineCommandCache?: PipelineCommandList;
+  private pipelineCacheProject?: string;
+  private pipelineCacheGeneration?: number;
 
   configure(cwd: string) { this.cwd = cwd; }
 
   setProjectRoot(path: string) {
     this.projectRootOverride = resolve(path);
+    this.pipelineCommandCache = undefined;
+    this.pipelineCacheProject = undefined;
+    this.pipelineCacheGeneration = undefined;
     cleanupScratchRepls(this.projectRootOverride);
   }
 
@@ -269,8 +360,38 @@ class UnityBridgeClient {
     });
   }
 
+  async listPipelineCommands(force = false, timeoutMs = 8000): Promise<PipelineCommandList> {
+    const bridge = this.loadBridgeInfo();
+    const project = this.resolveUnityProjectRoot();
+    if (!force && this.pipelineCommandCache && this.pipelineCacheProject === project && this.pipelineCacheGeneration === bridge.generation) {
+      return this.pipelineCommandCache;
+    }
+
+    const result = await this.request("list_commands", {}, timeoutMs) as Partial<PipelineCommandList>;
+    const normalized: PipelineCommandList = {
+      typeName: result?.typeName ?? "command_list",
+      pipelineAvailable: result?.pipelineAvailable === true,
+      commands: Array.isArray(result?.commands) ? result.commands : [],
+      count: typeof result?.count === "number" ? result.count : Array.isArray(result?.commands) ? result.commands.length : 0,
+    };
+    this.pipelineCommandCache = normalized;
+    this.pipelineCacheProject = project;
+    this.pipelineCacheGeneration = bridge.generation;
+    return normalized;
+  }
+
+  pipelineStatusSnapshot() {
+    const project = this.getProjectRoot();
+    return {
+      pipelineInstalled: project ? getPipelineInstallStatus(project) : undefined,
+      pipelineAvailable: this.pipelineCommandCache?.pipelineAvailable,
+      pipelineCommandCount: this.pipelineCommandCache?.commands?.length,
+    };
+  }
+
   async status(pipeTimeoutMs = 2000) {
     const bridge = this.loadBridgeInfo();
+    const pipelineStatus = this.pipelineStatusSnapshot();
 
     let pipeConnected = false;
     let pipeStatus = "disconnected";
@@ -307,6 +428,7 @@ class UnityBridgeClient {
         focusState: pipeFocusState,
         windowState: pipeWindowState,
         capabilities: pipeCapabilities,
+        ...pipelineStatus,
       };
     }
 
@@ -350,6 +472,7 @@ class UnityBridgeClient {
         focusState: snapshot.focusState ?? snapshotStatus.focusState,
         windowState: snapshot.windowState ?? snapshotStatus.windowState,
         capabilities: snapshot.capabilities ?? [],
+        ...pipelineStatus,
       };
     }
 
@@ -386,6 +509,11 @@ class UnityBridgeClient {
       this.bridge.pipe !== info.pipe ||
       this.bridge.token !== info.token;
     this.bridge = info;
+    if (changed) {
+      this.pipelineCommandCache = undefined;
+      this.pipelineCacheProject = undefined;
+      this.pipelineCacheGeneration = undefined;
+    }
     if (changed && this.socket) {
       this.stopHeartbeat();
       this.socket.destroy();
@@ -552,7 +680,11 @@ finally {
       pending.resolve(message.result);
     } else {
       const errorType = message.error_type ?? "unknown";
-      const err = new Error(`[${errorType}] ${message.error ?? "unity request failed"}`);
+      const errorMessage = message.error ?? "unity request failed";
+      const heartbeatHint = errorType === "managed_heartbeat_timeout"
+        ? " (Unity main thread stalled, likely a blocking call in eval code; the harness auto-recovers within ~1s after the block ends — retry the request then)"
+        : "";
+      const err = new Error(`[${errorType}] ${errorMessage}${heartbeatHint}`);
       (err as any).errorType = errorType;
       pending.reject(err);
     }
@@ -590,6 +722,70 @@ finally {
 
 export default function (pi: ExtensionAPI) {
   const client = new UnityBridgeClient();
+  const registeredPipelineTools = new Set<string>();
+  const activePipelineTools = new Map<string, PipelineCommandInfo>();
+
+  const refreshActiveTools = () => {
+    const active = new Set(pi.getActiveTools());
+    for (const toolName of registeredPipelineTools) active.delete(toolName);
+    for (const toolName of activePipelineTools.keys()) active.add(toolName);
+    pi.setActiveTools([...active]);
+  };
+
+  const registerPipelineTools = async () => {
+    let list: PipelineCommandList;
+    try {
+      list = await client.listPipelineCommands(true);
+    } catch {
+      // 传输错误（如编辑器重载中）保留旧工具；只有 pipelineAvailable:false 才降级。
+      return;
+    }
+
+    activePipelineTools.clear();
+    if (!list.pipelineAvailable) {
+      refreshActiveTools();
+      return;
+    }
+
+    for (const command of list.commands) {
+      if (!command?.name || command.runtimeOnly || PIPELINE_TOOL_EXCLUDE.has(command.name)) continue;
+      const toolName = normalizePipelineToolName(command.name);
+      if (activePipelineTools.has(toolName)) {
+        console.warn(
+          `[pi-unity-harness] pipeline tool name collision: "${command.name}" and "${activePipelineTools.get(toolName)!.name}" both normalize to "${toolName}". Skipping "${command.name}".`,
+        );
+        continue;
+      }
+      activePipelineTools.set(toolName, command);
+
+      if (registeredPipelineTools.has(toolName)) continue;
+      registeredPipelineTools.add(toolName);
+      pi.registerTool({
+        name: toolName,
+        label: `Unity ${command.name}`,
+        description: command.description ?? `执行 Unity Pipeline 命令 ${command.name}`,
+        promptSnippet: `Execute Unity Pipeline command ${command.name} through the reload-stable pipe bridge.`,
+        promptGuidelines: [`Use ${toolName} when you need Unity Pipeline command ${command.name}.`],
+        parameters: schemaToTypeBox(Type, command.schema, command.parameters),
+        async execute(_toolCallId, params) {
+          const current = activePipelineTools.get(toolName);
+          if (!current) {
+            throw new Error(`pipeline unavailable or command disabled: ${command.name}`);
+          }
+
+          const parametersJson = JSON.stringify(params ?? {});
+          const timeoutMs = pipelineCommandTimeoutMs(command.name, params ?? {});
+          const result = await client.request("command", { name: command.name, parametersJson }, timeoutMs);
+          return {
+            content: [{ type: "text", text: String(result?.output ?? "(ok)") }],
+            details: result,
+          };
+        },
+      });
+    }
+
+    refreshActiveTools();
+  };
 
   // ---- session_start: 自动扫描并连接 ----
 
@@ -603,10 +799,12 @@ export default function (pi: ExtensionAPI) {
       client.setProjectRoot(readyInstances[0].projectPath);
       const name = basename(readyInstances[0].projectPath);
       ctx.ui.setStatus("pi-unity", `unity bridge: ${name}`);
+      await registerPipelineTools();
     } else if (readyInstances.length > 1) {
       client.setProjectRoot(readyInstances[0].projectPath);
       const name = basename(readyInstances[0].projectPath);
       ctx.ui.setStatus("pi-unity", `unity bridge: ${name} (+${readyInstances.length - 1} more)`);
+      await registerPipelineTools();
     } else if (instances.length > 0) {
       ctx.ui.setStatus("pi-unity", `found ${instances.length} Unity, bridge not installed (/unity-install)`);
     } else {
@@ -648,6 +846,7 @@ export default function (pi: ExtensionAPI) {
         client.setProjectRoot(choices[0].value);
         ctx.ui.notify(`已连接: ${basename(choices[0].value)}`, "info");
         ctx.ui.setStatus("pi-unity", `unity bridge: ${basename(choices[0].value)}`);
+        await registerPipelineTools();
         return;
       }
 
@@ -663,6 +862,7 @@ export default function (pi: ExtensionAPI) {
         if (inst?.bridgeReady) {
           ctx.ui.notify(`已连接: ${basename(chosen)}`, "info");
           ctx.ui.setStatus("pi-unity", `unity bridge: ${basename(chosen)}`);
+          await registerPipelineTools();
         } else {
           ctx.ui.notify(`已设置项目: ${basename(chosen)}（bridge 未就绪，请用 /unity-install 安装）`, "warn");
           ctx.ui.setStatus("pi-unity", `unity: ${basename(chosen)} (no bridge)`);
@@ -707,11 +907,27 @@ export default function (pi: ExtensionAPI) {
         }
       }
 
-      const result = installPiUnityHarness(resolve(projectPath));
-      if (result.ok) {
-        ctx.ui.notify(result.message, "info");
+      const resolvedProject = resolve(projectPath);
+      const harnessResult = installPiUnityHarness(resolvedProject);
+      if (harnessResult.ok) {
+        ctx.ui.notify(harnessResult.message, "info");
       } else {
-        ctx.ui.notify(result.message, "error");
+        ctx.ui.notify(harnessResult.message, "error");
+        return;
+      }
+
+      const unityVersion = readProjectUnityVersion(resolvedProject);
+      const major = parseUnityMajorVersion(unityVersion);
+      const pipelineStatus = getPipelineInstallStatus(resolvedProject);
+      if (major !== undefined && major >= 6000 && !pipelineStatus.installed) {
+        const ok = await ctx.ui.confirm(
+          "安装 com.unity.pipeline?",
+          `项目 Unity 版本为 ${unityVersion ?? "unknown"}，是否添加 ${PIPELINE_PACKAGE_NAME}@${PIPELINE_PACKAGE_VERSION} 到 Packages/manifest.json?`,
+        );
+        if (ok) {
+          const pipelineResult = installUnityPipeline(resolvedProject);
+          ctx.ui.notify(pipelineResult.message, pipelineResult.ok ? "info" : "error");
+        }
       }
     },
   });
@@ -741,6 +957,10 @@ export default function (pi: ExtensionAPI) {
       }
 
       const current = client.getProjectRoot();
+      if (current && instances.some((i) => i.bridgeReady && resolve(i.projectPath) === resolve(current))) {
+        await registerPipelineTools();
+      }
+      const pipelineStatus = current ? getPipelineInstallStatus(current) : undefined;
 
       return {
         content: [{
@@ -752,13 +972,17 @@ export default function (pi: ExtensionAPI) {
               pid: i.pid,
               bridgeReady: i.bridgeReady,
               selected: current ? resolve(i.projectPath) === resolve(current) : false,
+              pipeline: getPipelineInstallStatus(i.projectPath),
             })),
+            pipelineAvailable: client.pipelineStatusSnapshot().pipelineAvailable,
+            pipelineCommandCount: client.pipelineStatusSnapshot().pipelineCommandCount,
+            pipeline: pipelineStatus,
             hint: readyInstances.length === 0 && instances.length > 0
               ? `检测到 ${instances.length} 个运行中的 Unity，但均未安装 bridge。使用 /unity-install 安装。`
               : undefined,
           }, null, 2),
         }],
-        details: { current, instances },
+        details: { current, instances, pipeline: pipelineStatus, pipelineStatus: client.pipelineStatusSnapshot() },
       };
     },
   });
@@ -791,6 +1015,7 @@ export default function (pi: ExtensionAPI) {
     promptGuidelines: ["Use unity_status before retries when a Unity request times out or reports managed_reloading."],
     parameters: Type.Object({}),
     async execute() {
+      try { await client.listPipelineCommands(false, 5000); } catch { /* status 本身仍可降级返回 */ }
       const result = await client.status();
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
@@ -806,7 +1031,10 @@ export default function (pi: ExtensionAPI) {
     label: "Unity Eval",
     description: "在 Unity Editor 主线程执行一段 C# 代码。",
     promptSnippet: "Use unity_eval to inspect or mutate Unity Editor state from C# on the main thread.",
-    promptGuidelines: ["Use unity_eval for UnityEditor or UnityEngine operations that must run inside the Editor process."],
+    promptGuidelines: [
+      "Use unity_eval for UnityEditor or UnityEngine operations that must run inside the Editor process.",
+      "Never block the Unity main thread with Task.Wait/.Result/GetAwaiter().GetResult()/Thread.Sleep — it freezes the editor update loop and heartbeat. To await async work, return an IEnumerator (coroutine) from the eval code instead.",
+    ],
     parameters: Type.Object({
       code: Type.String({ description: "要在 Unity Editor 中执行的 C# 代码。" }),
       timeoutMs: Type.Optional(Type.Number({ description: "请求超时，默认 20000ms。" })),

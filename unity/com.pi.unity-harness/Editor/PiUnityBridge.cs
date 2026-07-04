@@ -25,6 +25,8 @@ namespace Pi.UnityHarness.Editor
         private const int ManagedStateQuitting = 3;
         private const int NativeInitialBufferSize = 64 * 1024;
         private const int MaxRequestsPerUpdate = 16;
+        private const double HeartbeatStaleSeconds = 2.0d;
+        private const double StaleWakeIntervalSeconds = 1.0d;
         private const string SessionKey_Generation = "PiUnityHarness_Generation";
         private const string SessionKey_Token = "PiUnityHarness_Token";
         private const string SessionKey_Pipe = "PiUnityHarness_Pipe";
@@ -92,6 +94,8 @@ namespace Pi.UnityHarness.Editor
         {
             public string code;
             public string filePath;
+            public string name;
+            public string parametersJson;
         }
 
         [Serializable]
@@ -158,6 +162,7 @@ namespace Pi.UnityHarness.Editor
         private static IntPtr s_mainWindowHandle;
         private static uint s_mainThreadId;
         private static double s_lastHeartbeatAt;
+        private static long s_lastHeartbeatUtcTicks;
         private static bool s_runInBackgroundApplied;
 
         static PiUnityBridge()
@@ -196,6 +201,7 @@ namespace Pi.UnityHarness.Editor
                 PublishManagedState(ManagedStateInitializing, "starting");
                 WriteBridgeInfo();
                 EditorApplication.update += OnUpdate;
+                Interlocked.Exchange(ref s_lastHeartbeatUtcTicks, DateTime.UtcNow.Ticks);
                 StartNativePumpThread();
                 PublishManagedState(ManagedStateReady, CurrentEditorStatus());
                 EditorApplication.delayCall += ForceReadyAfterStartup;
@@ -246,20 +252,21 @@ namespace Pi.UnityHarness.Editor
                 if (success)
                 {
                     string payload =
-                        "{\"reply_to\":" + JsonString(id) +
-                        ",\"ok\":true,\"result\":{\"output\":" + JsonString(result ?? "compilation_succeeded") +
+                        "{\"reply_to\":" + PiUnityJsonHelper.JsonString(id) +
+                        ",\"ok\":true,\"result\":{\"output\":" + PiUnityJsonHelper.JsonString(result ?? "compilation_succeeded") +
                         ",\"typeName\":\"compile_status\"}}";
                     CompleteJson(id, payload);
                 }
                 else
                 {
                     string payload =
-                        "{\"reply_to\":" + JsonString(id) +
+                        "{\"reply_to\":" + PiUnityJsonHelper.JsonString(id) +
                         ",\"ok\":false,\"error_type\":\"compile_error\",\"error\":" +
-                        JsonString(errorSummary ?? "Compilation failed") + "}";
+                        PiUnityJsonHelper.JsonString(errorSummary ?? "Compilation failed") + "}";
                     CompleteJson(id, payload);
                 }
             });
+            PiUnityTestCoordinator.ResumeAfterReload(CompleteJson);
         }
 
         private static void ForceReadyAfterStartup()
@@ -326,6 +333,7 @@ namespace Pi.UnityHarness.Editor
 
         private static void NativePumpLoop(CancellationToken token)
         {
+            long lastWakeAttemptTicks = 0;
             while (!token.IsCancellationRequested)
             {
                 int required = 0;
@@ -352,6 +360,15 @@ namespace Pi.UnityHarness.Editor
                     PendingRequests.Enqueue(new PendingLine { Line = line, PolledAtTicks = Stopwatch.GetTimestamp() });
                     EnsureEditorWindowCanPump();
                     continue;
+                }
+
+                long now = DateTime.UtcNow.Ticks;
+                bool heartbeatStale = now - Interlocked.Read(ref s_lastHeartbeatUtcTicks) > TimeSpan.FromSeconds(HeartbeatStaleSeconds).Ticks;
+                bool backlog = !PendingRequests.IsEmpty;
+                if ((heartbeatStale || backlog) && now - lastWakeAttemptTicks >= TimeSpan.FromSeconds(StaleWakeIntervalSeconds).Ticks)
+                {
+                    EnsureEditorWindowCanPump();
+                    lastWakeAttemptTicks = now;
                 }
 
                 Thread.Sleep(10);
@@ -408,10 +425,16 @@ namespace Pi.UnityHarness.Editor
                     return;
                 case "ping":
                     CompleteJson(request.id,
-                        "{\"reply_to\":" + JsonString(request.id) + ",\"ok\":true,\"result\":{\"output\":\"pong\",\"typeName\":\"string\"}}");
+                        "{\"reply_to\":" + PiUnityJsonHelper.JsonString(request.id) + ",\"ok\":true,\"result\":{\"output\":\"pong\",\"typeName\":\"string\"}}");
                     return;
                 case "status":
                     Status(request);
+                    return;
+                case "list_commands":
+                    ListPipelineCommands(request);
+                    return;
+                case "command":
+                    ExecutePipelineCommand(request);
                     return;
                 default:
                     CompleteError(request.id, "unsupported_request_type", "usage");
@@ -528,21 +551,21 @@ namespace Pi.UnityHarness.Editor
                         {
                             string timingFragment = timing != null ? ",\"timing\":" + timing.ToJsonFragment() : string.Empty;
                             string payload =
-                                "{\"reply_to\":" + JsonString(id) +
-                                ",\"ok\":true,\"result\":{\"output\":" + JsonString(text ?? string.Empty) +
-                                ",\"typeName\":" + JsonString(typeName ?? "void") + timingFragment + "}}";
+                                "{\"reply_to\":" + PiUnityJsonHelper.JsonString(id) +
+                                ",\"ok\":true,\"result\":{\"output\":" + PiUnityJsonHelper.JsonString(text ?? string.Empty) +
+                                ",\"typeName\":" + PiUnityJsonHelper.JsonString(typeName ?? "void") + timingFragment + "}}";
                             CompleteJson(id, payload);
                         }
                         else
                         {
                             CompleteJson(id,
-                                "{\"reply_to\":" + JsonString(id) + ",\"ok\":false,\"error_type\":" + JsonString(typeName ?? "runtime_error") + ",\"error\":" + JsonString(text ?? "coroutine_failed") + "}");
+                                "{\"reply_to\":" + PiUnityJsonHelper.JsonString(id) + ",\"ok\":false,\"error_type\":" + PiUnityJsonHelper.JsonString(typeName ?? "runtime_error") + ",\"error\":" + PiUnityJsonHelper.JsonString(text ?? "coroutine_failed") + "}");
                         }
                     }, coroutineTimeoutMs);
                 if (!queued)
                 {
                     CompleteJson(id,
-                        "{\"reply_to\":" + JsonString(id) + ",\"ok\":false,\"error_type\":\"busy\",\"error\":\"coroutine queue full\"}");
+                        "{\"reply_to\":" + PiUnityJsonHelper.JsonString(id) + ",\"ok\":false,\"error_type\":\"busy\",\"error\":\"coroutine queue full\"}");
                 }
                 return;
             }
@@ -562,8 +585,8 @@ namespace Pi.UnityHarness.Editor
                     if (success)
                     {
                         string successPayload =
-                            "{\"reply_to\":" + JsonString(compileId) +
-                            ",\"ok\":true,\"result\":{\"output\":" + JsonString(resultText ?? "compilation_succeeded") +
+                            "{\"reply_to\":" + PiUnityJsonHelper.JsonString(compileId) +
+                            ",\"ok\":true,\"result\":{\"output\":" + PiUnityJsonHelper.JsonString(resultText ?? "compilation_succeeded") +
                             ",\"typeName\":\"compile_status\"}}";
                         CompleteJson(compileId, successPayload);
                     }
@@ -571,12 +594,35 @@ namespace Pi.UnityHarness.Editor
                     {
                         string errorType = string.Equals(resultText, "busy", StringComparison.Ordinal) ? "busy" : "compile_error";
                         string errorPayload =
-                            "{\"reply_to\":" + JsonString(compileId) +
-                            ",\"ok\":false,\"error_type\":" + JsonString(errorType) + ",\"error\":" +
-                            JsonString(errorSummary ?? "Compilation failed") + "}";
+                            "{\"reply_to\":" + PiUnityJsonHelper.JsonString(compileId) +
+                            ",\"ok\":false,\"error_type\":" + PiUnityJsonHelper.JsonString(errorType) + ",\"error\":" +
+                            PiUnityJsonHelper.JsonString(errorSummary ?? "Compilation failed") + "}";
                         CompleteJson(compileId, errorPayload);
                     }
                 });
+        }
+
+        // --- pipeline 命令桥 ---
+
+        private static void ListPipelineCommands(NativeRequest request)
+        {
+            CompleteJson(request.id, PiUnityPipelineCommandExecutor.BuildListCommandsResponse(request.id));
+        }
+
+        private static void ExecutePipelineCommand(NativeRequest request)
+        {
+            if (request.payload == null)
+            {
+                CompleteError(request.id, "missing_payload", "usage");
+                return;
+            }
+
+            PiUnityPipelineCommandExecutor.ExecuteCommand(
+                request.id,
+                request.payload.name,
+                request.payload.parametersJson,
+                request.timeoutMs,
+                CompleteJson);
         }
 
         // --- 状态查询 ---
@@ -595,20 +641,20 @@ namespace Pi.UnityHarness.Editor
 
             StringBuilder sb = new StringBuilder();
             sb.Append("{\"reply_to\":\"");
-            sb.Append(EscapeJson(replyTo));
+            sb.Append(PiUnityJsonHelper.EscapeJson(replyTo));
             sb.Append("\",\"ok\":true,\"result\":{");
             sb.Append("\"unity_version\":\"");
-            sb.Append(EscapeJson(Application.unityVersion));
+            sb.Append(PiUnityJsonHelper.EscapeJson(Application.unityVersion));
             sb.Append("\",\"platform\":\"");
-            sb.Append(EscapeJson(Application.platform.ToString()));
+            sb.Append(PiUnityJsonHelper.EscapeJson(Application.platform.ToString()));
             sb.Append("\",\"project\":\"");
-            sb.Append(EscapeJson(Application.dataPath));
+            sb.Append(PiUnityJsonHelper.EscapeJson(Application.dataPath));
             sb.Append("\",\"playing\":");
             sb.Append(EditorApplication.isPlaying ? "true" : "false");
             sb.Append(",\"scene\":{\"name\":\"");
-            sb.Append(EscapeJson(scene.name));
+            sb.Append(PiUnityJsonHelper.EscapeJson(scene.name));
             sb.Append("\",\"path\":\"");
-            sb.Append(EscapeJson(scene.path));
+            sb.Append(PiUnityJsonHelper.EscapeJson(scene.path));
             sb.Append("\",\"root_count\":");
             sb.Append(roots.Length);
             sb.Append("},\"main_camera\":");
@@ -628,15 +674,15 @@ namespace Pi.UnityHarness.Editor
             if (!result.Ok)
             {
                 CompleteJson(id,
-                    "{\"reply_to\":" + JsonString(id) + ",\"ok\":false,\"error_type\":\"runtime_error\",\"error\":" + JsonString(result.Error ?? "execute_failed") + "}");
+                    "{\"reply_to\":" + PiUnityJsonHelper.JsonString(id) + ",\"ok\":false,\"error_type\":\"runtime_error\",\"error\":" + PiUnityJsonHelper.JsonString(result.Error ?? "execute_failed") + "}");
                 return;
             }
 
             string timingFragment = timing != null ? ",\"timing\":" + timing.ToJsonFragment() : string.Empty;
             string payload =
-                "{\"reply_to\":" + JsonString(id) +
-                ",\"ok\":true,\"result\":{\"output\":" + JsonString(result.Output ?? string.Empty) +
-                ",\"typeName\":" + JsonString(result.TypeName ?? string.Empty) + timingFragment + "}}";
+                "{\"reply_to\":" + PiUnityJsonHelper.JsonString(id) +
+                ",\"ok\":true,\"result\":{\"output\":" + PiUnityJsonHelper.JsonString(result.Output ?? string.Empty) +
+                ",\"typeName\":" + PiUnityJsonHelper.JsonString(result.TypeName ?? string.Empty) + timingFragment + "}}";
             CompleteJson(id, payload);
         }
 
@@ -648,7 +694,7 @@ namespace Pi.UnityHarness.Editor
             if (!IsValidationOk(validation))
             {
                 CompleteJson(id,
-                    "{\"reply_to\":" + JsonString(id) + ",\"ok\":false,\"error_type\":\"compile_error\",\"error\":" + JsonString(validation ?? "validate_failed") + "}");
+                    "{\"reply_to\":" + PiUnityJsonHelper.JsonString(id) + ",\"ok\":false,\"error_type\":\"compile_error\",\"error\":" + PiUnityJsonHelper.JsonString(validation ?? "validate_failed") + "}");
                 return;
             }
 
@@ -663,13 +709,13 @@ namespace Pi.UnityHarness.Editor
             if (!IsValidationOk(validation))
             {
                 CompleteJson(id,
-                    "{\"reply_to\":" + JsonString(id) + ",\"ok\":false,\"error\":" + JsonString(validation ?? "validate_failed") + "}");
+                    "{\"reply_to\":" + PiUnityJsonHelper.JsonString(id) + ",\"ok\":false,\"error\":" + PiUnityJsonHelper.JsonString(validation ?? "validate_failed") + "}");
                 return;
             }
 
             string payload =
-                "{\"reply_to\":" + JsonString(id) +
-                ",\"ok\":true,\"result\":{\"output\":" + JsonString(validation) +
+                "{\"reply_to\":" + PiUnityJsonHelper.JsonString(id) +
+                ",\"ok\":true,\"result\":{\"output\":" + PiUnityJsonHelper.JsonString(validation) +
                 ",\"typeName\":\"validation\"}}";
             CompleteJson(id, payload);
         }
@@ -697,6 +743,7 @@ namespace Pi.UnityHarness.Editor
             try
             {
                 pi_unity_managed_heartbeat(s_generation);
+                Interlocked.Exchange(ref s_lastHeartbeatUtcTicks, DateTime.UtcNow.Ticks);
                 PublishManagedState(ManagedStateReady, CurrentEditorStatus());
             }
             catch (Exception ex)
@@ -707,10 +754,7 @@ namespace Pi.UnityHarness.Editor
 
         private static void CompleteError(string id, string error, string errorType = "usage")
         {
-            string json = "{\"reply_to\":" + JsonString(id) +
-                ",\"ok\":false,\"error_type\":" + JsonString(errorType) +
-                ",\"error\":" + JsonString(error) + "}";
-            CompleteJson(id, json);
+            CompleteJson(id, PiUnityJsonHelper.ErrorJson(id, errorType, error));
         }
 
         private static void CompleteJson(string id, string json)
@@ -932,62 +976,6 @@ namespace Pi.UnityHarness.Editor
         private static int ByteLen(string value)
         {
             return Encoding.UTF8.GetByteCount(value ?? string.Empty);
-        }
-
-        private static string EscapeJson(string value)
-        {
-            if (value == null)
-                return "";
-            StringBuilder sb = new StringBuilder(value.Length);
-            for (int i = 0; i < value.Length; i++)
-            {
-                char c = value[i];
-                switch (c)
-                {
-                    case '\\': sb.Append("\\\\"); break;
-                    case '"': sb.Append("\\\""); break;
-                    case '\n': sb.Append("\\n"); break;
-                    case '\r': sb.Append("\\r"); break;
-                    case '\t': sb.Append("\\t"); break;
-                    default:
-                        if (c < 32)
-                            sb.Append("\\u").Append(((int)c).ToString("x4"));
-                        else
-                            sb.Append(c);
-                        break;
-                }
-            }
-            return sb.ToString();
-        }
-
-        private static string JsonString(string value)
-        {
-            if (value == null)
-                return "null";
-            StringBuilder sb = new StringBuilder(value.Length + 2);
-            sb.Append('"');
-            for (int i = 0; i < value.Length; i++)
-            {
-                char c = value[i];
-                switch (c)
-                {
-                    case '\\': sb.Append("\\\\"); break;
-                    case '"': sb.Append("\\\""); break;
-                    case '\n': sb.Append("\\n"); break;
-                    case '\r': sb.Append("\\r"); break;
-                    case '\t': sb.Append("\\t"); break;
-                    case '\b': sb.Append("\\b"); break;
-                    case '\f': sb.Append("\\f"); break;
-                    default:
-                        if (c < 32)
-                            sb.Append("\\u").Append(((int)c).ToString("x4"));
-                        else
-                            sb.Append(c);
-                        break;
-                }
-            }
-            sb.Append('"');
-            return sb.ToString();
         }
     }
 }
