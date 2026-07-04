@@ -1,11 +1,18 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import {
+  PIPELINE_SHORTCUT_COMMANDS,
+  PIPELINE_TOOL_EXCLUDE,
+  filterPipelineCommands,
   normalizePipelineToolName,
+  normalizePipelineCommandParams,
+  normalizePipelineRequestedCommand,
   parseEditorStatus,
   parseUnityMajorVersion,
   pipelineCommandTimeoutMs,
+  pipelineCommandSummary,
   schemaToTypeBox,
+  shouldRefreshPipelineCommands,
   type PipelineParameterInfo,
 } from "./helpers.ts";
 import net from "node:net";
@@ -27,6 +34,7 @@ interface UnityInstance {
   pid: number;
   bridgeReady: boolean;
   bridgeInfo?: BridgeInfo;
+  pipeOccupied?: boolean;
 }
 
 interface PendingRequest {
@@ -68,7 +76,82 @@ const CLIENT_HEARTBEAT_INTERVAL_MS = 5000;
 const CLIENT_HEARTBEAT_TIMEOUT_MS = 5000;
 const PIPELINE_PACKAGE_NAME = "com.unity.pipeline";
 const PIPELINE_PACKAGE_VERSION = "0.2.0-exp.2";
-const PIPELINE_TOOL_EXCLUDE = new Set(["eval", "recompile", "recompile_status", "editor_status"]);
+
+// ---- State Plane 独立读取（不依赖 client 实例） ----
+
+function readStatePlaneSnapshotByBridge(bridge: BridgeInfo): Record<string, unknown> | null {
+  if (!bridge.statePlaneName) return null;
+
+  const script = `
+$ErrorActionPreference = 'Stop'
+$MappingName = $env:PI_UNITY_STATE_PLANE_NAME
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public static class PiUnityStatePlaneNative
+{
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern IntPtr OpenFileMappingW(uint desiredAccess, bool inheritHandle, string name);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern IntPtr MapViewOfFile(IntPtr handle, uint desiredAccess, uint fileOffsetHigh, uint fileOffsetLow, UIntPtr bytesToMap);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool UnmapViewOfFile(IntPtr baseAddress);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool CloseHandle(IntPtr handle);
+}
+"@
+$headerSize = ${STATE_PLANE_HEADER_SIZE}
+$maxSlotCount = ${STATE_PLANE_SLOT_COUNT}
+$maxSlotSize = ${STATE_PLANE_SLOT_SIZE}
+$totalSize = $headerSize + ($maxSlotCount * $maxSlotSize)
+$handle = [PiUnityStatePlaneNative]::OpenFileMappingW(4, $false, $MappingName)
+if ($handle -eq [IntPtr]::Zero) { exit 2 }
+$view = [PiUnityStatePlaneNative]::MapViewOfFile($handle, 4, 0, 0, [UIntPtr]$totalSize)
+if ($view -eq [IntPtr]::Zero) { [PiUnityStatePlaneNative]::CloseHandle($handle) | Out-Null; exit 3 }
+try {
+  $buffer = New-Object byte[] $totalSize
+  [Runtime.InteropServices.Marshal]::Copy($view, $buffer, 0, $totalSize)
+  $magic = [BitConverter]::ToUInt32($buffer, 0)
+  $version = [BitConverter]::ToUInt16($buffer, 4)
+  $slotCount = [BitConverter]::ToUInt16($buffer, 6)
+  $slotSize = [BitConverter]::ToUInt32($buffer, 8)
+  $writerSeq = [BitConverter]::ToUInt64($buffer, 16)
+  if ($magic -ne ${STATE_PLANE_MAGIC} -or $version -ne ${STATE_PLANE_VERSION} -or $slotCount -lt 1 -or $slotCount -gt $maxSlotCount -or $slotSize -lt 64 -or $slotSize -gt $maxSlotSize -or $writerSeq -lt 1) { exit 4 }
+  $slotIndex = [int](($writerSeq - 1) % $slotCount)
+  $slotOffset = $headerSize + ($slotIndex * $slotSize)
+  $slotSeqBefore = [BitConverter]::ToUInt64($buffer, $slotOffset)
+  if ($slotSeqBefore -ne $writerSeq) { exit 5 }
+  $payloadLen = [BitConverter]::ToUInt32($buffer, $slotOffset + 16)
+  if ($payloadLen -lt 1 -or $payloadLen -gt ($slotSize - ${STATE_PLANE_SLOT_PAYLOAD_OFFSET})) { exit 6 }
+  $payloadBytes = New-Object byte[] $payloadLen
+  [Array]::Copy($buffer, $slotOffset + ${STATE_PLANE_SLOT_PAYLOAD_OFFSET}, $payloadBytes, 0, [int]$payloadLen)
+  $slotSeqAfter = [BitConverter]::ToUInt64($buffer, $slotOffset)
+  $writerSeqAfter = [BitConverter]::ToUInt64($buffer, 16)
+  if ($slotSeqAfter -ne $slotSeqBefore -or $writerSeqAfter -ne $writerSeq) { exit 7 }
+  [Console]::Out.Write([System.Text.Encoding]::UTF8.GetString($payloadBytes))
+}
+finally {
+  [PiUnityStatePlaneNative]::UnmapViewOfFile($view) | Out-Null
+  [PiUnityStatePlaneNative]::CloseHandle($handle) | Out-Null
+}
+`;
+
+  try {
+    const encoded = Buffer.from(script, "utf16le").toString("base64");
+    const output = execFileSync(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+      {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+        env: { ...process.env, PI_UNITY_STATE_PLANE_NAME: bridge.statePlaneName },
+      },
+    ).trim();
+    return output ? JSON.parse(output) : null;
+  } catch {
+    return null;
+  }
+}
 
 // ---- 扫描运行中的 Unity 实例 ----
 
@@ -119,7 +202,18 @@ function discoverUnityInstances(): UnityInstance[] {
         } catch { /* 损坏则视为未就绪 */ }
       }
 
-      instances.push({ projectPath, pid, bridgeReady, bridgeInfo });
+      // 检查 pipe 是否已被其他 session 占用
+      let pipeOccupied = false;
+      if (bridgeInfo?.statePlaneName) {
+        try {
+          const snapshot = readStatePlaneSnapshotByBridge(bridgeInfo);
+          if (snapshot?.connected === true) {
+            pipeOccupied = true;
+          }
+        } catch { /* 读取失败不影响 discover */ }
+      }
+
+      instances.push({ projectPath, pid, bridgeReady, bridgeInfo, pipeOccupied });
     }
 
     return instances;
@@ -524,77 +618,7 @@ class UnityBridgeClient {
   }
 
   private readStatePlaneSnapshot(bridge: BridgeInfo) {
-    if (!bridge.statePlaneName) return null;
-
-    const script = `
-$ErrorActionPreference = 'Stop'
-$MappingName = $env:PI_UNITY_STATE_PLANE_NAME
-Add-Type -TypeDefinition @"
-using System;
-using System.Runtime.InteropServices;
-public static class PiUnityStatePlaneNative
-{
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    public static extern IntPtr OpenFileMappingW(uint desiredAccess, bool inheritHandle, string name);
-    [DllImport("kernel32.dll", SetLastError = true)]
-    public static extern IntPtr MapViewOfFile(IntPtr handle, uint desiredAccess, uint fileOffsetHigh, uint fileOffsetLow, UIntPtr bytesToMap);
-    [DllImport("kernel32.dll", SetLastError = true)]
-    public static extern bool UnmapViewOfFile(IntPtr baseAddress);
-    [DllImport("kernel32.dll", SetLastError = true)]
-    public static extern bool CloseHandle(IntPtr handle);
-}
-"@
-$headerSize = ${STATE_PLANE_HEADER_SIZE}
-$maxSlotCount = ${STATE_PLANE_SLOT_COUNT}
-$maxSlotSize = ${STATE_PLANE_SLOT_SIZE}
-$totalSize = $headerSize + ($maxSlotCount * $maxSlotSize)
-$handle = [PiUnityStatePlaneNative]::OpenFileMappingW(4, $false, $MappingName)
-if ($handle -eq [IntPtr]::Zero) { exit 2 }
-$view = [PiUnityStatePlaneNative]::MapViewOfFile($handle, 4, 0, 0, [UIntPtr]$totalSize)
-if ($view -eq [IntPtr]::Zero) { [PiUnityStatePlaneNative]::CloseHandle($handle) | Out-Null; exit 3 }
-try {
-  $buffer = New-Object byte[] $totalSize
-  [Runtime.InteropServices.Marshal]::Copy($view, $buffer, 0, $totalSize)
-  $magic = [BitConverter]::ToUInt32($buffer, 0)
-  $version = [BitConverter]::ToUInt16($buffer, 4)
-  $slotCount = [BitConverter]::ToUInt16($buffer, 6)
-  $slotSize = [BitConverter]::ToUInt32($buffer, 8)
-  $writerSeq = [BitConverter]::ToUInt64($buffer, 16)
-  if ($magic -ne ${STATE_PLANE_MAGIC} -or $version -ne ${STATE_PLANE_VERSION} -or $slotCount -lt 1 -or $slotCount -gt $maxSlotCount -or $slotSize -lt 64 -or $slotSize -gt $maxSlotSize -or $writerSeq -lt 1) { exit 4 }
-  $slotIndex = [int](($writerSeq - 1) % $slotCount)
-  $slotOffset = $headerSize + ($slotIndex * $slotSize)
-  $slotSeqBefore = [BitConverter]::ToUInt64($buffer, $slotOffset)
-  if ($slotSeqBefore -ne $writerSeq) { exit 5 }
-  $payloadLen = [BitConverter]::ToUInt32($buffer, $slotOffset + 16)
-  if ($payloadLen -lt 1 -or $payloadLen -gt ($slotSize - ${STATE_PLANE_SLOT_PAYLOAD_OFFSET})) { exit 6 }
-  $payloadBytes = New-Object byte[] $payloadLen
-  [Array]::Copy($buffer, $slotOffset + ${STATE_PLANE_SLOT_PAYLOAD_OFFSET}, $payloadBytes, 0, [int]$payloadLen)
-  $slotSeqAfter = [BitConverter]::ToUInt64($buffer, $slotOffset)
-  $writerSeqAfter = [BitConverter]::ToUInt64($buffer, 16)
-  if ($slotSeqAfter -ne $slotSeqBefore -or $writerSeqAfter -ne $writerSeq) { exit 7 }
-  [Console]::Out.Write([System.Text.Encoding]::UTF8.GetString($payloadBytes))
-}
-finally {
-  [PiUnityStatePlaneNative]::UnmapViewOfFile($view) | Out-Null
-  [PiUnityStatePlaneNative]::CloseHandle($handle) | Out-Null
-}
-`;
-
-    try {
-      const encoded = Buffer.from(script, "utf16le").toString("base64");
-      const output = execFileSync(
-        "powershell.exe",
-        ["-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
-        {
-          encoding: "utf8",
-          stdio: ["ignore", "pipe", "ignore"],
-          env: { ...process.env, PI_UNITY_STATE_PLANE_NAME: bridge.statePlaneName },
-        },
-      ).trim();
-      return output ? JSON.parse(output) : null;
-    } catch {
-      return null;
-    }
+    return readStatePlaneSnapshotByBridge(bridge);
   }
 
   private async ensureConnected(bridge: BridgeInfo, timeoutMs = 5000) {
@@ -613,7 +637,17 @@ finally {
         cleanup();
         socket.destroy();
         this.connectPromise = undefined;
-        rejectPromise(new Error(`connect timed out after ${timeoutMs}ms ${bridge.pipe}`));
+
+        // 超时后检查 state plane 是否被其他 session 占用
+        let occupiedHint = "";
+        try {
+          const snapshot = readStatePlaneSnapshotByBridge(bridge);
+          if (snapshot?.connected === true) {
+            occupiedHint = " (bridge occupied by another pi/codex session — close the other session or restart the Unity Editor to release the pipe)";
+          }
+        } catch { /* 诊断失败不影响主逻辑 */ }
+
+        rejectPromise(new Error(`connect timed out after ${timeoutMs}ms ${bridge.pipe}${occupiedHint}`));
       }, timeoutMs);
 
       socket.on("connect", () => {
@@ -725,6 +759,17 @@ export default function (pi: ExtensionAPI) {
   const registeredPipelineTools = new Set<string>();
   const activePipelineTools = new Map<string, PipelineCommandInfo>();
 
+  const executePipelineCommand = async (command: PipelineCommandInfo, params: Record<string, unknown> | undefined) => {
+    const parameters = params ?? {};
+    const parametersJson = JSON.stringify(parameters);
+    const timeoutMs = pipelineCommandTimeoutMs(command.name, parameters);
+    const result = await client.request("command", { name: command.name, parametersJson }, timeoutMs);
+    return {
+      content: [{ type: "text", text: String(result?.output ?? "(ok)") }],
+      details: result,
+    };
+  };
+
   const refreshActiveTools = () => {
     const active = new Set(pi.getActiveTools());
     for (const toolName of registeredPipelineTools) active.delete(toolName);
@@ -748,7 +793,7 @@ export default function (pi: ExtensionAPI) {
     }
 
     for (const command of list.commands) {
-      if (!command?.name || command.runtimeOnly || PIPELINE_TOOL_EXCLUDE.has(command.name)) continue;
+      if (!command?.name || command.runtimeOnly || PIPELINE_TOOL_EXCLUDE.has(command.name) || !PIPELINE_SHORTCUT_COMMANDS.has(command.name)) continue;
       const toolName = normalizePipelineToolName(command.name);
       if (activePipelineTools.has(toolName)) {
         console.warn(
@@ -765,7 +810,10 @@ export default function (pi: ExtensionAPI) {
         label: `Unity ${command.name}`,
         description: command.description ?? `执行 Unity Pipeline 命令 ${command.name}`,
         promptSnippet: `Execute Unity Pipeline command ${command.name} through the reload-stable pipe bridge.`,
-        promptGuidelines: [`Use ${toolName} when you need Unity Pipeline command ${command.name}.`],
+        promptGuidelines: [
+          `Use ${toolName} when you need the frequent Unity Pipeline command ${command.name}.`,
+          "Use unity_pipeline to discover or run less common Unity Pipeline commands.",
+        ],
         parameters: schemaToTypeBox(Type, command.schema, command.parameters),
         async execute(_toolCallId, params) {
           const current = activePipelineTools.get(toolName);
@@ -773,13 +821,7 @@ export default function (pi: ExtensionAPI) {
             throw new Error(`pipeline unavailable or command disabled: ${command.name}`);
           }
 
-          const parametersJson = JSON.stringify(params ?? {});
-          const timeoutMs = pipelineCommandTimeoutMs(command.name, params ?? {});
-          const result = await client.request("command", { name: command.name, parametersJson }, timeoutMs);
-          return {
-            content: [{ type: "text", text: String(result?.output ?? "(ok)") }],
-            details: result,
-          };
+          return await executePipelineCommand(current, params ?? {});
         },
       });
     }
@@ -793,7 +835,8 @@ export default function (pi: ExtensionAPI) {
     client.configure(ctx.cwd);
 
     const instances = discoverUnityInstances();
-    const readyInstances = instances.filter((i) => i.bridgeReady);
+    const readyInstances = instances.filter((i) => i.bridgeReady && !i.pipeOccupied);
+    const occupiedInstances = instances.filter((i) => i.bridgeReady && i.pipeOccupied);
 
     if (readyInstances.length === 1) {
       client.setProjectRoot(readyInstances[0].projectPath);
@@ -805,6 +848,13 @@ export default function (pi: ExtensionAPI) {
       const name = basename(readyInstances[0].projectPath);
       ctx.ui.setStatus("pi-unity", `unity bridge: ${name} (+${readyInstances.length - 1} more)`);
       await registerPipelineTools();
+    } else if (occupiedInstances.length > 0) {
+      const names = occupiedInstances.map((i) => basename(i.projectPath)).join(", ");
+      ctx.ui.setStatus("pi-unity", `bridge occupied by another session (${names})`);
+      ctx.ui.notify(
+        `Unity bridge 已被其他 pi/codex session 占用: ${names}。请关闭占用 session 后重试 /unity-discover。`,
+        "warn",
+      );
     } else if (instances.length > 0) {
       ctx.ui.setStatus("pi-unity", `found ${instances.length} Unity, bridge not installed (/unity-install)`);
     } else {
@@ -828,7 +878,8 @@ export default function (pi: ExtensionAPI) {
         return;
       }
 
-      const readyInstances = instances.filter((i) => i.bridgeReady);
+      const readyInstances = instances.filter((i) => i.bridgeReady && !i.pipeOccupied);
+      const occupiedInstances = instances.filter((i) => i.bridgeReady && i.pipeOccupied);
       const notReady = instances.filter((i) => !i.bridgeReady);
 
       // 构建选择列表
@@ -837,16 +888,32 @@ export default function (pi: ExtensionAPI) {
         const name = basename(inst.projectPath);
         choices.push({ label: `[ready] ${name}`, value: inst.projectPath, hint: `PID ${inst.pid}` });
       }
+      for (const inst of occupiedInstances) {
+        const name = basename(inst.projectPath);
+        choices.push({ label: `[occupied] ${name}`, value: inst.projectPath, hint: `PID ${inst.pid} (被其他 session 占用)` });
+      }
       for (const inst of notReady) {
         const name = basename(inst.projectPath);
         choices.push({ label: `[no bridge] ${name}`, value: inst.projectPath, hint: `PID ${inst.pid}` });
       }
 
+      if (occupiedInstances.length > 0 && readyInstances.length === 0 && notReady.length === 0) {
+        ctx.ui.notify(
+          `所有 Unity bridge 均被其他 session 占用: ${occupiedInstances.map((i) => basename(i.projectPath)).join(", ")}。请关闭占用 session 后重试。`,
+          "warn",
+        );
+        return;
+      }
+
       if (choices.length === 1) {
-        client.setProjectRoot(choices[0].value);
-        ctx.ui.notify(`已连接: ${basename(choices[0].value)}`, "info");
-        ctx.ui.setStatus("pi-unity", `unity bridge: ${basename(choices[0].value)}`);
-        await registerPipelineTools();
+        if (readyInstances.length === 1) {
+          client.setProjectRoot(choices[0].value);
+          ctx.ui.notify(`已连接: ${basename(choices[0].value)}`, "info");
+          ctx.ui.setStatus("pi-unity", `unity bridge: ${basename(choices[0].value)}`);
+          await registerPipelineTools();
+        } else {
+          ctx.ui.notify(`唯一的 Unity bridge 已被占用: ${basename(choices[0].value)}。请关闭占用 session 后重试。`, "warn");
+        }
         return;
       }
 
@@ -859,10 +926,13 @@ export default function (pi: ExtensionAPI) {
       if (chosen) {
         const inst = instances.find((i) => i.projectPath === chosen);
         client.setProjectRoot(chosen);
-        if (inst?.bridgeReady) {
+        if (inst?.bridgeReady && !inst?.pipeOccupied) {
           ctx.ui.notify(`已连接: ${basename(chosen)}`, "info");
           ctx.ui.setStatus("pi-unity", `unity bridge: ${basename(chosen)}`);
           await registerPipelineTools();
+        } else if (inst?.pipeOccupied) {
+          ctx.ui.notify(`已设置项目: ${basename(chosen)}（bridge 被其他 session 占用，连接可能失败）`, "warn");
+          ctx.ui.setStatus("pi-unity", `unity: ${basename(chosen)} (occupied)`);
         } else {
           ctx.ui.notify(`已设置项目: ${basename(chosen)}（bridge 未就绪，请用 /unity-install 安装）`, "warn");
           ctx.ui.setStatus("pi-unity", `unity: ${basename(chosen)} (no bridge)`);
@@ -948,7 +1018,8 @@ export default function (pi: ExtensionAPI) {
     }),
     async execute(_toolCallId, params) {
       const instances = discoverUnityInstances();
-      const readyInstances = instances.filter((i) => i.bridgeReady);
+      const readyInstances = instances.filter((i) => i.bridgeReady && !i.pipeOccupied);
+      const occupiedInstances = instances.filter((i) => i.bridgeReady && i.pipeOccupied);
 
       if (params.projectPath) {
         client.setProjectRoot(resolve(params.projectPath));
@@ -957,7 +1028,7 @@ export default function (pi: ExtensionAPI) {
       }
 
       const current = client.getProjectRoot();
-      if (current && instances.some((i) => i.bridgeReady && resolve(i.projectPath) === resolve(current))) {
+      if (current && instances.some((i) => i.bridgeReady && !i.pipeOccupied && resolve(i.projectPath) === resolve(current))) {
         await registerPipelineTools();
       }
       const pipelineStatus = current ? getPipelineInstallStatus(current) : undefined;
@@ -971,15 +1042,18 @@ export default function (pi: ExtensionAPI) {
               projectPath: i.projectPath,
               pid: i.pid,
               bridgeReady: i.bridgeReady,
+              pipeOccupied: i.pipeOccupied ?? false,
               selected: current ? resolve(i.projectPath) === resolve(current) : false,
               pipeline: getPipelineInstallStatus(i.projectPath),
             })),
             pipelineAvailable: client.pipelineStatusSnapshot().pipelineAvailable,
             pipelineCommandCount: client.pipelineStatusSnapshot().pipelineCommandCount,
             pipeline: pipelineStatus,
-            hint: readyInstances.length === 0 && instances.length > 0
-              ? `检测到 ${instances.length} 个运行中的 Unity，但均未安装 bridge。使用 /unity-install 安装。`
-              : undefined,
+            hint: readyInstances.length === 0 && occupiedInstances.length > 0
+              ? `检测到 ${occupiedInstances.length} 个 bridge，但均被其他 session 占用。关闭占用 session 后重试 /unity-discover。`
+              : readyInstances.length === 0 && instances.length > 0
+                ? `检测到 ${instances.length} 个运行中的 Unity，但均未安装 bridge。使用 /unity-install 安装。`
+                : undefined,
           }, null, 2),
         }],
         details: { current, instances, pipeline: pipelineStatus, pipelineStatus: client.pipelineStatusSnapshot() },
@@ -1021,6 +1095,80 @@ export default function (pi: ExtensionAPI) {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
         details: result,
       };
+    },
+  });
+
+  // ---- unity_pipeline ----
+
+  pi.registerTool({
+    name: "unity_pipeline",
+    label: "Unity Pipeline",
+    description: "发现或执行 Unity Pipeline 命令。空参数会列出可用命令；传 command 执行指定命令。",
+    promptSnippet: "Use unity_pipeline to discover or execute Unity Pipeline commands through the pipe bridge.",
+    promptGuidelines: [
+      "Call unity_pipeline with no command when you need to know which Pipeline commands are available.",
+      "Use the returned command names and parameter metadata to call unity_pipeline with command and params.",
+      "Prefer shortcut tools only for frequent commands: unity_run_tests, unity_list_tests, unity_reload_file, unity_reload_file_override.",
+    ],
+    parameters: Type.Object({
+      command: Type.Optional(Type.String({ description: "Pipeline command 名称；省略时列出所有可用命令。" })),
+      params: Type.Optional(Type.Unsafe({
+        type: "object",
+        description: "传给 Pipeline command 的参数对象。",
+        additionalProperties: true,
+      })),
+      describeOnly: Type.Optional(Type.Boolean({ description: "只返回命令说明和参数 schema，不执行命令。" })),
+    }),
+    async execute(_toolCallId, params) {
+      let list = await client.listPipelineCommands(false);
+      let commands = filterPipelineCommands(list);
+
+      const requestedCommand = normalizePipelineRequestedCommand(params.command);
+      // 缓存可能落后于命令启用/禁用状态；命令查不到时强刷一次再判定。
+      if (shouldRefreshPipelineCommands(list, requestedCommand, commands)) {
+        list = await client.listPipelineCommands(true);
+        commands = filterPipelineCommands(list);
+      }
+
+      if (!list.pipelineAvailable) {
+        if (requestedCommand) {
+          throw new Error(`pipeline unavailable: cannot execute command "${requestedCommand}". Check unity_status and pipeline package installation.`);
+        }
+        const result = { pipelineAvailable: false, commands: [], count: 0 };
+        return {
+          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+          details: result,
+        };
+      }
+
+      if (!requestedCommand) {
+        const result = {
+          pipelineAvailable: true,
+          count: commands.length,
+          shortcutCommands: [...PIPELINE_SHORTCUT_COMMANDS].filter((name) => commands.some((command) => command.name === name)),
+          commands: commands.map((command) => pipelineCommandSummary(command)),
+        };
+        return {
+          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+          details: result,
+        };
+      }
+
+      const command = commands.find((item) => item.name === requestedCommand);
+      if (!command) {
+        const available = commands.map((item) => item.name).sort();
+        throw new Error(`pipeline command not found or disabled: ${requestedCommand}. Available: ${available.join(", ")}`);
+      }
+
+      if (params.describeOnly === true) {
+        const result = pipelineCommandSummary(command, true);
+        return {
+          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+          details: result,
+        };
+      }
+
+      return await executePipelineCommand(command, normalizePipelineCommandParams(params.params));
     },
   });
 
