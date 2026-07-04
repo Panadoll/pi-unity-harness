@@ -7,6 +7,23 @@ export interface PipelineParameterInfo {
   defaultValue?: unknown;
 }
 
+export interface PipelineCommandInfo {
+  name: string;
+  description?: string;
+  mainThreadRequired?: boolean;
+  runtimeOnly?: boolean;
+  schema?: Record<string, unknown> | null;
+  parameters?: PipelineParameterInfo[];
+}
+
+export interface PipelineCommandList {
+  pipelineAvailable: boolean;
+  commands: Array<PipelineCommandInfo | null | undefined>;
+}
+
+export const PIPELINE_TOOL_EXCLUDE = new Set(["eval", "recompile", "recompile_status", "editor_status"]);
+export const PIPELINE_SHORTCUT_COMMANDS = new Set(["run_tests", "list_tests", "reload_file", "reload_file_override"]);
+
 export interface TypeBoxLike {
   Unsafe(schema: any): any;
   Object(properties: Record<string, any>): any;
@@ -61,6 +78,48 @@ export function parameterToTypeBox(TypeApi: TypeBoxLike, parameter: PipelinePara
 
 export function normalizePipelineToolName(commandName: string): string {
   return `unity_${commandName.replace(/[^a-zA-Z0-9_]/g, "_").toLowerCase()}`;
+}
+
+export function isVisiblePipelineCommand(command: PipelineCommandInfo | null | undefined, excludedCommands = PIPELINE_TOOL_EXCLUDE): command is PipelineCommandInfo {
+  return Boolean(command?.name) && command?.runtimeOnly !== true && !excludedCommands.has(command.name);
+}
+
+export function filterPipelineCommands(list: PipelineCommandList | null | undefined, excludedCommands = PIPELINE_TOOL_EXCLUDE): PipelineCommandInfo[] {
+  const commands = Array.isArray(list?.commands) ? list.commands : [];
+  return commands.filter((command): command is PipelineCommandInfo => isVisiblePipelineCommand(command, excludedCommands));
+}
+
+export function normalizePipelineRequestedCommand(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+export function shouldRefreshPipelineCommands(list: Pick<PipelineCommandList, "pipelineAvailable"> | null | undefined, requestedCommand: string, commands: PipelineCommandInfo[]): boolean {
+  return requestedCommand.length > 0 && (list?.pipelineAvailable !== true || !commands.some((command) => command.name === requestedCommand));
+}
+
+export function pipelineCommandSummary(command: PipelineCommandInfo, includeSchema = false, shortcutCommands = PIPELINE_SHORTCUT_COMMANDS) {
+  const shortcut = shortcutCommands.has(command.name);
+  return {
+    name: command.name,
+    shortcut,
+    shortcutTool: shortcut ? normalizePipelineToolName(command.name) : null,
+    description: command.description,
+    mainThreadRequired: command.mainThreadRequired,
+    parameters: command.parameters ?? [],
+    ...(includeSchema ? { schema: command.schema ?? null } : {}),
+  };
+}
+
+export function normalizePipelineCommandParams(value: unknown): Record<string, unknown> {
+  if (value === undefined) return {};
+  if (value !== null && typeof value === "object" && !Array.isArray(value)) return value as Record<string, unknown>;
+  throw new Error(`params must be a JSON object, got ${pipelineParamTypeName(value)}`);
+}
+
+function pipelineParamTypeName(value: unknown): string {
+  if (Array.isArray(value)) return "array";
+  if (value === null) return "null";
+  return typeof value;
 }
 
 export function pipelineCommandTimeoutMs(commandName: string, params: Record<string, unknown>): number {

@@ -1,12 +1,17 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  filterPipelineCommands,
+  normalizePipelineCommandParams,
+  normalizePipelineRequestedCommand,
   normalizePipelineToolName,
   parameterToTypeBox,
   parseEditorStatus,
   parseUnityMajorVersion,
   pipelineCommandTimeoutMs,
+  pipelineCommandSummary,
   schemaToTypeBox,
+  shouldRefreshPipelineCommands,
 } from "./helpers.ts";
 
 const FakeType = {
@@ -123,4 +128,67 @@ test("parameterToTypeBox maps scalar types", () => {
     kind: "string",
     options: { description: "Text" },
   });
+});
+
+test("filterPipelineCommands hides runtime and excluded commands", () => {
+  assert.deepEqual(filterPipelineCommands({
+    pipelineAvailable: true,
+    commands: [
+      { name: "run_tests" },
+      { name: "eval" },
+      { name: "play", runtimeOnly: true },
+      null,
+      undefined,
+    ],
+  }).map((command) => command.name), ["run_tests"]);
+});
+
+test("normalizePipelineRequestedCommand trims strings and ignores non strings", () => {
+  assert.equal(normalizePipelineRequestedCommand(" run_tests "), "run_tests");
+  assert.equal(normalizePipelineRequestedCommand(123), "");
+  assert.equal(normalizePipelineRequestedCommand(undefined), "");
+});
+
+test("shouldRefreshPipelineCommands refreshes only for requested missing commands or unavailable pipeline", () => {
+  const commands = [{ name: "run_tests" }];
+  assert.equal(shouldRefreshPipelineCommands({ pipelineAvailable: true }, "", commands), false);
+  assert.equal(shouldRefreshPipelineCommands({ pipelineAvailable: true }, "run_tests", commands), false);
+  assert.equal(shouldRefreshPipelineCommands({ pipelineAvailable: true }, "list_tests", commands), true);
+  assert.equal(shouldRefreshPipelineCommands({ pipelineAvailable: false }, "run_tests", commands), true);
+});
+
+test("pipelineCommandSummary exposes shortcut tool only for shortcut commands and schema only when requested", () => {
+  const command = {
+    name: "run_tests",
+    description: "Run tests",
+    mainThreadRequired: true,
+    schema: { type: "object" },
+    parameters: [{ name: "mode", type: "String" }],
+  };
+  assert.deepEqual(pipelineCommandSummary(command), {
+    name: "run_tests",
+    shortcut: true,
+    shortcutTool: "unity_run_tests",
+    description: "Run tests",
+    mainThreadRequired: true,
+    parameters: [{ name: "mode", type: "String" }],
+  });
+  assert.deepEqual(pipelineCommandSummary({ name: "editor_focus" }, true), {
+    name: "editor_focus",
+    shortcut: false,
+    shortcutTool: null,
+    description: undefined,
+    mainThreadRequired: undefined,
+    parameters: [],
+    schema: null,
+  });
+});
+
+test("normalizePipelineCommandParams accepts objects and rejects non objects", () => {
+  const input = { mode: "editor" };
+  assert.equal(normalizePipelineCommandParams(input), input);
+  assert.deepEqual(normalizePipelineCommandParams(undefined), {});
+  assert.throws(() => normalizePipelineCommandParams([]), /params must be a JSON object, got array/);
+  assert.throws(() => normalizePipelineCommandParams(null), /params must be a JSON object, got null/);
+  assert.throws(() => normalizePipelineCommandParams("bad"), /params must be a JSON object, got string/);
 });
