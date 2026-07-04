@@ -932,6 +932,25 @@ mod imp {
             )
         }
 
+        fn test_request(
+            id: &str,
+            line: &str,
+            enqueued_at_ms: i64,
+            timeout_ms: i64,
+        ) -> ManagedRequest {
+            ManagedRequest {
+                id: id.to_string(),
+                line: line.as_bytes().to_vec(),
+                enqueued_at_ms,
+                delivered_at_ms: 0,
+                timeout_ms,
+            }
+        }
+
+        fn response_json(line: Vec<u8>) -> Value {
+            serde_json::from_slice(trim_ascii(&line)).unwrap()
+        }
+
         #[test]
         fn parses_editor_observation_from_status_suffix() {
             let broker = test_broker("status");
@@ -951,6 +970,173 @@ mod imp {
         fn request_timeout_uses_client_budget_with_grace() {
             let value = json!({ "timeoutMs": 20_000 });
             assert_eq!(request_timeout_ms(&value), 25_000);
+        }
+
+        #[test]
+        fn heartbeat_recovers_after_timeout_without_restart() {
+            let broker = test_broker("heartbeat_recovery");
+            broker.set_managed_state(MANAGED_STATE_READY, 1, Some("editing".to_string()));
+            let now = now_ms();
+            broker
+                .last_heartbeat_ms
+                .store(now - HEARTBEAT_TIMEOUT_MS - 1_000, Ordering::SeqCst);
+            assert!(broker.is_heartbeat_timed_out_at(now));
+
+            broker.heartbeat(2);
+
+            assert!(!broker.is_heartbeat_timed_out_at(now_ms()));
+            assert_eq!(broker.managed_generation.load(Ordering::SeqCst), 2);
+        }
+
+        #[test]
+        fn execute_request_is_rejected_with_managed_error_when_not_ready() {
+            for (state, expected_error) in [
+                (MANAGED_STATE_INITIALIZING, "managed_not_ready"),
+                (MANAGED_STATE_RELOADING, "managed_reloading"),
+                (MANAGED_STATE_QUITTING, "managed_quitting"),
+            ] {
+                let broker = test_broker(expected_error);
+                let (tx, mut rx) = mpsc::channel(4);
+                *broker.writer.lock().unwrap() = Some(tx);
+                broker.managed_state.store(state, Ordering::SeqCst);
+
+                broker.handle_line(br#"{"id":"1","type":"execute_code","token":"token"}"#);
+
+                let response = response_json(rx.try_recv().unwrap());
+                assert_eq!(response["reply_to"], "1");
+                assert_eq!(response["ok"], false);
+                assert_eq!(response["error"], expected_error);
+                assert_eq!(broker.pending.lock().unwrap().len(), 0);
+            }
+        }
+
+        #[test]
+        fn poll_request_dequeues_pending_requests_fifo() {
+            let broker = test_broker("fifo");
+            broker.set_managed_state(MANAGED_STATE_READY, 1, Some("editing".to_string()));
+            let now = now_ms();
+            let lines = [
+                r#"{"id":"1","type":"execute_code"}"#,
+                r#"{"id":"2","type":"execute_code"}"#,
+                r#"{"id":"3","type":"execute_code"}"#,
+            ];
+            {
+                let mut pending = broker.pending.lock().unwrap();
+                for (index, line) in lines.iter().enumerate() {
+                    pending.push_back(test_request(
+                        &(index + 1).to_string(),
+                        line,
+                        now,
+                        REQUEST_TIMEOUT_MS,
+                    ));
+                }
+            }
+
+            for expected in lines {
+                let mut buffer = vec![0u8; 128];
+                let mut required_len = 0;
+                let result = broker.poll_request(
+                    buffer.as_mut_ptr(),
+                    buffer.len() as i32,
+                    &mut required_len as *mut i32,
+                );
+
+                assert_eq!(result, 1);
+                assert_eq!(required_len as usize, expected.len());
+                assert_eq!(&buffer[..required_len as usize], expected.as_bytes());
+            }
+            assert_eq!(
+                broker.poll_request(std::ptr::null_mut(), 0, std::ptr::null_mut()),
+                0
+            );
+            assert_eq!(broker.pending.lock().unwrap().len(), 0);
+            assert_eq!(broker.in_flight.lock().unwrap().len(), 3);
+        }
+
+        #[test]
+        fn status_payload_reports_heartbeat_and_queue_fields() {
+            let broker = test_broker("status_payload");
+            broker.set_managed_state(MANAGED_STATE_READY, 7, Some("editing".to_string()));
+            let now = now_ms();
+            broker
+                .last_heartbeat_ms
+                .store(now - HEARTBEAT_TIMEOUT_MS - 1_000, Ordering::SeqCst);
+            broker.pending.lock().unwrap().push_back(test_request(
+                "pending-1",
+                r#"{"id":"pending-1","type":"execute_code"}"#,
+                now,
+                REQUEST_TIMEOUT_MS,
+            ));
+            broker.pending.lock().unwrap().push_back(test_request(
+                "pending-2",
+                r#"{"id":"pending-2","type":"execute_code"}"#,
+                now,
+                REQUEST_TIMEOUT_MS,
+            ));
+            broker.in_flight.lock().unwrap().insert(
+                "in-flight-1".to_string(),
+                test_request(
+                    "in-flight-1",
+                    r#"{"id":"in-flight-1","type":"execute_code"}"#,
+                    now,
+                    REQUEST_TIMEOUT_MS,
+                ),
+            );
+
+            let payload = broker.status_payload();
+
+            assert_eq!(payload["managedState"], "ready");
+            assert_eq!(payload["managedGeneration"], 7);
+            assert_eq!(payload["pending"], 2);
+            assert_eq!(payload["inFlight"], 1);
+            assert_eq!(payload["heartbeatTimedOut"], true);
+            assert!(payload["heartbeatAgeMs"].as_i64().unwrap() >= HEARTBEAT_TIMEOUT_MS + 1_000);
+        }
+
+        #[test]
+        fn reap_timeouts_keeps_old_in_flight_request_when_heartbeat_is_fresh() {
+            let broker = test_broker("fresh_heartbeat");
+            broker.set_managed_state(MANAGED_STATE_READY, 1, Some("editing".to_string()));
+            let now = now_ms();
+            broker.last_heartbeat_ms.store(now, Ordering::SeqCst);
+            let mut request = test_request(
+                "1",
+                r#"{"id":"1","type":"execute_code"}"#,
+                now - HEARTBEAT_TIMEOUT_MS - 1_000,
+                REQUEST_TIMEOUT_MS,
+            );
+            request.delivered_at_ms = now - HEARTBEAT_TIMEOUT_MS - 1_000;
+            broker
+                .in_flight
+                .lock()
+                .unwrap()
+                .insert("1".to_string(), request);
+
+            broker.reap_timeouts();
+
+            assert_eq!(broker.in_flight.lock().unwrap().len(), 1);
+        }
+
+        #[test]
+        fn reap_timeouts_expires_pending_request_before_dispatch() {
+            let broker = test_broker("pending_timeout");
+            let (tx, mut rx) = mpsc::channel(4);
+            *broker.writer.lock().unwrap() = Some(tx);
+            let now = now_ms();
+            broker.pending.lock().unwrap().push_back(test_request(
+                "1",
+                r#"{"id":"1","type":"execute_code"}"#,
+                now - 2_000,
+                1_000,
+            ));
+
+            broker.reap_timeouts();
+
+            assert_eq!(broker.pending.lock().unwrap().len(), 0);
+            let response = response_json(rx.try_recv().unwrap());
+            assert_eq!(response["reply_to"], "1");
+            assert_eq!(response["ok"], false);
+            assert_eq!(response["error"], "request_timeout_before_dispatch");
         }
 
         #[test]

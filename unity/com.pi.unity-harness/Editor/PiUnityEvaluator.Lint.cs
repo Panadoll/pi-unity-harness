@@ -11,7 +11,7 @@ namespace Pi.UnityHarness.Editor
         /// the code with the pragma line stripped.
         /// Modes: "top-level", "class", "auto" (default when no pragma).
         /// </summary>
-        private static string ExtractPragma(string code, out string mode)
+        internal static string ExtractPragma(string code, out string mode)
         {
             mode = "auto";
             if (string.IsNullOrEmpty(code))
@@ -37,7 +37,7 @@ namespace Pi.UnityHarness.Editor
         /// Validate code against declared pragma mode.
         /// Returns null if valid, error message if violation detected.
         /// </summary>
-        private static string ValidatePragmaMode(string mode, string code)
+        internal static string ValidatePragmaMode(string mode, string code)
         {
             if (mode == "auto") return null;
 
@@ -116,7 +116,7 @@ namespace Pi.UnityHarness.Editor
         /// Detects and auto-fixes common .repl authoring mistakes.
         /// Returns the (possibly fixed) code and populates diagnostic.
         /// </summary>
-        private static string PreLint(string code, out ReplDiagnostic diagnostic)
+        internal static string PreLint(string code, out ReplDiagnostic diagnostic)
         {
             diagnostic = default(ReplDiagnostic);
             var fixes = new List<string>();
@@ -297,7 +297,7 @@ namespace Pi.UnityHarness.Editor
         // Error classification shared by EnhanceCompileError and BuildErrorDiagnostic
         // ───────────────────────────────────────────────
 
-        private static (string pattern, string hint) ClassifyError(string error)
+        internal static (string pattern, string hint) ClassifyError(string error)
         {
             if (string.IsNullOrEmpty(error))
                 return default;

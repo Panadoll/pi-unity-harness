@@ -1,0 +1,27 @@
+{
+  "name": "Pi.UnityHarness.Editor.Tests",
+  "rootNamespace": "Pi.UnityHarness.Editor.Tests",
+  "references": [
+    "Pi.UnityHarness.Editor",
+    "UnityEngine.TestRunner",
+    "UnityEditor.TestRunner",
+    "Unity.Pipeline",
+    "Unity.Pipeline.Editor",
+    "Unity.Nuget.Newtonsoft-Json"
+  ],
+  "includePlatforms": ["Editor"],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": ["nunit.framework.dll"],
+  "autoReferenced": false,
+  "defineConstraints": ["UNITY_INCLUDE_TESTS"],
+  "versionDefines": [
+    {
+      "name": "com.unity.pipeline",
+      "expression": "[0.2.0-exp.2,0.3.0)",
+      "define": "PI_UNITY_PIPELINE"
+    }
+  ],
+  "noEngineReferences": false
+}

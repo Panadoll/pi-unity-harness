@@ -12,6 +12,7 @@ namespace Pi.UnityHarness.Editor
     internal sealed class PiUnityCoroutinePump : IDisposable
     {
         private const int MaxQueue = 8;
+        private const int MaxStepsPerTick = 1000;
 
         private readonly Queue<CoroutineEntry> _queue = new Queue<CoroutineEntry>();
         private CoroutineEntry _active;
@@ -77,8 +78,22 @@ namespace Pi.UnityHarness.Editor
 
         private void StepActiveStack()
         {
+            int steps = 0;
             while (_active.Stack != null && _active.Stack.Count > 0)
             {
+                double elapsed = (DateTime.UtcNow - _active.StartTime).TotalMilliseconds;
+                if (elapsed > _active.TimeoutMs)
+                {
+                    Complete(false, "TIMEOUT: coroutine exceeded " + _active.TimeoutMs + "ms", "timeout");
+                    return;
+                }
+
+                if (steps++ >= MaxStepsPerTick)
+                {
+                    // 防止纯嵌套且无普通 yield 的协程在单帧内无限展开，下一帧继续。
+                    return;
+                }
+
                 IEnumerator current = _active.Stack.Peek();
                 bool hasNext = current.MoveNext();
                 if (!hasNext)
