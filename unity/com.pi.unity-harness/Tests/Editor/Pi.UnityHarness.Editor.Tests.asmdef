@@ -7,7 +7,8 @@
     "UnityEditor.TestRunner",
     "Unity.Pipeline",
     "Unity.Pipeline.Editor",
-    "Unity.Nuget.Newtonsoft-Json"
+    "Unity.Nuget.Newtonsoft-Json",
+    "Unity.InputSystem"
   ],
   "includePlatforms": ["Editor"],
   "excludePlatforms": [],

@@ -1,0 +1,14 @@
+{
+  "name": "Pi.UnityHarness.Runtime.Vision",
+  "rootNamespace": "Pi.UnityHarness.Runtime.Capabilities.Vision",
+  "references": [],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false
+}

@@ -2,9 +2,11 @@
   "name": "Pi.UnityHarness.Editor",
   "rootNamespace": "Pi.UnityHarness.Editor",
   "references": [
+    "Pi.UnityHarness.Runtime.Vision",
     "Unity.Pipeline",
     "Unity.Pipeline.Editor",
-    "Unity.Nuget.Newtonsoft-Json"
+    "Unity.Nuget.Newtonsoft-Json",
+    "UnityEngine.UI"
   ],
   "includePlatforms": [
     "Editor"
