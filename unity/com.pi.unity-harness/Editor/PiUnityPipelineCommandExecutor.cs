@@ -489,11 +489,5 @@ namespace Pi.UnityHarness.Editor
         }
 #endif
 
-#if PI_UNITY_PIPELINE
-        private static string SuccessJson(string replyTo, JObject result)
-        {
-            return PiUnityJsonHelper.SuccessJson(replyTo, result.ToString(Formatting.None));
-        }
-#endif
     }
 }
