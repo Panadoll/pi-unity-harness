@@ -13,7 +13,7 @@ namespace Pi.UnityHarness.Editor.Tests
         {
             string json = "{\"mode\":\"editor\",\"filter\":\"Smoke\",\"filter_type\":\"category\",\"include_explicit\":true,\"timeout\":12}";
 
-            Assert.IsTrue(PiUnityTestCoordinator.TryParseParameters(json, out JObject parameters, out string error));
+            Assert.IsTrue(PiUnityPipelineCommandExecutor.TryParseParameters(json, out JObject parameters, out string error));
 
             Assert.IsNull(error);
             Assert.AreEqual("editor", (string)parameters["mode"]);
@@ -38,7 +38,7 @@ namespace Pi.UnityHarness.Editor.Tests
         [Test]
         public void TryParseParameters_DefaultsToEmptyObjectAndDefaultTimeout()
         {
-            Assert.IsTrue(PiUnityTestCoordinator.TryParseParameters(null, out JObject parameters, out string error));
+            Assert.IsTrue(PiUnityPipelineCommandExecutor.TryParseParameters(null, out JObject parameters, out string error));
 
             Assert.IsNull(error);
             Assert.AreEqual(0, parameters.Count);
@@ -49,10 +49,10 @@ namespace Pi.UnityHarness.Editor.Tests
         [Test]
         public void TryParseParameters_RejectsInvalidJsonAndNonObjectJson()
         {
-            Assert.IsFalse(PiUnityTestCoordinator.TryParseParameters("{bad", out _, out string error));
+            Assert.IsFalse(PiUnityPipelineCommandExecutor.TryParseParameters("{bad", out _, out string error));
             StringAssert.Contains("invalid parametersJson", error);
 
-            Assert.IsFalse(PiUnityTestCoordinator.TryParseParameters("[]", out _, out error));
+            Assert.IsFalse(PiUnityPipelineCommandExecutor.TryParseParameters("[]", out _, out error));
             StringAssert.Contains("JSON object", error);
         }
 

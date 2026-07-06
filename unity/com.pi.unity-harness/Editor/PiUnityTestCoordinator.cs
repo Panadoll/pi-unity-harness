@@ -54,7 +54,7 @@ namespace Pi.UnityHarness.Editor
             }
 
             JObject parameters;
-            if (!TryParseParameters(parametersJson, out parameters, out string parseError))
+            if (!PiUnityPipelineCommandExecutor.TryParseParameters(parametersJson, out parameters, out string parseError))
             {
                 completeJson(requestId, PiUnityJsonHelper.ErrorJson(requestId, "parameter_error", parseError));
                 return;
@@ -361,28 +361,7 @@ namespace Pi.UnityHarness.Editor
                 target.Add(item.DeepClone());
         }
 
-        internal static bool TryParseParameters(string parametersJson, out JObject parameters, out string error)
-        {
-            parameters = null;
-            error = null;
-            string text = string.IsNullOrWhiteSpace(parametersJson) ? "{}" : parametersJson;
-            try
-            {
-                JToken token = JToken.Parse(text);
-                parameters = token as JObject;
-                if (parameters == null)
-                {
-                    error = "parametersJson must be a JSON object";
-                    return false;
-                }
-                return true;
-            }
-            catch (Exception ex)
-            {
-                error = "invalid parametersJson: " + ex.Message;
-                return false;
-            }
-        }
+
 
         private static JObject CurrentParameters()
         {

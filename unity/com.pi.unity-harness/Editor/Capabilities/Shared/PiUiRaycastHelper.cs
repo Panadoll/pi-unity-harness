@@ -100,19 +100,19 @@ namespace Pi.UnityHarness.Editor.Capabilities.Shared
 
         private static int CompareRaycastPriority(RaycastResult left, RaycastResult right)
         {
-            int sortOrderPriority = Compare(GetSortOrderPriority(left), GetSortOrderPriority(right));
+            int sortOrderPriority = DefaultCompare(GetSortOrderPriority(left), GetSortOrderPriority(right));
             if (sortOrderPriority != 0) return sortOrderPriority;
 
-            int renderOrderPriority = Compare(GetRenderOrderPriority(left), GetRenderOrderPriority(right));
+            int renderOrderPriority = DefaultCompare(GetRenderOrderPriority(left), GetRenderOrderPriority(right));
             if (renderOrderPriority != 0) return renderOrderPriority;
 
-            int sortingLayer = Compare(GetSortingLayerValue(left), GetSortingLayerValue(right));
+            int sortingLayer = DefaultCompare(GetSortingLayerValue(left), GetSortingLayerValue(right));
             if (sortingLayer != 0) return sortingLayer;
 
-            int sortingOrder = Compare(left.sortingOrder, right.sortingOrder);
+            int sortingOrder = DefaultCompare(left.sortingOrder, right.sortingOrder);
             if (sortingOrder != 0) return sortingOrder;
 
-            return Compare(left.depth, right.depth);
+            return DefaultCompare(left.depth, right.depth);
         }
 
         private static int GetSortOrderPriority(RaycastResult result)
@@ -130,11 +130,6 @@ namespace Pi.UnityHarness.Editor.Capabilities.Shared
             return SortingLayer.GetLayerValueFromID(result.sortingLayer);
         }
 
-        private static int Compare(int left, int right)
-        {
-            if (left > right) return 1;
-            if (left < right) return -1;
-            return 0;
-        }
+        private static int DefaultCompare(int left, int right) => System.Collections.Generic.Comparer<int>.Default.Compare(left, right);
     }
 }

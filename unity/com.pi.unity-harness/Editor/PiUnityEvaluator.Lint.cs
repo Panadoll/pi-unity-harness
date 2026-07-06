@@ -333,13 +333,6 @@ namespace Pi.UnityHarness.Editor
             return string.IsNullOrEmpty(hint) ? rawError : rawError + "\n[HINT] " + hint;
         }
 
-        /// <summary>
-        /// Build a diagnostic from a compile error, classifying the pattern violation.
-        /// </summary>
-        private static ReplDiagnostic BuildErrorDiagnostic(string enhancedError, string code)
-        {
-            var (pattern, hint) = ClassifyError(enhancedError);
-            return new ReplDiagnostic { PatternViolation = pattern, Hint = hint };
-        }
+
     }
 }

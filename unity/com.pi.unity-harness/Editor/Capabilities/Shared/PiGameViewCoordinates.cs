@@ -19,11 +19,6 @@ namespace Pi.UnityHarness.Editor.Capabilities.Shared
             return new Vector2(width, height);
         }
 
-        public static float GetGameViewWidth()
-        {
-            return GetGameViewSize().x;
-        }
-
         public static float GetGameViewHeight()
         {
             return GetGameViewSize().y;
