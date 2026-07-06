@@ -22,6 +22,11 @@ namespace Pi.UnityHarness.Editor
 
         public bool Enqueue(IEnumerator coroutine, string requestId, Action<bool, string, string> onComplete, int timeoutMs = 60000)
         {
+            return Enqueue(coroutine, requestId, onComplete, timeoutMs, false);
+        }
+
+        public bool Enqueue(IEnumerator coroutine, string requestId, Action<bool, string, string> onComplete, int timeoutMs, bool captureLastString)
+        {
             if (_disposed || coroutine == null)
                 return false;
 
@@ -39,6 +44,7 @@ namespace Pi.UnityHarness.Editor
                 OnComplete = onComplete,
                 TimeoutMs = effectiveTimeoutMs,
                 StartTime = DateTime.UtcNow,
+                CaptureLastString = captureLastString,
             });
             return true;
         }
@@ -68,7 +74,11 @@ namespace Pi.UnityHarness.Editor
             {
                 StepActiveStack();
                 if (_active.Stack != null && _active.Stack.Count == 0)
-                    Complete(true, "(ok)", "void");
+                {
+                    string text = _active.CaptureLastString ? (_active.LastString ?? "{}") : "(ok)";
+                    string typeName = _active.CaptureLastString ? "string" : "void";
+                    Complete(true, text, typeName);
+                }
             }
             catch (Exception ex)
             {
@@ -107,6 +117,9 @@ namespace Pi.UnityHarness.Editor
                     _active.Stack.Push(nested);
                     continue;
                 }
+
+                if (_active.CaptureLastString && current.Current is string yieldedText)
+                    _active.LastString = yieldedText;
 
                 // 普通 yield 指令（WaitForSeconds/AsyncOperation/null 等）按一帧等待处理。
                 return;
@@ -170,6 +183,8 @@ namespace Pi.UnityHarness.Editor
             public Action<bool, string, string> OnComplete;
             public int TimeoutMs;
             public DateTime StartTime;
+            public bool CaptureLastString;
+            public string LastString;
         }
     }
 }

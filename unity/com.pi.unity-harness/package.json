@@ -4,7 +4,9 @@
   "displayName": "Pi Unity Harness",
   "description": "pi-coding-agent Unity bridge with a reload-stable native broker and Editor-side C# worker.",
   "unity": "2021.3",
-  "dependencies": {},
+  "dependencies": {
+    "com.unity.ugui": "1.0.0"
+  },
   "author": { "name": "Pi Unity Harness" },
   "keywords": ["pi", "unity", "agent", "automation", "bridge"]
 }
