@@ -7,6 +7,7 @@ using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 using UnityEditor;
 using UnityEditorInternal;
 using UnityEngine;
@@ -27,6 +28,8 @@ namespace Pi.UnityHarness.Editor
         private const int MaxRequestsPerUpdate = 16;
         private const double HeartbeatStaleSeconds = 2.0d;
         private const double StaleWakeIntervalSeconds = 1.0d;
+        /// <summary>Background-thread native heartbeat interval. Keeps broker alive while modal dialogs block the main thread.</summary>
+        private const double BackgroundHeartbeatIntervalSeconds = 0.25d;
         private const string SessionKey_Generation = "PiUnityHarness_Generation";
         private const string SessionKey_Token = "PiUnityHarness_Token";
         private const string SessionKey_Pipe = "PiUnityHarness_Pipe";
@@ -78,6 +81,17 @@ namespace Pi.UnityHarness.Editor
 
         [DllImport("kernel32.dll")]
         private static extern uint GetCurrentThreadId();
+
+        private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
+        [DllImport("user32.dll")]
+        private static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
+
+        [DllImport("user32.dll")]
+        private static extern bool IsWindowVisible(IntPtr hWnd);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        private static extern int GetClassName(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
 
         [Serializable]
         private sealed class NativeRequest
@@ -153,6 +167,7 @@ namespace Pi.UnityHarness.Editor
         private static CancellationTokenSource s_nativePumpCts;
         private static PiUnityEvaluator s_evaluator;
         private static PiUnityCoroutinePump s_pump;
+        private static PiUnityAsyncEvalPump s_asyncEvalPump;
         private static byte[] s_nativeBuffer;
         private static bool s_started;
         private static string s_projectPath;
@@ -162,8 +177,13 @@ namespace Pi.UnityHarness.Editor
         private static IntPtr s_mainWindowHandle;
         private static uint s_mainThreadId;
         private static double s_lastHeartbeatAt;
-        private static long s_lastHeartbeatUtcTicks;
+        /// <summary>Updated only from main-thread OnUpdate. Used to detect main-thread stalls (modal dialogs).</summary>
+        private static long s_lastMainThreadPumpUtcTicks;
+        /// <summary>Updated from main-thread and background heartbeats. For diagnostics only.</summary>
+        private static long s_lastNativeHeartbeatUtcTicks;
         private static bool s_runInBackgroundApplied;
+        private static string s_lastMainThreadEditorStatus = "editing;focus=unknown;window=normal";
+        private static int s_modalDialogPresent; // 0/1 via Interlocked
 
         static PiUnityBridge()
         {
@@ -193,6 +213,7 @@ namespace Pi.UnityHarness.Editor
                 EnableRunInBackground();
                 s_evaluator = new PiUnityEvaluator();
                 s_pump = new PiUnityCoroutinePump();
+                s_asyncEvalPump = new PiUnityAsyncEvalPump();
                 s_nativeBuffer = new byte[NativeInitialBufferSize];
 
                 if (pi_unity_init(Utf8(s_projectPath), ByteLen(s_projectPath), Utf8(s_pipeName), ByteLen(s_pipeName), Utf8(s_token), ByteLen(s_token), NativeProtocolVersion) != 0)
@@ -201,7 +222,9 @@ namespace Pi.UnityHarness.Editor
                 PublishManagedState(ManagedStateInitializing, "starting");
                 WriteBridgeInfo();
                 EditorApplication.update += OnUpdate;
-                Interlocked.Exchange(ref s_lastHeartbeatUtcTicks, DateTime.UtcNow.Ticks);
+                long nowTicks = DateTime.UtcNow.Ticks;
+                Interlocked.Exchange(ref s_lastMainThreadPumpUtcTicks, nowTicks);
+                Interlocked.Exchange(ref s_lastNativeHeartbeatUtcTicks, nowTicks);
                 StartNativePumpThread();
                 PublishManagedState(ManagedStateReady, CurrentEditorStatus());
                 EditorApplication.delayCall += ForceReadyAfterStartup;
@@ -224,8 +247,10 @@ namespace Pi.UnityHarness.Editor
             EditorApplication.update -= OnUpdate;
             PublishManagedState(ManagedStateQuitting, "quitting");
             RestoreRunInBackground();
+            CancelAllPendingAsyncEvals("DISPOSED: bridge shutting down");
             s_pump?.Dispose();
             s_pump = null;
+            s_asyncEvalPump = null;
             try
             {
                 pi_unity_shutdown();
@@ -239,8 +264,10 @@ namespace Pi.UnityHarness.Editor
         {
             PublishManagedState(ManagedStateReloading, "reloading");
             StopNativePumpThread();
+            CancelAllPendingAsyncEvals("CANCELLED: domain reload");
             s_pump?.Dispose();
             s_pump = null;
+            s_asyncEvalPump = null;
         }
 
         private static void OnAfterReload()
@@ -288,8 +315,9 @@ namespace Pi.UnityHarness.Editor
                 PublishHeartbeat();
             }
 
-            // 驱动协程泵
+            // 驱动协程泵与 async eval
             s_pump?.Tick();
+            TickPendingAsyncEvals();
 
             int processed = 0;
             while (processed < MaxRequestsPerUpdate && PendingRequests.TryDequeue(out PendingLine pending))
@@ -298,7 +326,9 @@ namespace Pi.UnityHarness.Editor
                 processed++;
             }
 
-            if (!PendingRequests.IsEmpty || s_pump != null && s_pump.PendingCount > 0)
+            if (!PendingRequests.IsEmpty ||
+                (s_pump != null && s_pump.PendingCount > 0) ||
+                (s_asyncEvalPump != null && s_asyncEvalPump.PendingCount > 0))
             {
                 EditorApplication.QueuePlayerLoopUpdate();
                 InternalEditorUtility.RepaintAllViews();
@@ -334,6 +364,10 @@ namespace Pi.UnityHarness.Editor
         private static void NativePumpLoop(CancellationToken token)
         {
             long lastWakeAttemptTicks = 0;
+            long lastBackgroundHeartbeatTicks = 0;
+            long backgroundHeartbeatIntervalTicks = TimeSpan.FromSeconds(BackgroundHeartbeatIntervalSeconds).Ticks;
+            long mainThreadStaleTicks = TimeSpan.FromSeconds(HeartbeatStaleSeconds).Ticks;
+
             while (!token.IsCancellationRequested)
             {
                 int required = 0;
@@ -359,19 +393,149 @@ namespace Pi.UnityHarness.Editor
                     string line = Encoding.UTF8.GetString(s_nativeBuffer, 0, required);
                     PendingRequests.Enqueue(new PendingLine { Line = line, PolledAtTicks = Stopwatch.GetTimestamp() });
                     EnsureEditorWindowCanPump();
-                    continue;
+                    // Keep polling hot while work is queued; still emit background heartbeat below.
                 }
 
                 long now = DateTime.UtcNow.Ticks;
-                bool heartbeatStale = now - Interlocked.Read(ref s_lastHeartbeatUtcTicks) > TimeSpan.FromSeconds(HeartbeatStaleSeconds).Ticks;
+
+                // Modal dialogs (Save Scene, etc.) block Unity's main thread so EditorApplication.update
+                // stops. Keep native broker heartbeat alive from this background thread so clients
+                // do not see managed_heartbeat_timeout while the dialog is open.
+                if (now - lastBackgroundHeartbeatTicks >= backgroundHeartbeatIntervalTicks)
+                {
+                    lastBackgroundHeartbeatTicks = now;
+                    PublishBackgroundHeartbeat(now);
+                }
+
+                bool mainThreadStale = now - Interlocked.Read(ref s_lastMainThreadPumpUtcTicks) > mainThreadStaleTicks;
                 bool backlog = !PendingRequests.IsEmpty;
-                if ((heartbeatStale || backlog) && now - lastWakeAttemptTicks >= TimeSpan.FromSeconds(StaleWakeIntervalSeconds).Ticks)
+                if ((mainThreadStale || backlog) && now - lastWakeAttemptTicks >= TimeSpan.FromSeconds(StaleWakeIntervalSeconds).Ticks)
                 {
                     EnsureEditorWindowCanPump();
                     lastWakeAttemptTicks = now;
                 }
 
-                Thread.Sleep(10);
+                Thread.Sleep(result == 1 ? 0 : 10);
+            }
+        }
+
+        /// <summary>
+        /// Thread-safe heartbeat for when the Unity main thread is blocked (modal dialogs, sync stalls).
+        /// Does not touch UnityEditor APIs except via cached main-thread status + Win32 modal probe.
+        /// </summary>
+        private static void PublishBackgroundHeartbeat(long nowTicks)
+        {
+            if (!s_started)
+                return;
+
+            try
+            {
+                bool modal = HasVisibleModalDialog();
+                Interlocked.Exchange(ref s_modalDialogPresent, modal ? 1 : 0);
+
+                // Always refresh native last_heartbeat so reap_timeouts does not fail in-flight work.
+                pi_unity_managed_heartbeat(s_generation);
+                Interlocked.Exchange(ref s_lastNativeHeartbeatUtcTicks, nowTicks);
+
+                // When main thread is stalled, publish richer status so pi/status can show modal=1.
+                bool mainThreadStale =
+                    nowTicks - Interlocked.Read(ref s_lastMainThreadPumpUtcTicks)
+                    > TimeSpan.FromSeconds(HeartbeatStaleSeconds).Ticks;
+                if (modal || mainThreadStale)
+                {
+                    string baseStatus = Volatile.Read(ref s_lastMainThreadEditorStatus) ?? "editing";
+                    string status = ComposeBlockedEditorStatus(baseStatus, modal, mainThreadStale);
+                    byte[] statusBytes = Utf8(status);
+                    pi_unity_set_managed_state(ManagedStateReady, s_generation, statusBytes, statusBytes.Length);
+                }
+            }
+            catch
+            {
+                // Background path must never take down the pump thread.
+            }
+        }
+
+        private static string ComposeBlockedEditorStatus(string baseStatus, bool modal, bool mainThreadStale)
+        {
+            // baseStatus looks like: editing;focus=focused;window=normal
+            string mode = "editing";
+            string rest = string.Empty;
+            if (!string.IsNullOrEmpty(baseStatus))
+            {
+                int semi = baseStatus.IndexOf(';');
+                if (semi >= 0)
+                {
+                    mode = baseStatus.Substring(0, semi);
+                    rest = baseStatus.Substring(semi); // includes leading ';'
+                }
+                else
+                {
+                    mode = baseStatus;
+                }
+            }
+
+            if (modal)
+                mode = "modal";
+            else if (mainThreadStale && mode == "editing")
+                mode = "blocked";
+
+            string flags = string.Empty;
+            if (modal)
+                flags += ";modal=1";
+            if (mainThreadStale)
+                flags += ";mainThreadStale=1";
+
+            // Avoid duplicating modal= if base already had it
+            if (rest.IndexOf(";modal=", StringComparison.Ordinal) >= 0)
+                flags = flags.Replace(";modal=1", string.Empty);
+
+            return mode + rest + flags;
+        }
+
+        /// <summary>
+        /// Detect Win32 modal/message dialogs owned by the Unity editor process
+        /// (e.g. "Scene(s) Have Been Modified" Save/Don't Save/Cancel).
+        /// </summary>
+        private static bool HasVisibleModalDialog()
+        {
+            try
+            {
+                uint pid = (uint)Process.GetCurrentProcess().Id;
+                bool found = false;
+                EnumWindows((hWnd, lParam) =>
+                {
+                    if (found)
+                        return false;
+                    if (!IsWindowVisible(hWnd))
+                        return true;
+
+                    GetWindowThreadProcessId(hWnd, out uint windowPid);
+                    if (windowPid != pid)
+                        return true;
+
+                    // Skip the main editor window itself.
+                    if (s_mainWindowHandle != IntPtr.Zero && hWnd == s_mainWindowHandle)
+                        return true;
+
+                    var className = new StringBuilder(64);
+                    GetClassName(hWnd, className, className.Capacity);
+                    string cls = className.ToString();
+
+                    // Standard Windows dialog class used by Unity save/prompt dialogs
+                    // (e.g. "Scene(s) Have Been Modified" → Save / Don't Save / Cancel).
+                    if (string.Equals(cls, "#32770", StringComparison.Ordinal))
+                    {
+                        found = true;
+                        return false;
+                    }
+
+                    return true;
+                }, IntPtr.Zero);
+                return found;
+            }
+            catch
+            {
+                return false;
             }
         }
 
@@ -532,14 +696,26 @@ namespace Pi.UnityHarness.Editor
             return true;
         }
 
-        // --- 协程结果处理 ---
+        // --- 协程 / Task 结果处理 ---
 
         /// <summary>
-        /// 如果 EvalResult 包含 IEnumerator 协程，将其交给 CoroutinePump；
+        /// 如果 EvalResult 包含 IEnumerator 协程或 Task/Task-like，异步完成；
         /// 否则作为同步结果直接完成。
         /// </summary>
         private static void TryCompleteEvalOrCoroutine(string id, PiUnityEvaluator.EvalResult result, RequestTiming timing, int timeoutMs)
         {
+            if (result == null)
+            {
+                CompleteError(id, "null_eval_result", "runtime_error");
+                return;
+            }
+
+            if (!result.Ok)
+            {
+                CompleteEvalResult(id, result, timing);
+                return;
+            }
+
             if (result.IsCoroutine && result.Coroutine != null)
             {
                 // 协程结果：交给 pump 逐帧驱动
@@ -570,7 +746,104 @@ namespace Pi.UnityHarness.Editor
                 return;
             }
 
+            if (result.IsAsyncTask && result.AsyncTask != null)
+            {
+                EnqueueAsyncEval(id, result.AsyncTask, timing, timeoutMs);
+                return;
+            }
+
             CompleteEvalResult(id, result, timing);
+        }
+
+        private sealed class AsyncEvalState
+        {
+            public RequestTiming Timing;
+            public int TimeoutMs;
+        }
+
+        private static void EnqueueAsyncEval(string id, Task task, RequestTiming timing, int timeoutMs)
+        {
+            if (s_asyncEvalPump == null)
+                s_asyncEvalPump = new PiUnityAsyncEvalPump();
+
+            int effectiveTimeoutMs = timeoutMs > 0 ? timeoutMs : 60000;
+            s_asyncEvalPump.Enqueue(id, task, effectiveTimeoutMs, new AsyncEvalState
+            {
+                Timing = timing,
+                TimeoutMs = effectiveTimeoutMs,
+            });
+            if (task.IsCompleted)
+                TickPendingAsyncEvals();
+        }
+
+        private static void TickPendingAsyncEvals()
+        {
+            if (s_asyncEvalPump == null || s_asyncEvalPump.PendingCount == 0)
+                return;
+
+            s_asyncEvalPump.Tick(OnAsyncEvalCompleted);
+        }
+
+        private static void OnAsyncEvalCompleted(string id, bool success, string text, string typeName, object state)
+        {
+            RequestTiming timing = null;
+            int timeoutMs = 60000;
+
+            if (state is PiUnityAsyncEvalPump.NestedAsyncResult nestedBag)
+            {
+                if (nestedBag.OriginalState is AsyncEvalState bagFromNested)
+                {
+                    timing = bagFromNested.Timing;
+                    timeoutMs = bagFromNested.TimeoutMs;
+                }
+            }
+            else if (state is AsyncEvalState bag)
+            {
+                timing = bag.Timing;
+                timeoutMs = bag.TimeoutMs;
+            }
+
+            if (success && typeName == "nested_task" && state is PiUnityAsyncEvalPump.NestedAsyncResult nestedTask)
+            {
+                TryCompleteEvalOrCoroutine(id, nestedTask.Nested, timing, timeoutMs);
+                return;
+            }
+
+            if (success && typeName == "nested_coroutine" && state is PiUnityAsyncEvalPump.NestedAsyncResult nestedCo)
+            {
+                TryCompleteEvalOrCoroutine(id, nestedCo.Nested, timing, timeoutMs);
+                return;
+            }
+
+            if (!success)
+            {
+                CompleteJson(id,
+                    "{\"reply_to\":" + PiUnityJsonHelper.JsonString(id) +
+                    ",\"ok\":false,\"error_type\":" + PiUnityJsonHelper.JsonString(typeName ?? "runtime_error") +
+                    ",\"error\":" + PiUnityJsonHelper.JsonString(text ?? "async_eval_failed") + "}");
+                return;
+            }
+
+            string timingFragment = timing != null ? ",\"timing\":" + timing.ToJsonFragment() : string.Empty;
+            string payload =
+                "{\"reply_to\":" + PiUnityJsonHelper.JsonString(id) +
+                ",\"ok\":true,\"result\":{\"output\":" + PiUnityJsonHelper.JsonString(text ?? string.Empty) +
+                ",\"typeName\":" + PiUnityJsonHelper.JsonString(typeName ?? "void") + timingFragment + "}}";
+            CompleteJson(id, payload);
+        }
+
+        private static void CancelAllPendingAsyncEvals(string reason)
+        {
+            if (s_asyncEvalPump == null)
+                return;
+
+            s_asyncEvalPump.CancelAll((id, success, text, typeName, state) =>
+            {
+                CompleteJson(id,
+                    "{\"reply_to\":" + PiUnityJsonHelper.JsonString(id) +
+                    ",\"ok\":false,\"error_type\":" + PiUnityJsonHelper.JsonString(typeName ?? "cancelled") +
+                    ",\"error\":" + PiUnityJsonHelper.JsonString(text ?? reason) + "}");
+            }, reason);
         }
 
         // --- 编译请求 ---
@@ -665,6 +938,8 @@ namespace Pi.UnityHarness.Editor
             sb.Append(EditorApplication.isUpdating ? "true" : "false");
             sb.Append(",\"pump_pending\":");
             sb.Append(s_pump != null ? s_pump.PendingCount : 0);
+            sb.Append(",\"async_eval_pending\":");
+            sb.Append(s_asyncEvalPump != null ? s_asyncEvalPump.PendingCount : 0);
             sb.Append("}}");
             return sb.ToString();
         }
@@ -742,9 +1017,22 @@ namespace Pi.UnityHarness.Editor
         {
             try
             {
+                long nowTicks = DateTime.UtcNow.Ticks;
+                string status = CurrentEditorStatus();
+                Volatile.Write(ref s_lastMainThreadEditorStatus, status);
+                Interlocked.Exchange(ref s_lastMainThreadPumpUtcTicks, nowTicks);
+                Interlocked.Exchange(ref s_lastNativeHeartbeatUtcTicks, nowTicks);
+                Interlocked.Exchange(ref s_modalDialogPresent, HasVisibleModalDialog() ? 1 : 0);
+
                 pi_unity_managed_heartbeat(s_generation);
-                Interlocked.Exchange(ref s_lastHeartbeatUtcTicks, DateTime.UtcNow.Ticks);
-                PublishManagedState(ManagedStateReady, CurrentEditorStatus());
+                // Prefer main-thread Unity API status; annotate modal if present.
+                if (Interlocked.CompareExchange(ref s_modalDialogPresent, 0, 0) == 1
+                    && status.IndexOf("modal=", StringComparison.Ordinal) < 0)
+                {
+                    // Replace mode segment with modal when a Win32 dialog is up.
+                    status = ComposeBlockedEditorStatus(status, modal: true, mainThreadStale: false);
+                }
+                PublishManagedState(ManagedStateReady, status);
             }
             catch (Exception ex)
             {
@@ -771,12 +1059,17 @@ namespace Pi.UnityHarness.Editor
                 mode = "compiling";
             else if (EditorApplication.isPlayingOrWillChangePlaymode)
                 mode = "playing";
+            else if (Interlocked.CompareExchange(ref s_modalDialogPresent, 0, 0) == 1)
+                mode = "modal";
             else
                 mode = "editing";
 
             string focus = IsEditorProcessForeground() ? "focused" : "background";
             string window = IsMainWindowMinimized() ? "minimized" : "normal";
-            return mode + ";focus=" + focus + ";window=" + window;
+            string status = mode + ";focus=" + focus + ";window=" + window;
+            if (mode == "modal")
+                status += ";modal=1";
+            return status;
         }
 
         private static void EnableRunInBackground()

@@ -3,11 +3,35 @@ using System.Threading.Tasks;
 using Pi.UnityHarness.Editor.Capabilities.Input;
 using Pi.UnityHarness.Editor.Capabilities.Shared;
 using Unity.Pipeline.Commands;
+using UnityEngine;
 
 namespace Pi.UnityHarness.Editor.Capabilities.PipelineCommands
 {
     internal static class PiInputPipelineCommands
     {
+        [CliCommand("input_raycast", "3D physics raycast from top-left GameView coordinates")]
+        public static string Raycast(
+            [CliArg("x", "X coordinate (top-left GameView)")] float x,
+            [CliArg("y", "Y coordinate (top-left GameView)")] float y,
+            [CliArg("max_distance", "Max ray distance")] float maxDistance = 1000f,
+            [CliArg("layer_mask", "Physics layer mask")] int layerMask = -1)
+        {
+            int mask = layerMask == -1 ? Physics.DefaultRaycastLayers : layerMask;
+            return HarnessInput.RaycastJson(x, y, maxDistance, mask);
+        }
+
+        [CliCommand("input_probe", "Probe UI/physics hit at top-left GameView coordinates before clicking")]
+        public static string Probe(
+            [CliArg("x", "X coordinate (top-left GameView)")] float x,
+            [CliArg("y", "Y coordinate (top-left GameView)")] float y,
+            [CliArg("max_distance", "Max physics ray distance")] float maxDistance = 1000f,
+            [CliArg("layer_mask", "Physics layer mask")] int layerMask = -1,
+            [CliArg("include_physics", "Whether to run 3D physics raycast")] bool includePhysics = true)
+        {
+            int mask = layerMask == -1 ? Physics.DefaultRaycastLayers : layerMask;
+            return HarnessInput.ProbeJson(x, y, maxDistance, mask, includePhysics);
+        }
+
         [CliCommand("input_ready_state", "Get input readiness state as JSON")]
         public static string ReadyState()
         {

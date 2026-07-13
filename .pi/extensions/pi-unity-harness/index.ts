@@ -15,10 +15,33 @@ import {
   shouldRefreshPipelineCommands,
   type PipelineParameterInfo,
 } from "./helpers.ts";
+import {
+  describeSettingsPaths,
+  inspectUnityHarnessSettings,
+  loadUnityHarnessSettings,
+  persistEnabled,
+  SETTINGS_KEY,
+  type UnityHarnessSettings,
+} from "./config.ts";
 import net from "node:net";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
+
+const CORE_UNITY_TOOLS = [
+  "unity_discover",
+  "unity_ping",
+  "unity_status",
+  "unity_pipeline",
+  "unity_eval",
+  "unity_recompile",
+] as const;
+
+function isUnityManagedTool(name: string): boolean {
+  if ((CORE_UNITY_TOOLS as readonly string[]).includes(name)) return true;
+  // Dynamically registered pipeline shortcuts all normalize to unity_*
+  return name.startsWith("unity_");
+}
 
 interface BridgeInfo {
   project: string;
@@ -759,7 +782,88 @@ export default function (pi: ExtensionAPI) {
   const registeredPipelineTools = new Set<string>();
   const activePipelineTools = new Map<string, PipelineCommandInfo>();
 
+  // Config: defaults ← ~/.pi/agent/settings.json ← <cwd>/.pi/settings.json ← env
+  let harnessSettings: UnityHarnessSettings = loadUnityHarnessSettings(process.cwd());
+  let runtimeEnabled = harnessSettings.enabled;
+  let sessionCwd = process.cwd();
+  /** Tools/commands (except /unity-harness) are registered lazily only when enabled. */
+  let featuresRegistered = false;
+
+  const isEnabled = () => runtimeEnabled;
+
+  const assertEnabled = () => {
+    if (!runtimeEnabled) {
+      throw new Error(
+        `pi-unity-harness is disabled. Enable with /unity-harness on, or set "${SETTINGS_KEY}.enabled": true in ~/.pi/agent/settings.json.`,
+      );
+    }
+  };
+
+  /**
+   * Hard gate for tool visibility.
+   * Pi activates all extension tools on load via includeAllExtensionTools; we must
+   * strip unity_* after that, and re-strip before every agent turn.
+   */
+  const applyToolActivation = () => {
+    try {
+      const active = pi.getActiveTools().filter((name) => {
+        if (!isUnityManagedTool(name)) return true;
+        return runtimeEnabled;
+      });
+
+      if (runtimeEnabled && featuresRegistered) {
+        for (const name of CORE_UNITY_TOOLS) {
+          if (!active.includes(name)) active.push(name);
+        }
+        for (const toolName of activePipelineTools.keys()) {
+          if (!active.includes(toolName)) active.push(toolName);
+        }
+      }
+
+      pi.setActiveTools(active);
+    } catch (error) {
+      // Runtime may not be bound yet during factory load; session_start/before_agent_start will retry.
+      console.warn(
+        `[pi-unity-harness] applyToolActivation failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  };
+
+  const setEnabled = (
+    enabled: boolean,
+    opts?: {
+      persist?: "global" | "project";
+      notify?: (msg: string, level?: "info" | "warn") => void;
+      registerFeatures?: () => void;
+    },
+  ) => {
+    runtimeEnabled = enabled;
+    if (!enabled) {
+      client.close();
+      activePipelineTools.clear();
+    } else {
+      opts?.registerFeatures?.();
+    }
+    applyToolActivation();
+    if (opts?.persist) {
+      const { path } = persistEnabled(enabled, opts.persist, sessionCwd);
+      harnessSettings = loadUnityHarnessSettings(sessionCwd);
+      // After persist, env override still wins if set
+      if (process.env.PI_UNITY_HARNESS_ENABLED !== undefined) {
+        opts.notify?.(
+          `pi-unity-harness ${enabled ? "enabled" : "disabled"} saved to ${path} (note: PI_UNITY_HARNESS_ENABLED=${process.env.PI_UNITY_HARNESS_ENABLED} still overrides on next load)`,
+          "warn",
+        );
+      } else {
+        opts.notify?.(`pi-unity-harness ${enabled ? "enabled" : "disabled"} and saved to ${path}`, "info");
+      }
+    } else {
+      opts.notify?.(`pi-unity-harness ${enabled ? "enabled" : "disabled"} for this session`, "info");
+    }
+  };
+
   const executePipelineCommand = async (command: PipelineCommandInfo, params: Record<string, unknown> | undefined) => {
+    assertEnabled();
     const parameters = params ?? {};
     const parametersJson = JSON.stringify(parameters);
     const timeoutMs = pipelineCommandTimeoutMs(command.name, parameters);
@@ -771,10 +875,7 @@ export default function (pi: ExtensionAPI) {
   };
 
   const refreshActiveTools = () => {
-    const active = new Set(pi.getActiveTools());
-    for (const toolName of registeredPipelineTools) active.delete(toolName);
-    for (const toolName of activePipelineTools.keys()) active.add(toolName);
-    pi.setActiveTools([...active]);
+    applyToolActivation();
   };
 
   const registerPipelineTools = async () => {
@@ -829,10 +930,24 @@ export default function (pi: ExtensionAPI) {
     refreshActiveTools();
   };
 
-  // ---- session_start: 自动扫描并连接 ----
+  // ---- Features: tools registered only when enabled (hard gate) ----
+  // Slash commands /unity-discover and /unity-install are always registered below.
+  const ensureFeaturesRegistered = (): void => {
+    if (featuresRegistered) return;
+    featuresRegistered = true;
+    registerFeatureSurface();
+  };
 
-  pi.on("session_start", async (_event, ctx) => {
-    client.configure(ctx.cwd);
+  /** Scan running Unity editors and auto-connect when possible. */
+  const autoConnectUnity = async (ctx: {
+    ui: {
+      setStatus: (id: string, text?: string) => void;
+      notify: (message: string, type?: "info" | "warn" | "error" | "success") => void;
+    };
+  }): Promise<void> => {
+    ensureFeaturesRegistered();
+    applyToolActivation();
+    client.configure(sessionCwd);
 
     const instances = discoverUnityInstances();
     const readyInstances = instances.filter((i) => i.bridgeReady && !i.pipeOccupied);
@@ -842,35 +957,181 @@ export default function (pi: ExtensionAPI) {
       client.setProjectRoot(readyInstances[0].projectPath);
       const name = basename(readyInstances[0].projectPath);
       ctx.ui.setStatus("pi-unity", `unity bridge: ${name}`);
+      ctx.ui.notify(`已连接 Unity: ${name}`, "info");
       await registerPipelineTools();
-    } else if (readyInstances.length > 1) {
+      return;
+    }
+
+    if (readyInstances.length > 1) {
       client.setProjectRoot(readyInstances[0].projectPath);
       const name = basename(readyInstances[0].projectPath);
       ctx.ui.setStatus("pi-unity", `unity bridge: ${name} (+${readyInstances.length - 1} more)`);
+      ctx.ui.notify(
+        `已连接 Unity: ${name}（另有 ${readyInstances.length - 1} 个可用，可用 /unity-discover 切换）`,
+        "info",
+      );
       await registerPipelineTools();
-    } else if (occupiedInstances.length > 0) {
+      return;
+    }
+
+    if (occupiedInstances.length > 0) {
       const names = occupiedInstances.map((i) => basename(i.projectPath)).join(", ");
       ctx.ui.setStatus("pi-unity", `bridge occupied by another session (${names})`);
       ctx.ui.notify(
-        `Unity bridge 已被其他 pi/codex session 占用: ${names}。请关闭占用 session 后重试 /unity-discover。`,
+        `Unity bridge 已被其他 session 占用: ${names}。关闭占用 session 后执行 /unity-discover。`,
         "warn",
       );
-    } else if (instances.length > 0) {
-      ctx.ui.setStatus("pi-unity", `found ${instances.length} Unity, bridge not installed (/unity-install)`);
-    } else {
-      ctx.ui.setStatus("pi-unity", "no Unity detected (/unity-discover)");
+      return;
     }
+
+    if (instances.length > 0) {
+      ctx.ui.setStatus("pi-unity", `found ${instances.length} Unity, bridge not installed (/unity-install)`);
+      ctx.ui.notify(
+        `检测到 ${instances.length} 个 Unity，但未安装 bridge。用 /unity-install 安装。`,
+        "warn",
+      );
+      return;
+    }
+
+    ctx.ui.setStatus("pi-unity", "enabled, no Unity detected (/unity-discover)");
+    ctx.ui.notify("已启用 pi-unity-harness，但未检测到运行中的 Unity。启动 Editor 后用 /unity-discover。", "info");
+  };
+
+  // ---- session_start: 自动扫描并连接 ----
+
+  pi.on("session_start", async (_event, ctx) => {
+    sessionCwd = ctx.cwd;
+    harnessSettings = loadUnityHarnessSettings(ctx.cwd);
+    runtimeEnabled = harnessSettings.enabled;
+    client.configure(ctx.cwd);
+
+    if (!runtimeEnabled) {
+      applyToolActivation();
+      ctx.ui.setStatus("pi-unity", "disabled (/unity-harness on)");
+      return;
+    }
+
+    await autoConnectUnity(ctx);
+  });
+
+  // Re-enforce disable before every agent turn (other extensions may re-enable tools).
+  pi.on("before_agent_start", async () => {
+    if (!runtimeEnabled) {
+      applyToolActivation();
+    }
+  });
+
+  // Hard block unity tool calls even if they remain active somehow.
+  pi.on("tool_call", async (event) => {
+    if (runtimeEnabled) return;
+    if (!isUnityManagedTool(event.toolName)) return;
+    return {
+      block: true,
+      reason: `pi-unity-harness is disabled. Use /unity-harness on or set "${SETTINGS_KEY}.enabled": true in ~/.pi/agent/settings.json.`,
+    };
   });
 
   pi.on("session_shutdown", async () => {
     client.close();
   });
 
-  // ---- Commands (用户输入) ----
+  // ---- Enable switch (always registered) ----
 
+  pi.registerCommand("unity-harness", {
+    description: "Enable/disable pi-unity-harness (status | on | off | on --persist | off --persist | on --project | off --project)",
+    getArgumentCompletions(argumentPrefix) {
+      const commands = ["status", "on", "off", "on --persist", "off --persist", "on --project", "off --project"];
+      const toItem = (label: string) => ({ label, value: label });
+      const prefix = argumentPrefix.trim();
+      if (!prefix) return commands.map(toItem);
+      return commands.filter((label) => label.startsWith(prefix)).map(toItem);
+    },
+    handler: async (args, ctx) => {
+      const tokens = (args ?? "").trim().split(/\s+/).filter(Boolean);
+      const action = (tokens[0] || "status").toLowerCase();
+      const flags = new Set(tokens.slice(1).map((t) => t.toLowerCase()));
+      const persistScope = flags.has("--project")
+        ? "project" as const
+        : flags.has("--persist") || flags.has("--global")
+          ? "global" as const
+          : undefined;
+
+      if (action === "status" || action === "") {
+        const info = inspectUnityHarnessSettings(sessionCwd);
+        const activeUnity = (() => {
+          try {
+            return pi.getActiveTools().filter(isUnityManagedTool);
+          } catch {
+            return [];
+          }
+        })();
+        const lines = [
+          `runtime enabled: ${runtimeEnabled ? "on" : "off"}`,
+          `features registered: ${featuresRegistered ? "yes" : "no"}`,
+          `resolved enabled: ${info.settings.enabled ? "on" : "off"}`,
+          `settings key: ${SETTINGS_KEY}`,
+          `global file: ${info.globalPath} (exists=${info.globalExists})`,
+          `global raw: ${JSON.stringify(info.globalRaw)}`,
+          `project file: ${info.projectPath ?? "(none)"} (exists=${info.projectExists})`,
+          `project raw: ${JSON.stringify(info.projectRaw)}`,
+          `env PI_UNITY_HARNESS_ENABLED: ${info.env ?? "(unset)"}`,
+          `active unity tools: ${activeUnity.length ? activeUnity.join(", ") : "(none)"}`,
+          "",
+          "usage:",
+          "  /unity-harness status",
+          "  /unity-harness on | off              (this session)",
+          "  /unity-harness on --persist          (session + ~/.pi/agent/settings.json)",
+          "  /unity-harness off --persist",
+          "  /unity-harness on --project          (session + <cwd>/.pi/settings.json)",
+          "  /unity-harness off --project",
+          "  env PI_UNITY_HARNESS_ENABLED=0|1    (process override)",
+          "",
+          "NOTE: edit ~/.pi/agent/settings.json (not ~/.pi/settings.json).",
+        ];
+        ctx.ui.notify(lines.join("\n"), "info");
+        return;
+      }
+
+      if (action === "on" || action === "enable") {
+        setEnabled(true, {
+          persist: persistScope,
+          registerFeatures: ensureFeaturesRegistered,
+          notify: (msg, level) => ctx.ui.notify(msg, level ?? "info"),
+        });
+        if (runtimeEnabled) {
+          // Register tools + auto-scan/connect immediately (do not require a separate /unity-discover).
+          await autoConnectUnity(ctx);
+        }
+        return;
+      }
+
+      if (action === "off" || action === "disable") {
+        setEnabled(false, {
+          persist: persistScope,
+          notify: (msg, level) => ctx.ui.notify(msg, level ?? "info"),
+        });
+        ctx.ui.setStatus("pi-unity", "disabled (/unity-harness on)");
+        return;
+      }
+
+      ctx.ui.notify(
+        `Unknown /unity-harness action: ${action}. Use status | on | off [--persist|--project]`,
+        "warn",
+      );
+    },
+  });
+
+  // Slash commands always available (guarded when disabled), so /unity-discover exists
+  // even before tools are registered.
   pi.registerCommand("unity-discover", {
     description: "扫描运行中的 Unity Editor 实例并选择连接",
     handler: async (_args, ctx) => {
+      if (!isEnabled()) {
+        ctx.ui.notify("pi-unity-harness is disabled. Use /unity-harness on first.", "warn");
+        return;
+      }
+      ensureFeaturesRegistered();
+      applyToolActivation();
       const instances = discoverUnityInstances();
 
       if (instances.length === 0) {
@@ -944,6 +1205,10 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("unity-install", {
     description: "给 Unity 项目安装 com.pi.unity-harness 包",
     handler: async (args, ctx) => {
+      if (!isEnabled()) {
+        ctx.ui.notify("pi-unity-harness is disabled. Use /unity-harness on first.", "warn");
+        return;
+      }
       let projectPath = args?.trim();
 
       if (!projectPath) {
@@ -1002,6 +1267,13 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
+  // If settings say enabled at load time, register tools now.
+  if (runtimeEnabled) {
+    ensureFeaturesRegistered();
+  }
+
+  /** Register LLM tools only (slash commands are always registered above). */
+  function registerFeatureSurface(): void {
   // ---- Tools (LLM 可调用) ----
 
   pi.registerTool({
@@ -1017,6 +1289,7 @@ export default function (pi: ExtensionAPI) {
       projectPath: Type.Optional(Type.String({ description: "指定要连接的项目路径（可选，不提供则自动选第一个就绪的）" })),
     }),
     async execute(_toolCallId, params) {
+      assertEnabled();
       const instances = discoverUnityInstances();
       const readyInstances = instances.filter((i) => i.bridgeReady && !i.pipeOccupied);
       const occupiedInstances = instances.filter((i) => i.bridgeReady && i.pipeOccupied);
@@ -1071,6 +1344,7 @@ export default function (pi: ExtensionAPI) {
     promptGuidelines: ["Use unity_ping when Unity connectivity is uncertain or a prior Unity request failed."],
     parameters: Type.Object({}),
     async execute() {
+      assertEnabled();
       const result = await client.request("ping", {});
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
@@ -1089,6 +1363,7 @@ export default function (pi: ExtensionAPI) {
     promptGuidelines: ["Use unity_status before retries when a Unity request times out or reports managed_reloading."],
     parameters: Type.Object({}),
     async execute() {
+      assertEnabled();
       try { await client.listPipelineCommands(false, 5000); } catch { /* status 本身仍可降级返回 */ }
       const result = await client.status();
       return {
@@ -1120,6 +1395,7 @@ export default function (pi: ExtensionAPI) {
       describeOnly: Type.Optional(Type.Boolean({ description: "只返回命令说明和参数 schema，不执行命令。" })),
     }),
     async execute(_toolCallId, params) {
+      assertEnabled();
       let list = await client.listPipelineCommands(false);
       let commands = filterPipelineCommands(list);
 
@@ -1188,6 +1464,7 @@ export default function (pi: ExtensionAPI) {
       timeoutMs: Type.Optional(Type.Number({ description: "请求超时，默认 20000ms。" })),
     }),
     async execute(_toolCallId, params) {
+      assertEnabled();
       const timeoutMs = typeof params.timeoutMs === "number" ? params.timeoutMs : 20000;
       const projectRoot = client.getProjectRoot();
       const codeSize = Buffer.byteLength(params.code, "utf8");
@@ -1224,6 +1501,7 @@ export default function (pi: ExtensionAPI) {
     ],
     parameters: Type.Object({}),
     async execute(_toolCallId, _params) {
+      assertEnabled();
       const timeoutMs = 120000; // 编译可能需要较长时间
       const result = await client.request("recompile", {}, timeoutMs);
       return {
@@ -1232,4 +1510,5 @@ export default function (pi: ExtensionAPI) {
       };
     },
   });
+  } // end registerFeatureSurface
 }

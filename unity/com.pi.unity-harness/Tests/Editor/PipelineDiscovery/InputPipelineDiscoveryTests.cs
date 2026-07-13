@@ -18,6 +18,8 @@ namespace Pi.UnityHarness.Editor.Tests.PipelineDiscovery
             CollectionAssert.Contains(names, "input_wait_ready");
             CollectionAssert.Contains(names, "input_click");
             CollectionAssert.Contains(names, "input_sequence");
+            CollectionAssert.Contains(names, "input_raycast");
+            CollectionAssert.Contains(names, "input_probe");
         }
     }
 }

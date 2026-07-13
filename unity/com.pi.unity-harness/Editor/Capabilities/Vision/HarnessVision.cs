@@ -66,6 +66,15 @@ namespace Pi.UnityHarness.Editor.Capabilities.Vision
         /// Passing width/height <= 0 keeps GameView's native framebuffer resolution.
         /// </summary>
         public static IEnumerator CaptureJsonAsync(string mode, string path, int width, int height)
+            => CaptureJsonAsync(mode, path, width, height, false, true);
+
+        public static IEnumerator CaptureJsonAsync(
+            string mode,
+            string path,
+            int width,
+            int height,
+            bool annotate,
+            bool drawAnnotations = true)
         {
             mode = string.IsNullOrWhiteSpace(mode) ? "auto" : mode.ToLowerInvariant();
             NormalizeRequestedSize(width, height, out int gameWidth, out int gameHeight, out int sceneWidth, out int sceneHeight);
@@ -98,7 +107,8 @@ namespace Pi.UnityHarness.Editor.Capabilities.Vision
                     yield break;
                 }
 
-                yield return CaptureSceneCameraJson(sceneCamera, resolvedPath, sceneWidth, sceneHeight);
+                string sceneCapture = CaptureSceneCameraJson(sceneCamera, resolvedPath, sceneWidth, sceneHeight);
+                yield return annotate ? AttachAnnotations(sceneCapture, drawAnnotations) : sceneCapture;
                 yield break;
             }
 
@@ -106,7 +116,8 @@ namespace Pi.UnityHarness.Editor.Capabilities.Vision
             {
                 if (mode == "auto" && sceneCamera != null)
                 {
-                    yield return CaptureSceneCameraJson(sceneCamera, resolvedPath, sceneWidth, sceneHeight);
+                    string fallback = CaptureSceneCameraJson(sceneCamera, resolvedPath, sceneWidth, sceneHeight);
+                    yield return annotate ? AttachAnnotations(fallback, drawAnnotations) : fallback;
                     yield break;
                 }
 
@@ -122,15 +133,17 @@ namespace Pi.UnityHarness.Editor.Capabilities.Vision
 
             if (pending.Result.Success)
             {
-                yield return BuildCompletedCaptureJson(resolvedPath, "game",
+                string gameCapture = BuildCompletedCaptureJson(resolvedPath, "game",
                     pending.Result.CapturedWidth, pending.Result.CapturedHeight,
                     pending.Result.SourceWidth, pending.Result.SourceHeight);
+                yield return annotate ? AttachAnnotations(gameCapture, drawAnnotations) : gameCapture;
                 yield break;
             }
 
             if (mode == "auto" && sceneCamera != null && IsNoTextureError(pending.Result.Error))
             {
-                yield return CaptureSceneCameraJson(sceneCamera, resolvedPath, sceneWidth, sceneHeight);
+                string fallback = CaptureSceneCameraJson(sceneCamera, resolvedPath, sceneWidth, sceneHeight);
+                yield return annotate ? AttachAnnotations(fallback, drawAnnotations) : fallback;
                 yield break;
             }
 
@@ -149,6 +162,18 @@ namespace Pi.UnityHarness.Editor.Capabilities.Vision
         /// or {"status":"failed","error":"...","error_type":"not_supported|usage|runtime"}
         /// </summary>
         public static string CaptureJson(string mode, string path, int width, int height)
+            => CaptureJson(mode, path, width, height, false, true);
+
+        /// <summary>
+        /// Capture with optional UI/3D annotations attached to the JSON (and optionally drawn on the PNG).
+        /// </summary>
+        public static string CaptureJson(
+            string mode,
+            string path,
+            int width,
+            int height,
+            bool annotate,
+            bool drawAnnotations = true)
         {
             mode = string.IsNullOrWhiteSpace(mode) ? "auto" : mode.ToLowerInvariant();
             NormalizeSceneSize(width, height, out int sceneWidth, out int sceneHeight);
@@ -168,7 +193,30 @@ namespace Pi.UnityHarness.Editor.Capabilities.Vision
                 Directory.CreateDirectory(dir);
 
             Camera sceneCamera = SceneView.lastActiveSceneView != null ? SceneView.lastActiveSceneView.camera : null;
-            return CaptureSceneCameraJson(sceneCamera, resolvedPath, sceneWidth, sceneHeight);
+            string capture = CaptureSceneCameraJson(sceneCamera, resolvedPath, sceneWidth, sceneHeight);
+            return annotate ? AttachAnnotations(capture, drawAnnotations) : capture;
+        }
+
+        /// <summary>
+        /// Collect current GameView UI/physics click candidates as JSON (no capture required).
+        /// </summary>
+        public static string AnnotateJson(bool includeUi = true, bool includePhysics = true, int gridColumns = 5, int gridRows = 5)
+        {
+            var set = PiVisionAnnotator.Collect(gridColumns, gridRows, PiGameViewPhysicsRaycast.DefaultMaxDistance, includeUi, includePhysics);
+            return "{\"status\":\"succeeded\",\"schema\":\"harness.vision.annotations.v1\",\"annotations\":" +
+                   PiVisionAnnotator.ToJsonObject(set) +
+                   ",\"input_coordinate_system\":\"" + PiAbilityJson.Escape(set.InputCoordinateSystem) + "\"" +
+                   ",\"unity_coordinate_system\":\"" + PiAbilityJson.Escape(set.UnityCoordinateSystem) + "\"" +
+                   ",\"coordinate_conversion_formula\":\"" + PiAbilityJson.Escape(set.ConversionFormula) + "\"}";
+        }
+
+        private static string AttachAnnotations(string captureJson, bool drawOnImage)
+        {
+            if (string.IsNullOrEmpty(captureJson) || captureJson.IndexOf("\"status\":\"failed\"", StringComparison.Ordinal) >= 0)
+                return captureJson;
+
+            var set = PiVisionAnnotator.Collect();
+            return PiVisionAnnotator.AttachToCaptureJson(captureJson, set, drawOnImage);
         }
 
         // ─── New Analysis API ────────────────────────────────────────
