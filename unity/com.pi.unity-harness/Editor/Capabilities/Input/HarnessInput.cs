@@ -1,6 +1,8 @@
 using System;
 using System.Collections;
+using Pi.UnityHarness.Editor.Capabilities.Shared;
 using UnityEditor;
+using UnityEngine;
 
 namespace Pi.UnityHarness.Editor.Capabilities.Input
 {
@@ -13,6 +15,43 @@ namespace Pi.UnityHarness.Editor.Capabilities.Input
             "Pi.UnityHarness.Editor.Capabilities.Input.HarnessInputBackend, Pi.UnityHarness.InputSystem.Editor";
 
         public static bool IsAvailable => BackendType != null;
+
+        /// <summary>
+        /// 3D physics raycast from top-left GameView coordinates (does not require PlayMode).
+        /// </summary>
+        public static string RaycastJson(
+            float x,
+            float y,
+            float maxDistance = PiGameViewPhysicsRaycast.DefaultMaxDistance,
+            int layerMask = Physics.DefaultRaycastLayers)
+        {
+            if (!TryValidateFinite("x", x, out string numberError) ||
+                !TryValidateFinite("y", y, out numberError) ||
+                !TryValidateFinite("max_distance", maxDistance, out numberError))
+                return Fail(numberError, "usage");
+
+            var result = PiGameViewPhysicsRaycast.RaycastFromInput(x, y, maxDistance, layerMask, true);
+            return PiGameViewPhysicsRaycast.ToJson(result);
+        }
+
+        /// <summary>
+        /// Pre-click probe: UI EventSystem hit + optional 3D physics, same coordinate path as input_click.
+        /// </summary>
+        public static string ProbeJson(
+            float x,
+            float y,
+            float maxDistance = PiGameViewPhysicsRaycast.DefaultMaxDistance,
+            int layerMask = Physics.DefaultRaycastLayers,
+            bool includePhysics = true)
+        {
+            if (!TryValidateFinite("x", x, out string numberError) ||
+                !TryValidateFinite("y", y, out numberError) ||
+                !TryValidateFinite("max_distance", maxDistance, out numberError))
+                return Fail(numberError, "usage");
+
+            var result = PiInputProbe.ProbeAt(x, y, maxDistance, layerMask, includePhysics);
+            return PiInputProbe.ToJson(result);
+        }
 
         static HarnessInput()
         {

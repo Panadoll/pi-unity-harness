@@ -16,9 +16,11 @@ namespace Pi.UnityHarness.Editor.Capabilities.PipelineCommands
             [CliArg("mode", "Capture mode: auto, scene, or game")] string mode = "auto",
             [CliArg("path", "Output path")] string path = null,
             [CliArg("width", "Requested width")] int width = 0,
-            [CliArg("height", "Requested height")] int height = 0)
+            [CliArg("height", "Requested height")] int height = 0,
+            [CliArg("annotate", "Attach UI/3D click annotations")] bool annotate = false,
+            [CliArg("draw_annotations", "Draw annotation markers onto the PNG")] bool drawAnnotations = true)
         {
-            return HarnessVision.CaptureJson(mode, path, width, height);
+            return HarnessVision.CaptureJson(mode, path, width, height, annotate, drawAnnotations);
         }
 
         [CliCommand("vision_capture_async", "Capture a screenshot asynchronously")]
@@ -27,9 +29,24 @@ namespace Pi.UnityHarness.Editor.Capabilities.PipelineCommands
             [CliArg("path", "Output path")] string path = null,
             [CliArg("width", "Requested width")] int width = 0,
             [CliArg("height", "Requested height")] int height = 0,
+            [CliArg("annotate", "Attach UI/3D click annotations")] bool annotate = false,
+            [CliArg("draw_annotations", "Draw annotation markers onto the PNG")] bool drawAnnotations = true,
             [CliArg("timeout_ms", "Timeout in milliseconds")] int timeoutMs = 60000)
         {
-            return PiAbilityCoroutine.ToTask(HarnessVision.CaptureJsonAsync(mode, path, width, height), "vision_capture_async", timeoutMs);
+            return PiAbilityCoroutine.ToTask(
+                HarnessVision.CaptureJsonAsync(mode, path, width, height, annotate, drawAnnotations),
+                "vision_capture_async",
+                timeoutMs);
+        }
+
+        [CliCommand("vision_annotate", "Collect UI/3D click candidates without capturing")]
+        public static string Annotate(
+            [CliArg("include_ui", "Include reachable UI selectables")] bool includeUi = true,
+            [CliArg("include_physics", "Include 3D physics grid hits")] bool includePhysics = true,
+            [CliArg("grid_columns", "Physics sample columns")] int gridColumns = 5,
+            [CliArg("grid_rows", "Physics sample rows")] int gridRows = 5)
+        {
+            return HarnessVision.AnnotateJson(includeUi, includePhysics, gridColumns, gridRows);
         }
 
         [CliCommand("vision_capture_gameview", "Capture GameView asynchronously")]

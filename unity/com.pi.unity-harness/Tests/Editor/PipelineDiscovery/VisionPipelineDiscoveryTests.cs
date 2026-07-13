@@ -16,6 +16,7 @@ namespace Pi.UnityHarness.Editor.Tests.PipelineDiscovery
 
             CollectionAssert.Contains(names, "vision_capture");
             CollectionAssert.Contains(names, "vision_capture_gameview");
+            CollectionAssert.Contains(names, "vision_annotate");
             CollectionAssert.Contains(names, "vision_build_analysis_request");
             CollectionAssert.Contains(names, "vision_analyze_image");
             CollectionAssert.Contains(names, "vision_capture_and_analyze");

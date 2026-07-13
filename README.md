@@ -42,6 +42,7 @@ Unity C# worker
 - 最小化恢复：收到请求时如果主窗口处于最小化状态，会先调用 `ShowWindow(SW_RESTORE)` 再唤醒消息泵
 - 状态面：`unity_status` 返回 `focusState`、`windowState`、`heartbeatAgeMs`、`heartbeatTimedOut`
 - 超时保护：native broker 检测 heartbeat 超时与请求超时，避免 Editor 停泵后请求永久悬挂
+- 模态对话框保活：Save Scene 等 Win32 弹窗会卡住主线程时，后台 pump 线程继续发送 native heartbeat，避免误报 `managed_heartbeat_timeout`；`editorStatus` 会带 `modal=1` / `mainThreadStale=1`
 
 ## 构建 native DLL
 
@@ -76,13 +77,73 @@ Unity Editor 启动后会自动：
 
 ## 在 pi 中安装扩展
 
-把仓库里的扩展目录放到项目 `.pi/extensions/`，或者直接在当前仓库里运行 pi。
-
 扩展入口：
 
 ```text
 .pi/extensions/pi-unity-harness/index.ts
 ```
+
+### 方式 A：全局扩展（推荐）
+
+**配置文件必须是** `~/.pi/agent/settings.json`（不是 `~/.pi/settings.json`）。
+
+```json
+{
+  "extensions": [
+    "F:/Projects-Test/unity-ai-tool/pi-unity-harness/.pi/extensions/pi-unity-harness"
+  ],
+  "pi-unity-harness": {
+    "enabled": false
+  }
+}
+```
+
+- `extensions`：把本扩展设为 **pi 全局扩展**（所有项目可用）
+- `pi-unity-harness.enabled`：**默认 `false`（关闭）**
+  - `false`（默认）：**不注册**任何 `unity_*` tool，不自动连 Unity；仅保留 `/unity-harness` 命令
+  - `true`：注册工具并尝试连接
+
+需要用时手动开：
+
+```text
+/unity-harness on              # 仅当前会话
+/unity-harness on --persist    # 当前会话 + 写入 settings（下次默认也开）
+/unity-harness off             # 关掉（工具从 active 移除；已注册的定义仍在进程内，但不会被模型调用）
+```
+
+> 说明：Pi 无法在运行时“卸载”已 `registerTool` 的定义。关闭时的保证是：
+> 1）启动时若 `enabled=false`，**根本不会 register**；
+> 2）会话中 off 后，从 active tools 移除 + `tool_call` 硬拦截。
+
+项目级覆盖写在 `<project>/.pi/settings.json`（同 key，项目优先于全局）。
+
+进程级临时覆盖（优先级最高）：
+
+```bash
+# bash / Git Bash
+export PI_UNITY_HARNESS_ENABLED=0
+
+# PowerShell
+$env:PI_UNITY_HARNESS_ENABLED = "0"
+```
+
+会话内切换：
+
+```text
+/unity-harness status            # 查看 runtime / settings / 当前激活的 unity 工具
+/unity-harness on
+/unity-harness off
+/unity-harness on --persist      # 会话 + 写入 ~/.pi/agent/settings.json
+/unity-harness off --persist
+/unity-harness on --project      # 会话 + 写入 <cwd>/.pi/settings.json
+/unity-harness off --project
+```
+
+改完 `enabled` 后需 **新开 pi 会话**（或 `/unity-harness on|off`）才会生效；`/reload` 也会重新读 settings。
+
+### 方式 B：项目本地
+
+把仓库里的扩展目录放到项目 `.pi/extensions/`，或在该仓库内直接运行 pi（自动发现 `.pi/extensions/pi-unity-harness`）。
 
 如果当前 cwd 不是 Unity 项目根目录，需要设置：
 

@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
 using System.Text;
+using System.Threading.Tasks;
 using UnityEditor;
 
 namespace Pi.UnityHarness.Editor
@@ -18,6 +19,8 @@ namespace Pi.UnityHarness.Editor
             public string TypeName;
             public IEnumerator Coroutine;
             public bool IsCoroutine;
+            public Task AsyncTask;
+            public bool IsAsyncTask;
 
             public static EvalResult FromValue(object value)
             {
@@ -30,6 +33,30 @@ namespace Pi.UnityHarness.Editor
                         Coroutine = coroutine,
                         Output = "(coroutine)",
                         TypeName = "IEnumerator",
+                    };
+                }
+
+                if (TryAsTask(value, out Task task))
+                {
+                    return new EvalResult
+                    {
+                        Ok = true,
+                        IsAsyncTask = true,
+                        AsyncTask = task,
+                        Output = "(task)",
+                        TypeName = task.GetType().FullName,
+                    };
+                }
+
+                if (TryAsTaskLike(value, out Task taskLike))
+                {
+                    return new EvalResult
+                    {
+                        Ok = true,
+                        IsAsyncTask = true,
+                        AsyncTask = taskLike,
+                        Output = "(task-like)",
+                        TypeName = value.GetType().FullName,
                     };
                 }
 
@@ -49,6 +76,106 @@ namespace Pi.UnityHarness.Editor
             public static EvalResult Fail(string error, string typeName)
             {
                 return new EvalResult { Ok = false, Error = error, TypeName = typeName ?? "error" };
+            }
+
+            internal static bool TryAsTask(object value, out Task task)
+            {
+                task = value as Task;
+                return task != null;
+            }
+
+            /// <summary>
+            /// Support awaitables that expose GetAwaiter() with IsCompleted/OnCompleted/GetResult
+            /// (e.g. ValueTask, custom awaitables) by wrapping them into a Task.
+            /// </summary>
+            internal static bool TryAsTaskLike(object value, out Task task)
+            {
+                task = null;
+                if (value == null || value is Task)
+                    return false;
+
+                Type type = value.GetType();
+                MethodInfo getAwaiter = type.GetMethod("GetAwaiter", Type.EmptyTypes);
+                if (getAwaiter == null || getAwaiter.GetParameters().Length != 0)
+                    return false;
+
+                object awaiter;
+                try
+                {
+                    awaiter = getAwaiter.Invoke(value, null);
+                }
+                catch
+                {
+                    return false;
+                }
+
+                if (awaiter == null)
+                    return false;
+
+                Type awaiterType = awaiter.GetType();
+                PropertyInfo isCompletedProp = awaiterType.GetProperty("IsCompleted");
+                MethodInfo onCompleted = awaiterType.GetMethod("OnCompleted", new[] { typeof(Action) });
+                MethodInfo getResult = awaiterType.GetMethod("GetResult", Type.EmptyTypes);
+                if (isCompletedProp == null || onCompleted == null || getResult == null)
+                    return false;
+
+                var tcs = new TaskCompletionSource<object>();
+                Action complete = () =>
+                {
+                    try
+                    {
+                        object result = getResult.Invoke(awaiter, null);
+                        tcs.TrySetResult(result);
+                    }
+                    catch (TargetInvocationException ex)
+                    {
+                        tcs.TrySetException(ex.InnerException ?? ex);
+                    }
+                    catch (Exception ex)
+                    {
+                        tcs.TrySetException(ex);
+                    }
+                };
+
+                try
+                {
+                    bool isCompleted = isCompletedProp.GetValue(awaiter) is bool b && b;
+                    if (isCompleted)
+                        complete();
+                    else
+                        onCompleted.Invoke(awaiter, new object[] { complete });
+                }
+                catch (Exception ex)
+                {
+                    tcs.TrySetException(ex is TargetInvocationException tie ? (tie.InnerException ?? tie) : ex);
+                }
+
+                task = tcs.Task;
+                return true;
+            }
+
+            internal static object GetTaskResult(Task task)
+            {
+                if (task == null)
+                    return null;
+
+                Type type = task.GetType();
+                if (!type.IsGenericType)
+                    return null;
+
+                // Task<TResult>
+                PropertyInfo resultProp = type.GetProperty("Result");
+                if (resultProp == null)
+                    return null;
+
+                try
+                {
+                    return resultProp.GetValue(task);
+                }
+                catch (TargetInvocationException ex)
+                {
+                    throw ex.InnerException ?? ex;
+                }
             }
         }
 
@@ -136,6 +263,7 @@ namespace Pi.UnityHarness.Editor
             Run("using System.Linq;");
             Run("using System.Collections;");
             Run("using System.Collections.Generic;");
+            Run("using System.Threading.Tasks;");
             Run("using UnityEngine;");
             Run("using UnityEditor;");
 
