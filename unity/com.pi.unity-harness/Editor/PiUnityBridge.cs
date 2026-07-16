@@ -110,6 +110,11 @@ namespace Pi.UnityHarness.Editor
             public string filePath;
             public string name;
             public string parametersJson;
+            public int maxDepth = -1;
+            public int maxNodes = -1;
+            public int logLimit = -1;
+            public string logLevel;
+            public bool includeComponents;
         }
 
         [Serializable]
@@ -594,6 +599,9 @@ namespace Pi.UnityHarness.Editor
                 case "status":
                     Status(request);
                     return;
+                case "context_snapshot":
+                    ContextSnapshot(request);
+                    return;
                 case "list_commands":
                     ListPipelineCommands(request);
                     return;
@@ -904,6 +912,31 @@ namespace Pi.UnityHarness.Editor
         {
             string statusJson = BuildStatusResponse(request.id);
             CompleteJson(request.id, statusJson);
+        }
+
+        private static void ContextSnapshot(NativeRequest request)
+        {
+            int maxDepth = request.payload != null && request.payload.maxDepth >= 0
+                ? request.payload.maxDepth
+                : PiUnityContextSnapshot.DefaultMaxDepth;
+            int maxNodes = request.payload != null && request.payload.maxNodes > 0
+                ? request.payload.maxNodes
+                : PiUnityContextSnapshot.DefaultMaxNodes;
+            int logLimit = request.payload != null && request.payload.logLimit >= 0
+                ? request.payload.logLimit
+                : PiUnityContextSnapshot.DefaultLogLimit;
+            string logLevel = request.payload != null ? request.payload.logLevel : null;
+            bool includeComponents = request.payload != null && request.payload.includeComponents;
+
+            try
+            {
+                string snapshot = PiUnityContextSnapshot.BuildJson(maxDepth, maxNodes, logLimit, logLevel, includeComponents);
+                CompleteJson(request.id, PiUnityJsonHelper.SuccessJson(request.id, snapshot));
+            }
+            catch (Exception ex)
+            {
+                CompleteError(request.id, "context_snapshot_failed: " + ex.Message, "snapshot_error");
+            }
         }
 
         private static string BuildStatusResponse(string replyTo)
