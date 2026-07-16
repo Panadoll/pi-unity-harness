@@ -32,6 +32,8 @@ const CORE_UNITY_TOOLS = [
   "unity_discover",
   "unity_ping",
   "unity_status",
+  "unity_snapshot",
+  "unity_timeline",
   "unity_pipeline",
   "unity_eval",
   "unity_recompile",
@@ -1366,6 +1368,74 @@ export default function (pi: ExtensionAPI) {
       assertEnabled();
       try { await client.listPipelineCommands(false, 5000); } catch { /* status 本身仍可降级返回 */ }
       const result = await client.status();
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        details: result,
+      };
+    },
+  });
+
+  // ---- unity_snapshot ----
+
+  pi.registerTool({
+    name: "unity_snapshot",
+    label: "Unity Context Snapshot",
+    description: "一次获取 Unity Editor、活动场景层级、当前选择和近期日志的有界上下文快照。",
+    promptSnippet: "Use unity_snapshot to collect the current Unity context before planning or after changing a scene.",
+    promptGuidelines: [
+      "Prefer unity_snapshot over separate status, hierarchy, selection, and log calls when you need broad context.",
+      "Keep the default bounds unless deeper hierarchy or component type information is necessary.",
+      "Use logLevel=all when normal logs are needed; the default error filter keeps context concise.",
+    ],
+    parameters: Type.Object({
+      maxDepth: Type.Optional(Type.Integer({ description: "层级最大深度，默认 3，范围 0-20。" })),
+      maxNodes: Type.Optional(Type.Integer({ description: "层级最大节点数，默认 500，范围 1-5000。" })),
+      logLimit: Type.Optional(Type.Integer({ description: "近期日志数量，默认 50，范围 0-500。" })),
+      logLevel: Type.Optional(Type.String({ description: "日志过滤：error、warning、log/info 或 all。默认 error。" })),
+      includeComponents: Type.Optional(Type.Boolean({ description: "是否包含每个节点的组件类型列表，默认 false。" })),
+    }),
+    async execute(_toolCallId, params) {
+      assertEnabled();
+      const result = await client.request("context_snapshot", {
+        maxDepth: params.maxDepth ?? 3,
+        maxNodes: params.maxNodes ?? 500,
+        logLimit: params.logLimit ?? 50,
+        logLevel: params.logLevel ?? "error",
+        includeComponents: params.includeComponents ?? false,
+      }, 30000);
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        details: result,
+      };
+    },
+  });
+
+  // ---- unity_timeline ----
+
+  pi.registerTool({
+    name: "unity_timeline",
+    label: "Unity Action Timeline",
+    description: "查询持久化的 Unity 操作审计时间线；记录请求输入摘要、结果、耗时和成功状态。",
+    promptSnippet: "Use unity_timeline to inspect recent audited Unity actions and failures.",
+    promptGuidelines: [
+      "Use unity_timeline after failures or long workflows to review what actually ran.",
+      "Filter by action for a specific Pipeline command, or by requestType for eval/recompile/snapshot operations.",
+      "Timeline queries are not audited themselves, avoiding recursive audit noise.",
+    ],
+    parameters: Type.Object({
+      limit: Type.Optional(Type.Integer({ description: "返回最近操作数，默认 50，范围 1-200。" })),
+      requestType: Type.Optional(Type.String({ description: "按请求类型过滤，例如 command、validate_execute_code、context_snapshot、status。" })),
+      action: Type.Optional(Type.String({ description: "按动作过滤；Pipeline 命令使用其命令名。" })),
+      success: Type.Optional(Type.String({ description: "all、success 或 failure，默认 all。" })),
+    }),
+    async execute(_toolCallId, params) {
+      assertEnabled();
+      const result = await client.request("timeline", {
+        ...(params.limit !== undefined ? { limit: params.limit } : {}),
+        ...(params.requestType !== undefined ? { requestType: params.requestType } : {}),
+        ...(params.action !== undefined ? { action: params.action } : {}),
+        ...(params.success !== undefined ? { success: params.success } : {}),
+      }, 10000);
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
         details: result,

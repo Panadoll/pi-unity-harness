@@ -162,50 +162,14 @@ namespace Pi.UnityHarness.Editor.Capabilities.PipelineCommands
 
     internal static class PiMcpConsoleLogBuffer
     {
-        private const int MaxLogs = 1000;
-        private static readonly List<Entry> Entries = new List<Entry>();
-
-        static PiMcpConsoleLogBuffer()
+        public static List<PiUnityConsoleLogBuffer.Entry> Get(int limit, string level)
         {
-            Application.logMessageReceived -= OnLogMessageReceived;
-            Application.logMessageReceived += OnLogMessageReceived;
-        }
-
-        public static List<Entry> Get(int limit, string level)
-        {
-            if (limit <= 0)
-                limit = 100;
-
-            IEnumerable<Entry> query = Entries;
-            if (!string.IsNullOrWhiteSpace(level))
-                query = query.Where(entry => string.Equals(entry.type, level, StringComparison.OrdinalIgnoreCase));
-            return query.Skip(Math.Max(0, query.Count() - limit)).ToList();
+            return PiUnityConsoleLogBuffer.Get(limit, level);
         }
 
         public static void Clear()
         {
-            Entries.Clear();
-        }
-
-        private static void OnLogMessageReceived(string condition, string stackTrace, LogType type)
-        {
-            Entries.Add(new Entry
-            {
-                message = condition,
-                stackTrace = stackTrace,
-                type = type.ToString(),
-                time = DateTime.UtcNow.ToString("o"),
-            });
-            if (Entries.Count > MaxLogs)
-                Entries.RemoveRange(0, Entries.Count - MaxLogs);
-        }
-
-        internal sealed class Entry
-        {
-            public string message;
-            public string stackTrace;
-            public string type;
-            public string time;
+            PiUnityConsoleLogBuffer.Clear();
         }
     }
 }

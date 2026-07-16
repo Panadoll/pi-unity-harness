@@ -6,7 +6,7 @@
 
 - `native/` — Rust `cdylib`，在 Unity 进程内持有 named pipe server，域重载期间不销毁
 - `unity/com.pi.unity-harness/` — Unity Editor 包，C# 侧负责主线程执行与域重载生命周期
-- `.pi/extensions/pi-unity-harness/` — pi TypeScript 扩展，给 LLM 暴露 `unity_ping` / `unity_status` / `unity_eval` 工具
+- `.pi/extensions/pi-unity-harness/` — pi TypeScript 扩展，给 LLM 暴露连接、上下文快照、操作审计、Pipeline 与 eval 工具
 
 ## 架构
 
@@ -37,6 +37,8 @@ Unity C# worker
 - `unity_ping`：检查 native broker 是否在线
 - `unity_status`：查看 broker / managed state / pending queue
 - `unity_eval`：在 Unity Editor 主线程执行 C# 代码
+- `unity_snapshot`：一次获取 Editor 状态、活动场景层级、当前选择和近期日志；深度、节点数与日志数均有上限
+- `unity_timeline`：查询 `Temp/PiUnityHarness/ActionTimeline/*.jsonl` 中的追加式操作审计，支持按请求类型、动作和成功状态过滤
 - `bridge.json`：Unity 启动后写入 `Library/PiUnityHarness/bridge.json`，供 pi 扩展发现 pipe 与 token
 - 后台保活：Editor 启动 bridge 时临时启用 `Application.runInBackground`，后台线程收到请求后用 `WM_NULL` 唤醒消息泵
 - 最小化恢复：收到请求时如果主窗口处于最小化状态，会先调用 `ShowWindow(SW_RESTORE)` 再唤醒消息泵
@@ -162,8 +164,22 @@ export PI_UNITY_BRIDGE_FILE=/path/to/UnityProject/Library/PiUnityHarness/bridge.
 ```text
 unity_ping
 unity_status
+unity_snapshot { maxDepth: 3, maxNodes: 500, logLimit: 50, logLevel: "error" }
+unity_timeline { limit: 20, success: "failure" }
 unity_eval { code: "UnityEngine.Debug.Log(123); 123" }
 ```
+
+## 上下文快照与操作审计
+
+`unity_snapshot` 默认返回：
+
+- 项目路径、Unity 版本与平台
+- Editor 的 PlayMode、暂停、编译和更新状态
+- 活动场景元数据、主相机和当前选择
+- 有界场景层级；默认深度 3、最多 500 个节点
+- 近期错误日志；可用 `logLevel: "all"` 包含普通日志
+
+Action Timeline 在 native broker 接收请求时写 `started` 事件，在响应、超时或断开时写 `completed` 事件，因此可跨 Domain Reload 保留操作开始记录。eval 仅记录代码长度，不落盘原始代码；Pipeline 参数与结果会截断并递归脱敏常见凭据字段，也不会写入 bridge token。`unity_timeline` 查询本身不进入时间线，避免递归噪声。单个 JSONL 文件达到 5 MB 后自动轮转。
 
 ## 当前限制
 

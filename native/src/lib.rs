@@ -32,9 +32,12 @@ fn normalize_pipe_name(pipe_name: String) -> String {
 mod imp {
     use std::collections::{HashMap, VecDeque};
     use std::ffi::{c_void, OsStr};
+    use std::fs::{self, OpenOptions};
+    use std::io::{Read, Seek, SeekFrom, Write};
     use std::os::windows::ffi::OsStrExt;
+    use std::path::PathBuf;
     use std::ptr::null_mut;
-    use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU64, Ordering};
     use std::sync::{Arc, Mutex, OnceLock};
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -56,12 +59,17 @@ mod imp {
     const STATE_PLANE_SLOT_COUNT: usize = 2;
     const STATE_PLANE_SLOT_SIZE: usize = 64 * 1024;
     const STATE_PLANE_SLOT_PAYLOAD_OFFSET: usize = 24;
-    const STATE_PLANE_MAX_PAYLOAD: usize =
-        STATE_PLANE_SLOT_SIZE - STATE_PLANE_SLOT_PAYLOAD_OFFSET;
+    const STATE_PLANE_MAX_PAYLOAD: usize = STATE_PLANE_SLOT_SIZE - STATE_PLANE_SLOT_PAYLOAD_OFFSET;
     const HEARTBEAT_TIMEOUT_MS: i64 = 5_000;
     const REQUEST_TIMEOUT_MS: i64 = 60_000;
     const CLIENT_HEARTBEAT_TIMEOUT_MS: i64 = 15_000;
-    const CAPABILITIES: [&str; 9] = [
+    const AUDIT_SCHEMA_VERSION: u64 = 1;
+    const AUDIT_FILE_MAX_BYTES: u64 = 5 * 1024 * 1024;
+    const AUDIT_VALUE_MAX_CHARS: usize = 4096;
+    const AUDIT_QUERY_MAX_EVENTS: usize = 20_000;
+    const AUDIT_QUERY_DEFAULT_LIMIT: usize = 50;
+    const AUDIT_QUERY_MAX_LIMIT: usize = 200;
+    const CAPABILITIES: [&str; 11] = [
         "native-broker",
         "direct-status",
         "reload-stable-pipe",
@@ -71,6 +79,8 @@ mod imp {
         "heartbeat-timeout",
         "request-timeout",
         "client-heartbeat-timeout",
+        "context-snapshot-v1",
+        "action-timeline-v1",
     ];
 
     type Bool = i32;
@@ -129,7 +139,8 @@ mod imp {
                 eprintln!("[pi-unity-native] create state plane failed: {mapping_name}");
                 return None;
             }
-            let view = unsafe { MapViewOfFile(handle, FILE_MAP_WRITE, 0, 0, total_size) as *mut u8 };
+            let view =
+                unsafe { MapViewOfFile(handle, FILE_MAP_WRITE, 0, 0, total_size) as *mut u8 };
             if view.is_null() {
                 unsafe {
                     let _ = CloseHandle(handle);
@@ -237,7 +248,10 @@ mod imp {
     }
 
     fn state_plane_name(project_path: &str) -> String {
-        format!(r"Local\PiUnityHarnessState_{}", project_key_hash(project_path))
+        format!(
+            r"Local\PiUnityHarnessState_{}",
+            project_key_hash(project_path)
+        )
     }
 
     #[derive(Clone)]
@@ -247,6 +261,9 @@ mod imp {
         enqueued_at_ms: i64,
         delivered_at_ms: i64,
         timeout_ms: i64,
+        audit_action_id: u64,
+        request_type: String,
+        action: String,
     }
 
     struct EditorObservation {
@@ -271,6 +288,8 @@ mod imp {
         in_flight: Mutex<HashMap<String, ManagedRequest>>,
         writer: Mutex<Option<mpsc::Sender<Vec<u8>>>>,
         state_plane: Mutex<Option<StatePlane>>,
+        next_audit_action_id: AtomicU64,
+        audit_io: Mutex<()>,
     }
 
     impl Broker {
@@ -293,6 +312,8 @@ mod imp {
                 in_flight: Mutex::new(HashMap::new()),
                 writer: Mutex::new(None),
                 state_plane: Mutex::new(state_plane),
+                next_audit_action_id: AtomicU64::new((now_ms().max(0) as u64).saturating_mul(1000)),
+                audit_io: Mutex::new(()),
             }
         }
 
@@ -389,7 +410,10 @@ mod imp {
                 let mut kept = VecDeque::new();
                 while let Some(request) = pending.pop_front() {
                     if now.saturating_sub(request.enqueued_at_ms) > request.timeout_ms {
-                        lines.push(self.error_line(&request.id, "request_timeout_before_dispatch"));
+                        let response =
+                            self.error_line(&request.id, "request_timeout_before_dispatch");
+                        self.append_audit_completed(&request, &response);
+                        lines.push(response);
                     } else {
                         kept.push_back(request);
                     }
@@ -418,13 +442,15 @@ mod imp {
                     })
                     .collect();
                 for id in expired {
-                    if in_flight.remove(&id).is_some() {
+                    if let Some(request) = in_flight.remove(&id) {
                         let error = if heartbeat_timed_out {
                             "managed_heartbeat_timeout"
                         } else {
                             "request_timeout_in_flight"
                         };
-                        lines.push(self.error_line(&id, error));
+                        let response = self.error_line(&id, error);
+                        self.append_audit_completed(&request, &response);
+                        lines.push(response);
                     }
                 }
             }
@@ -508,12 +534,16 @@ mod imp {
             let mut lines: Vec<Vec<u8>> = Vec::new();
             if let Ok(mut pending) = self.pending.lock() {
                 while let Some(request) = pending.pop_front() {
-                    lines.push(self.error_line(&request.id, message));
+                    let response = self.error_line(&request.id, message);
+                    self.append_audit_completed(&request, &response);
+                    lines.push(response);
                 }
             }
             if let Ok(mut in_flight) = self.in_flight.lock() {
-                for (id, _) in in_flight.drain() {
-                    lines.push(self.error_line(&id, message));
+                for (id, request) in in_flight.drain() {
+                    let response = self.error_line(&id, message);
+                    self.append_audit_completed(&request, &response);
+                    lines.push(response);
                 }
             }
             for line in lines {
@@ -595,7 +625,22 @@ mod imp {
 
             match req_type {
                 "ping" => self.send_line(self.ok_line(id, json!({ "pong": true }))),
-                "status" => self.send_line(self.ok_line(id, self.status_payload())),
+                "status" => {
+                    let request = self.start_direct_audit(id, req_type, "status", &value);
+                    let response = self.ok_line(id, self.status_payload());
+                    self.complete_direct_audit(&request, &response);
+                    self.send_line(response);
+                }
+                "timeline" => {
+                    let result = match self.query_timeline(&value) {
+                        Ok(result) => result,
+                        Err(error) => {
+                            self.send_line(self.error_line(id, &error));
+                            return;
+                        }
+                    };
+                    self.send_line(self.ok_line(id, result));
+                }
                 "bridge_capabilities" => self.send_line(self.ok_line(
                     id,
                     json!({
@@ -612,13 +657,19 @@ mod imp {
                         self.send_line(self.error_line(id, "request_too_large"));
                         return;
                     }
+                    let action = request_action(&value);
+                    let audit_action_id = self.next_audit_action_id.fetch_add(1, Ordering::Relaxed);
                     let request = ManagedRequest {
                         id: id.to_string(),
                         line: text.as_bytes().to_vec(),
                         enqueued_at_ms: now_ms(),
                         delivered_at_ms: 0,
                         timeout_ms: request_timeout_ms(&value),
+                        audit_action_id,
+                        request_type: req_type.to_string(),
+                        action,
                     };
+                    self.append_audit_started(&request, &value);
                     if let Ok(mut pending) = self.pending.lock() {
                         pending.push_back(request);
                     }
@@ -627,7 +678,12 @@ mod imp {
             }
         }
 
-        fn poll_request(&self, buffer: *mut u8, buffer_len: i32, out_required_len: *mut i32) -> i32 {
+        fn poll_request(
+            &self,
+            buffer: *mut u8,
+            buffer_len: i32,
+            out_required_len: *mut i32,
+        ) -> i32 {
             self.reap_timeouts();
 
             let request = {
@@ -668,15 +724,16 @@ mod imp {
         }
 
         fn complete_request(&self, id: &str, response: Vec<u8>) {
-            let known_request = self
+            let request = self
                 .in_flight
                 .lock()
-                .map(|mut in_flight| in_flight.remove(id).is_some())
-                .unwrap_or(false);
-            if !known_request {
+                .ok()
+                .and_then(|mut in_flight| in_flight.remove(id));
+            let Some(request) = request else {
                 self.publish_status_snapshot();
                 return;
-            }
+            };
+            self.append_audit_completed(&request, &response);
             let mut line = response;
             if !line.ends_with(b"\n") {
                 line.push(b'\n');
@@ -684,6 +741,524 @@ mod imp {
             self.send_line(line);
             self.publish_status_snapshot();
         }
+
+        fn start_direct_audit(
+            &self,
+            id: &str,
+            request_type: &str,
+            action: &str,
+            value: &Value,
+        ) -> ManagedRequest {
+            let request = ManagedRequest {
+                id: id.to_string(),
+                line: Vec::new(),
+                enqueued_at_ms: now_ms(),
+                delivered_at_ms: now_ms(),
+                timeout_ms: request_timeout_ms(value),
+                audit_action_id: self.next_audit_action_id.fetch_add(1, Ordering::Relaxed),
+                request_type: request_type.to_string(),
+                action: action.to_string(),
+            };
+            self.append_audit_started(&request, value);
+            request
+        }
+
+        fn complete_direct_audit(&self, request: &ManagedRequest, response: &[u8]) {
+            self.append_audit_completed(request, response);
+        }
+
+        fn append_audit_started(&self, request: &ManagedRequest, value: &Value) {
+            let input = audit_input(value);
+            self.append_audit_event(&json!({
+                "schemaVersion": AUDIT_SCHEMA_VERSION,
+                "event": "started",
+                "actionId": request.audit_action_id,
+                "requestId": request.id,
+                "requestType": request.request_type,
+                "action": request.action,
+                "timestampMs": request.enqueued_at_ms,
+                "timestampUtc": timestamp_utc(request.enqueued_at_ms),
+                "input": input,
+            }));
+        }
+
+        fn append_audit_completed(&self, request: &ManagedRequest, response: &[u8]) {
+            let completed_at_ms = now_ms();
+            let response_value: Value = serde_json::from_slice(trim_ascii(response))
+                .unwrap_or_else(|_| json!({ "ok": false, "error": "invalid_managed_response" }));
+            let success = response_value
+                .get("ok")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let mut result = serde_json::Map::new();
+            result.insert("schemaVersion".to_string(), json!(AUDIT_SCHEMA_VERSION));
+            result.insert("event".to_string(), json!("completed"));
+            result.insert("actionId".to_string(), json!(request.audit_action_id));
+            result.insert("requestId".to_string(), json!(request.id));
+            result.insert("requestType".to_string(), json!(request.request_type));
+            result.insert("action".to_string(), json!(request.action));
+            result.insert("timestampMs".to_string(), json!(completed_at_ms));
+            result.insert(
+                "timestampUtc".to_string(),
+                json!(timestamp_utc(completed_at_ms)),
+            );
+            result.insert(
+                "durationMs".to_string(),
+                json!(completed_at_ms.saturating_sub(request.enqueued_at_ms)),
+            );
+            result.insert("success".to_string(), json!(success));
+            if success {
+                result.insert(
+                    "result".to_string(),
+                    bounded_value(redact_sensitive(
+                        response_value.get("result").cloned().unwrap_or(Value::Null),
+                    )),
+                );
+            } else {
+                result.insert(
+                    "errorType".to_string(),
+                    response_value
+                        .get("error_type")
+                        .cloned()
+                        .unwrap_or_else(|| json!("unknown")),
+                );
+                result.insert(
+                    "error".to_string(),
+                    bounded_value(
+                        response_value
+                            .get("error")
+                            .cloned()
+                            .unwrap_or_else(|| json!("unity request failed")),
+                    ),
+                );
+            }
+            self.append_audit_event(&Value::Object(result));
+        }
+
+        fn append_audit_event(&self, value: &Value) {
+            let _guard = self.audit_io.lock().ok();
+            let path = self.audit_file_path();
+            if let Some(parent) = path.parent() {
+                let _ = fs::create_dir_all(parent);
+            }
+            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+                if let Ok(mut bytes) = serde_json::to_vec(value) {
+                    bytes.push(b'\n');
+                    let _ = file.write_all(&bytes);
+                }
+            }
+        }
+
+        fn audit_directory(&self) -> PathBuf {
+            PathBuf::from(&self.project_path)
+                .join("Temp")
+                .join("PiUnityHarness")
+                .join("ActionTimeline")
+        }
+
+        fn audit_file_path(&self) -> PathBuf {
+            let directory = self.audit_directory();
+            let date = date_utc(now_ms());
+            let base = directory.join(format!("{date}.jsonl"));
+            if file_len(&base) < AUDIT_FILE_MAX_BYTES {
+                return base;
+            }
+            for index in 1..1000 {
+                let path = directory.join(format!("{date}-{index:03}.jsonl"));
+                if file_len(&path) < AUDIT_FILE_MAX_BYTES {
+                    return path;
+                }
+            }
+            directory.join(format!("{date}-overflow.jsonl"))
+        }
+
+        fn query_timeline(&self, value: &Value) -> Result<Value, String> {
+            let payload = value.get("payload").unwrap_or(&Value::Null);
+            let limit = payload
+                .get("limit")
+                .and_then(Value::as_u64)
+                .unwrap_or(AUDIT_QUERY_DEFAULT_LIMIT as u64)
+                .clamp(1, AUDIT_QUERY_MAX_LIMIT as u64) as usize;
+            let request_type = payload
+                .get("requestType")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let action = payload.get("action").and_then(Value::as_str).unwrap_or("");
+            let success_filter = payload
+                .get("success")
+                .and_then(Value::as_str)
+                .unwrap_or("all");
+            let success = match success_filter.to_ascii_lowercase().as_str() {
+                "" | "all" => None,
+                "success" | "true" => Some(true),
+                "failure" | "false" => Some(false),
+                _ => return Err("timeline success must be all, success, or failure".to_string()),
+            };
+
+            let _guard = self.audit_io.lock().ok();
+            let mut files: Vec<PathBuf> = fs::read_dir(self.audit_directory())
+                .map(|entries| {
+                    entries
+                        .filter_map(Result::ok)
+                        .map(|entry| entry.path())
+                        .filter(|path| {
+                            path.extension().and_then(|ext| ext.to_str()) == Some("jsonl")
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            files.sort_by(|a, b| file_modified_ms(b).cmp(&file_modified_ms(a)));
+
+            let mut events = Vec::new();
+            for path in files {
+                if events.len() >= AUDIT_QUERY_MAX_EVENTS {
+                    break;
+                }
+                read_recent_jsonl_events(&path, AUDIT_QUERY_MAX_EVENTS - events.len(), &mut events);
+            }
+            events.sort_by_key(event_timestamp_ms);
+
+            let mut actions: HashMap<String, Value> = HashMap::new();
+            let mut order: Vec<String> = Vec::new();
+            for event in events {
+                let request_id = event.get("requestId").and_then(Value::as_str).unwrap_or("");
+                if request_id.is_empty() {
+                    continue;
+                }
+                let action_id = event.get("actionId").and_then(Value::as_u64).unwrap_or(0);
+                let key = format!("{action_id}:{request_id}");
+                if !actions.contains_key(&key) {
+                    actions.insert(
+                        key.clone(),
+                        json!({
+                            "actionId": action_id,
+                            "requestId": request_id,
+                            "status": "pending"
+                        }),
+                    );
+                    order.push(key.clone());
+                }
+                let Some(item) = actions.get_mut(&key).and_then(Value::as_object_mut) else {
+                    continue;
+                };
+                copy_json_field(&event, item, "requestType", "requestType");
+                copy_json_field(&event, item, "action", "action");
+                match event.get("event").and_then(Value::as_str) {
+                    Some("started") => {
+                        copy_json_field(&event, item, "timestampUtc", "startedAtUtc");
+                        copy_json_field(&event, item, "timestampMs", "startedAtMs");
+                        copy_json_field(&event, item, "input", "input");
+                    }
+                    Some("completed") => {
+                        item.insert("status".to_string(), json!("completed"));
+                        copy_json_field(&event, item, "timestampUtc", "completedAtUtc");
+                        copy_json_field(&event, item, "timestampMs", "completedAtMs");
+                        copy_json_field(&event, item, "durationMs", "durationMs");
+                        copy_json_field(&event, item, "success", "success");
+                        copy_json_field(&event, item, "result", "result");
+                        copy_json_field(&event, item, "errorType", "errorType");
+                        copy_json_field(&event, item, "error", "error");
+                    }
+                    _ => {}
+                }
+            }
+
+            let mut filtered: Vec<Value> = order
+                .into_iter()
+                .filter_map(|key| actions.remove(&key))
+                .filter(|item| timeline_matches(item, request_type, action, success))
+                .collect();
+            filtered.sort_by(|a, b| activity_timestamp_ms(b).cmp(&activity_timestamp_ms(a)));
+            filtered.truncate(limit);
+
+            Ok(json!({
+                "schemaVersion": AUDIT_SCHEMA_VERSION,
+                "capturedAtMs": now_ms(),
+                "capturedAtUtc": timestamp_utc(now_ms()),
+                "directory": self.audit_directory().to_string_lossy().replace('\\', "/"),
+                "count": filtered.len(),
+                "actions": filtered,
+            }))
+        }
+    }
+
+    fn read_recent_jsonl_events(path: &PathBuf, limit: usize, events: &mut Vec<Value>) {
+        let Ok(file) = fs::File::open(path) else {
+            return;
+        };
+        let Ok(length) = file.metadata().map(|metadata| metadata.len()) else {
+            return;
+        };
+        let mut reader = std::io::BufReader::new(file);
+        let mut position = length;
+        let mut carry = Vec::new();
+        const CHUNK_SIZE: usize = 64 * 1024;
+
+        while position > 0 && events.len() < limit {
+            let read_size = usize::try_from(position.min(CHUNK_SIZE as u64)).unwrap_or(CHUNK_SIZE);
+            position -= read_size as u64;
+            if reader.seek(SeekFrom::Start(position)).is_err() {
+                return;
+            }
+            let mut chunk = vec![0u8; read_size];
+            if reader.read_exact(&mut chunk).is_err() {
+                return;
+            }
+            chunk.extend_from_slice(&carry);
+            let mut end = chunk.len();
+            for index in (0..chunk.len()).rev() {
+                if chunk[index] != b'\n' {
+                    continue;
+                }
+                if index + 1 < end {
+                    let line = trim_ascii(&chunk[index + 1..end]);
+                    if !line.is_empty() {
+                        if let Ok(event) = serde_json::from_slice::<Value>(line) {
+                            events.push(event);
+                            if events.len() >= limit {
+                                return;
+                            }
+                        }
+                    }
+                }
+                end = index;
+            }
+            carry = chunk[..end].to_vec();
+        }
+
+        if events.len() < limit && !carry.is_empty() {
+            if let Ok(event) = serde_json::from_slice::<Value>(trim_ascii(&carry)) {
+                events.push(event);
+            }
+        }
+    }
+
+    fn event_timestamp_ms(event: &Value) -> i64 {
+        event
+            .get("timestampMs")
+            .and_then(Value::as_i64)
+            .unwrap_or(0)
+    }
+
+    fn request_action(value: &Value) -> String {
+        let request_type = value
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        if request_type == "command" {
+            if let Some(name) = value
+                .get("payload")
+                .and_then(|payload| payload.get("name"))
+                .and_then(Value::as_str)
+            {
+                return name.to_string();
+            }
+        }
+        request_type.to_string()
+    }
+
+    fn audit_input(value: &Value) -> Value {
+        let request_type = value
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        let payload = value.get("payload").unwrap_or(&Value::Null);
+        match request_type {
+            "execute_code" | "validate_execute_code" | "validate_code" => {
+                let code = payload.get("code").and_then(Value::as_str).unwrap_or("");
+                json!({
+                    "codeLength": code.chars().count(),
+                    "codeRecorded": false,
+                })
+            }
+            "execute_file" | "validate_execute_file" | "validate_file" => json!({
+                "filePath": payload.get("filePath").cloned().unwrap_or(Value::Null)
+            }),
+            "command" => {
+                let parameters_json = payload
+                    .get("parametersJson")
+                    .and_then(Value::as_str)
+                    .unwrap_or("{}");
+                let parameters = serde_json::from_str::<Value>(parameters_json)
+                    .unwrap_or_else(|_| bounded_text(parameters_json));
+                json!({
+                    "command": payload.get("name").cloned().unwrap_or(Value::Null),
+                    "parameters": bounded_value(redact_sensitive(parameters)),
+                })
+            }
+            "context_snapshot" => bounded_value(redact_sensitive(payload.clone())),
+            _ => json!({}),
+        }
+    }
+
+    fn bounded_text(value: &str) -> Value {
+        let char_count = value.chars().count();
+        if char_count <= AUDIT_VALUE_MAX_CHARS {
+            return json!(value);
+        }
+        let preview: String = value.chars().take(AUDIT_VALUE_MAX_CHARS).collect();
+        json!({
+            "preview": preview,
+            "truncated": true,
+            "originalLength": char_count,
+        })
+    }
+
+    fn bounded_value(value: Value) -> Value {
+        let Ok(text) = serde_json::to_string(&value) else {
+            return Value::Null;
+        };
+        if text.chars().count() <= AUDIT_VALUE_MAX_CHARS {
+            return value;
+        }
+        let preview: String = text.chars().take(AUDIT_VALUE_MAX_CHARS).collect();
+        json!({
+            "preview": preview,
+            "truncated": true,
+            "originalLength": text.chars().count(),
+        })
+    }
+
+    fn redact_sensitive(value: Value) -> Value {
+        match value {
+            Value::Object(mut object) => {
+                for (key, item) in object.iter_mut() {
+                    if is_sensitive_key(key) {
+                        *item = json!("[REDACTED]");
+                    } else {
+                        *item = redact_sensitive(item.take());
+                    }
+                }
+                Value::Object(object)
+            }
+            Value::Array(items) => Value::Array(items.into_iter().map(redact_sensitive).collect()),
+            other => other,
+        }
+    }
+
+    fn is_sensitive_key(key: &str) -> bool {
+        let normalized: String = key
+            .chars()
+            .filter(|character| character.is_ascii_alphanumeric())
+            .flat_map(|character| character.to_lowercase())
+            .collect();
+        normalized == "token"
+            || normalized == "accesstoken"
+            || normalized == "refreshtoken"
+            || normalized == "apikey"
+            || normalized == "password"
+            || normalized == "secret"
+            || normalized == "authorization"
+            || normalized == "credential"
+            || normalized == "credentials"
+    }
+
+    fn copy_json_field(
+        source: &Value,
+        target: &mut serde_json::Map<String, Value>,
+        source_name: &str,
+        target_name: &str,
+    ) {
+        if let Some(value) = source.get(source_name) {
+            target.insert(target_name.to_string(), value.clone());
+        }
+    }
+
+    fn timeline_matches(
+        item: &Value,
+        request_type: &str,
+        action: &str,
+        success: Option<bool>,
+    ) -> bool {
+        if !request_type.is_empty()
+            && !item
+                .get("requestType")
+                .and_then(Value::as_str)
+                .map(|value| value.eq_ignore_ascii_case(request_type))
+                .unwrap_or(false)
+        {
+            return false;
+        }
+        if !action.is_empty()
+            && !item
+                .get("action")
+                .and_then(Value::as_str)
+                .map(|value| value.eq_ignore_ascii_case(action))
+                .unwrap_or(false)
+        {
+            return false;
+        }
+        if let Some(expected) = success {
+            if item.get("success").and_then(Value::as_bool) != Some(expected) {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn activity_timestamp_ms(item: &Value) -> i64 {
+        item.get("completedAtMs")
+            .and_then(Value::as_i64)
+            .or_else(|| item.get("startedAtMs").and_then(Value::as_i64))
+            .unwrap_or(0)
+    }
+
+    fn file_len(path: &PathBuf) -> u64 {
+        fs::metadata(path)
+            .map(|metadata| metadata.len())
+            .unwrap_or(0)
+    }
+
+    fn file_modified_ms(path: &PathBuf) -> u128 {
+        fs::metadata(path)
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+            .map(|duration| duration.as_millis())
+            .unwrap_or(0)
+    }
+
+    fn timestamp_utc(timestamp_ms: i64) -> String {
+        let (year, month, day, hour, minute, second, millis) = utc_parts(timestamp_ms);
+        format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{millis:03}Z")
+    }
+
+    fn date_utc(timestamp_ms: i64) -> String {
+        let (year, month, day, _, _, _, _) = utc_parts(timestamp_ms);
+        format!("{year:04}-{month:02}-{day:02}")
+    }
+
+    fn utc_parts(timestamp_ms: i64) -> (i64, u32, u32, u32, u32, u32, u32) {
+        let clamped_ms = timestamp_ms.max(0);
+        let total_seconds = clamped_ms / 1000;
+        let days = total_seconds / 86_400;
+        let seconds_of_day = total_seconds % 86_400;
+        let (year, month, day) = civil_from_days(days);
+        (
+            year,
+            month,
+            day,
+            (seconds_of_day / 3600) as u32,
+            ((seconds_of_day % 3600) / 60) as u32,
+            (seconds_of_day % 60) as u32,
+            (clamped_ms % 1000) as u32,
+        )
+    }
+
+    // Howard Hinnant 的 civil_from_days 算法，将 Unix 日序转换为公历日期。
+    fn civil_from_days(days_since_epoch: i64) -> (i64, u32, u32) {
+        let z = days_since_epoch + 719_468;
+        let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+        let day_of_era = z - era * 146_097;
+        let year_of_era =
+            (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+        let mut year = year_of_era + era * 400;
+        let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+        let month_prime = (5 * day_of_year + 2) / 153;
+        let day = day_of_year - (153 * month_prime + 2) / 5 + 1;
+        let month = month_prime + if month_prime < 10 { 3 } else { -9 };
+        year += if month <= 2 { 1 } else { 0 };
+        (year, month as u32, day as u32)
     }
 
     fn trim_ascii(line: &[u8]) -> &[u8] {
@@ -831,7 +1406,12 @@ mod imp {
         }
     }
 
-    pub fn init(project_path: String, pipe_name: String, token: String, protocol_version: i32) -> i32 {
+    pub fn init(
+        project_path: String,
+        pipe_name: String,
+        token: String,
+        protocol_version: i32,
+    ) -> i32 {
         if protocol_version != NATIVE_PROTOCOL_VERSION {
             eprintln!(
                 "[pi-unity-native] protocol mismatch: managed={protocol_version}, native={NATIVE_PROTOCOL_VERSION}"
@@ -865,8 +1445,7 @@ mod imp {
                     }
                 };
                 runtime.block_on(broker_main(broker, pipe_name));
-            })
-        {
+            }) {
             Ok(_) => 0,
             Err(error) => {
                 eprintln!("[pi-unity-native] broker thread spawn failed: {error}");
@@ -944,6 +1523,9 @@ mod imp {
                 enqueued_at_ms,
                 delivered_at_ms: 0,
                 timeout_ms,
+                audit_action_id: 1,
+                request_type: "execute_code".to_string(),
+                action: "execute_code".to_string(),
             }
         }
 
@@ -1008,6 +1590,37 @@ mod imp {
                 assert_eq!(response["error"], expected_error);
                 assert_eq!(broker.pending.lock().unwrap().len(), 0);
             }
+        }
+
+        #[test]
+        fn status_request_is_audited_by_native_broker() {
+            let broker = test_broker("status_audit");
+            let (tx, mut rx) = mpsc::channel(4);
+            *broker.writer.lock().unwrap() = Some(tx);
+            broker.handle_line(br#"{"id":"status-1","type":"status","token":"token"}"#);
+
+            let response = response_json(rx.try_recv().unwrap());
+            assert_eq!(response["ok"], true);
+            let timeline = broker
+                .query_timeline(&json!({ "payload": { "requestType": "status" } }))
+                .unwrap();
+            assert_eq!(timeline["count"], 1);
+            assert_eq!(timeline["actions"][0]["status"], "completed");
+        }
+
+        #[test]
+        fn timeline_query_is_not_added_to_audit_log() {
+            let broker = test_broker("timeline_no_recursion");
+            let (tx, mut rx) = mpsc::channel(4);
+            *broker.writer.lock().unwrap() = Some(tx);
+            broker.handle_line(
+                br#"{"id":"timeline-1","type":"timeline","token":"token","payload":{"limit":10}}"#,
+            );
+
+            let response = response_json(rx.try_recv().unwrap());
+            assert_eq!(response["ok"], true);
+            assert_eq!(response["result"]["count"], 0);
+            assert!(!broker.audit_directory().exists());
         }
 
         #[test]
@@ -1152,6 +1765,9 @@ mod imp {
                 enqueued_at_ms: now_ms(),
                 delivered_at_ms: 0,
                 timeout_ms: REQUEST_TIMEOUT_MS,
+                audit_action_id: 1,
+                request_type: "execute_code".to_string(),
+                action: "execute_code".to_string(),
             });
 
             broker.reap_timeouts();
@@ -1174,11 +1790,128 @@ mod imp {
                     enqueued_at_ms: now - HEARTBEAT_TIMEOUT_MS - 1_000,
                     delivered_at_ms: now - HEARTBEAT_TIMEOUT_MS - 1_000,
                     timeout_ms: REQUEST_TIMEOUT_MS,
+                    audit_action_id: 1,
+                    request_type: "execute_code".to_string(),
+                    action: "execute_code".to_string(),
                 },
             );
 
             broker.reap_timeouts();
             assert_eq!(broker.in_flight.lock().unwrap().len(), 0);
+        }
+
+        #[test]
+        fn timeline_merges_started_and_completed_events() {
+            let broker = test_broker("timeline_merge");
+            let request_value = json!({
+                "id": "req-1",
+                "type": "command",
+                "payload": { "name": "scene_get_data", "parametersJson": "{}" }
+            });
+            let request =
+                broker.start_direct_audit("req-1", "command", "scene_get_data", &request_value);
+            broker.complete_direct_audit(
+                &request,
+                br#"{"reply_to":"req-1","ok":true,"result":{"value":42}}"#,
+            );
+
+            let result = broker
+                .query_timeline(&json!({ "payload": { "limit": 10 } }))
+                .unwrap();
+            assert_eq!(result["count"], 1);
+            assert_eq!(result["actions"][0]["requestId"], "req-1");
+            assert_eq!(result["actions"][0]["action"], "scene_get_data");
+            assert_eq!(result["actions"][0]["status"], "completed");
+            assert_eq!(result["actions"][0]["success"], true);
+            assert_eq!(result["actions"][0]["result"]["value"], 42);
+        }
+
+        #[test]
+        fn timeline_filters_failures_without_auditing_query() {
+            let broker = test_broker("timeline_filter");
+            let success = broker.start_direct_audit("1", "status", "status", &json!({}));
+            broker.complete_direct_audit(&success, br#"{"ok":true,"result":{}}"#);
+            let failure = broker.start_direct_audit("2", "command", "bad_command", &json!({}));
+            broker.complete_direct_audit(
+                &failure,
+                br#"{"ok":false,"error_type":"command_error","error":"boom"}"#,
+            );
+
+            let result = broker
+                .query_timeline(&json!({
+                    "payload": { "limit": 10, "success": "failure" }
+                }))
+                .unwrap();
+            assert_eq!(result["count"], 1);
+            assert_eq!(result["actions"][0]["requestId"], "2");
+            assert_eq!(result["actions"][0]["errorType"], "command_error");
+        }
+
+        #[test]
+        fn audit_input_excludes_token_and_raw_code() {
+            let code = "x".repeat(AUDIT_VALUE_MAX_CHARS + 10);
+            let input = audit_input(&json!({
+                "type": "execute_code",
+                "token": "secret-token",
+                "payload": { "code": code }
+            }));
+
+            assert!(input.get("token").is_none());
+            assert!(input.get("code").is_none());
+            assert_eq!(input["codeLength"], AUDIT_VALUE_MAX_CHARS + 10);
+            assert_eq!(input["codeRecorded"], false);
+        }
+
+        #[test]
+        fn audit_redacts_sensitive_pipeline_parameters_and_results() {
+            let input = audit_input(&json!({
+                "type": "command",
+                "payload": {
+                    "name": "provider_configure",
+                    "parametersJson": "{\"apiKey\":\"input-secret\",\"nested\":{\"password\":\"pw\"},\"safe\":42}"
+                }
+            }));
+            assert_eq!(input["parameters"]["apiKey"], "[REDACTED]");
+            assert_eq!(input["parameters"]["nested"]["password"], "[REDACTED]");
+            assert_eq!(input["parameters"]["safe"], 42);
+
+            let redacted = redact_sensitive(json!({
+                "access_token": "result-secret",
+                "items": [{ "authorization": "Bearer secret", "name": "safe" }]
+            }));
+            assert_eq!(redacted["access_token"], "[REDACTED]");
+            assert_eq!(redacted["items"][0]["authorization"], "[REDACTED]");
+            assert_eq!(redacted["items"][0]["name"], "safe");
+        }
+
+        #[test]
+        fn reads_only_recent_jsonl_events_from_large_file() {
+            let broker = test_broker("recent_jsonl");
+            let directory = broker.audit_directory();
+            fs::create_dir_all(&directory).unwrap();
+            let path = directory.join("2026-01-01.jsonl");
+            let mut text = String::new();
+            for index in 0..100 {
+                text.push_str(&json!({ "timestampMs": index, "requestId": index }).to_string());
+                text.push('\n');
+            }
+            fs::write(&path, text).unwrap();
+
+            let mut events = Vec::new();
+            read_recent_jsonl_events(&path, 3, &mut events);
+
+            assert_eq!(events.len(), 3);
+            assert_eq!(events[0]["requestId"], 99);
+            assert_eq!(events[1]["requestId"], 98);
+            assert_eq!(events[2]["requestId"], 97);
+        }
+
+        #[test]
+        fn utc_timestamp_and_date_are_iso_formatted() {
+            assert_eq!(timestamp_utc(0), "1970-01-01T00:00:00.000Z");
+            assert_eq!(date_utc(0), "1970-01-01");
+            assert_eq!(timestamp_utc(951_782_400_123), "2000-02-29T00:00:00.123Z");
+            assert_eq!(date_utc(951_782_400_123), "2000-02-29");
         }
     }
 }
@@ -1204,7 +1937,15 @@ pub unsafe extern "C" fn pi_unity_init(
     }
     #[cfg(not(windows))]
     {
-        let _ = (project, project_len, pipe, pipe_len, token, token_len, protocol_version);
+        let _ = (
+            project,
+            project_len,
+            pipe,
+            pipe_len,
+            token,
+            token_len,
+            protocol_version,
+        );
         -1
     }
 }
