@@ -790,49 +790,46 @@ mod imp {
                 .get("ok")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
-            let mut result = serde_json::Map::new();
-            result.insert("schemaVersion".to_string(), json!(AUDIT_SCHEMA_VERSION));
-            result.insert("event".to_string(), json!("completed"));
-            result.insert("actionId".to_string(), json!(request.audit_action_id));
-            result.insert("requestId".to_string(), json!(request.id));
-            result.insert("requestType".to_string(), json!(request.request_type));
-            result.insert("action".to_string(), json!(request.action));
-            result.insert("timestampMs".to_string(), json!(completed_at_ms));
-            result.insert(
-                "timestampUtc".to_string(),
-                json!(timestamp_utc(completed_at_ms)),
-            );
-            result.insert(
-                "durationMs".to_string(),
-                json!(completed_at_ms.saturating_sub(request.enqueued_at_ms)),
-            );
-            result.insert("success".to_string(), json!(success));
-            if success {
-                result.insert(
-                    "result".to_string(),
-                    bounded_value(redact_sensitive(
-                        response_value.get("result").cloned().unwrap_or(Value::Null),
-                    )),
-                );
-            } else {
-                result.insert(
-                    "errorType".to_string(),
-                    response_value
-                        .get("error_type")
-                        .cloned()
-                        .unwrap_or_else(|| json!("unknown")),
-                );
-                result.insert(
-                    "error".to_string(),
-                    bounded_value(
+            let mut event = json!({
+                "schemaVersion": AUDIT_SCHEMA_VERSION,
+                "event": "completed",
+                "actionId": request.audit_action_id,
+                "requestId": request.id,
+                "requestType": request.request_type,
+                "action": request.action,
+                "timestampMs": completed_at_ms,
+                "timestampUtc": timestamp_utc(completed_at_ms),
+                "durationMs": completed_at_ms.saturating_sub(request.enqueued_at_ms),
+                "success": success,
+            });
+            if let Some(object) = event.as_object_mut() {
+                if success {
+                    object.insert(
+                        "result".to_string(),
+                        bounded_value(redact_sensitive(
+                            response_value.get("result").cloned().unwrap_or(Value::Null),
+                        )),
+                    );
+                } else {
+                    object.insert(
+                        "errorType".to_string(),
                         response_value
-                            .get("error")
+                            .get("error_type")
                             .cloned()
-                            .unwrap_or_else(|| json!("unity request failed")),
-                    ),
-                );
+                            .unwrap_or_else(|| json!("unknown")),
+                    );
+                    object.insert(
+                        "error".to_string(),
+                        bounded_value(
+                            response_value
+                                .get("error")
+                                .cloned()
+                                .unwrap_or_else(|| json!("unity request failed")),
+                        ),
+                    );
+                }
             }
-            self.append_audit_event(&Value::Object(result));
+            self.append_audit_event(&event);
         }
 
         fn append_audit_event(&self, value: &Value) {
@@ -921,46 +918,7 @@ mod imp {
             let mut actions: HashMap<String, Value> = HashMap::new();
             let mut order: Vec<String> = Vec::new();
             for event in events {
-                let request_id = event.get("requestId").and_then(Value::as_str).unwrap_or("");
-                if request_id.is_empty() {
-                    continue;
-                }
-                let action_id = event.get("actionId").and_then(Value::as_u64).unwrap_or(0);
-                let key = format!("{action_id}:{request_id}");
-                if !actions.contains_key(&key) {
-                    actions.insert(
-                        key.clone(),
-                        json!({
-                            "actionId": action_id,
-                            "requestId": request_id,
-                            "status": "pending"
-                        }),
-                    );
-                    order.push(key.clone());
-                }
-                let Some(item) = actions.get_mut(&key).and_then(Value::as_object_mut) else {
-                    continue;
-                };
-                copy_json_field(&event, item, "requestType", "requestType");
-                copy_json_field(&event, item, "action", "action");
-                match event.get("event").and_then(Value::as_str) {
-                    Some("started") => {
-                        copy_json_field(&event, item, "timestampUtc", "startedAtUtc");
-                        copy_json_field(&event, item, "timestampMs", "startedAtMs");
-                        copy_json_field(&event, item, "input", "input");
-                    }
-                    Some("completed") => {
-                        item.insert("status".to_string(), json!("completed"));
-                        copy_json_field(&event, item, "timestampUtc", "completedAtUtc");
-                        copy_json_field(&event, item, "timestampMs", "completedAtMs");
-                        copy_json_field(&event, item, "durationMs", "durationMs");
-                        copy_json_field(&event, item, "success", "success");
-                        copy_json_field(&event, item, "result", "result");
-                        copy_json_field(&event, item, "errorType", "errorType");
-                        copy_json_field(&event, item, "error", "error");
-                    }
-                    _ => {}
-                }
+                merge_timeline_event(&mut actions, &mut order, event);
             }
 
             let mut filtered: Vec<Value> = order
@@ -971,14 +929,62 @@ mod imp {
             filtered.sort_by(|a, b| activity_timestamp_ms(b).cmp(&activity_timestamp_ms(a)));
             filtered.truncate(limit);
 
+            let captured_at_ms = now_ms();
             Ok(json!({
                 "schemaVersion": AUDIT_SCHEMA_VERSION,
-                "capturedAtMs": now_ms(),
-                "capturedAtUtc": timestamp_utc(now_ms()),
+                "capturedAtMs": captured_at_ms,
+                "capturedAtUtc": timestamp_utc(captured_at_ms),
                 "directory": self.audit_directory().to_string_lossy().replace('\\', "/"),
                 "count": filtered.len(),
                 "actions": filtered,
             }))
+        }
+    }
+
+    fn merge_timeline_event(
+        actions: &mut HashMap<String, Value>,
+        order: &mut Vec<String>,
+        event: Value,
+    ) {
+        let request_id = event.get("requestId").and_then(Value::as_str).unwrap_or("");
+        if request_id.is_empty() {
+            return;
+        }
+        let action_id = event.get("actionId").and_then(Value::as_u64).unwrap_or(0);
+        let key = format!("{action_id}:{request_id}");
+        if !actions.contains_key(&key) {
+            actions.insert(
+                key.clone(),
+                json!({
+                    "actionId": action_id,
+                    "requestId": request_id,
+                    "status": "pending"
+                }),
+            );
+            order.push(key.clone());
+        }
+        let Some(item) = actions.get_mut(&key).and_then(Value::as_object_mut) else {
+            return;
+        };
+        copy_json_field(&event, item, "requestType", "requestType");
+        copy_json_field(&event, item, "action", "action");
+        match event.get("event").and_then(Value::as_str) {
+            Some("started") => {
+                copy_json_field(&event, item, "timestampUtc", "startedAtUtc");
+                copy_json_field(&event, item, "timestampMs", "startedAtMs");
+                copy_json_field(&event, item, "input", "input");
+            }
+            Some("completed") => {
+                item.insert("status".to_string(), json!("completed"));
+                copy_json_field(&event, item, "timestampUtc", "completedAtUtc");
+                copy_json_field(&event, item, "timestampMs", "completedAtMs");
+                copy_json_field(&event, item, "durationMs", "durationMs");
+                copy_json_field(&event, item, "success", "success");
+                copy_json_field(&event, item, "result", "result");
+                copy_json_field(&event, item, "errorType", "errorType");
+                copy_json_field(&event, item, "error", "error");
+            }
+            _ => {}
         }
     }
 
@@ -1096,26 +1102,26 @@ mod imp {
         if char_count <= AUDIT_VALUE_MAX_CHARS {
             return json!(value);
         }
-        let preview: String = value.chars().take(AUDIT_VALUE_MAX_CHARS).collect();
-        json!({
-            "preview": preview,
-            "truncated": true,
-            "originalLength": char_count,
-        })
+        truncated_preview(value, char_count)
     }
 
     fn bounded_value(value: Value) -> Value {
         let Ok(text) = serde_json::to_string(&value) else {
             return Value::Null;
         };
-        if text.chars().count() <= AUDIT_VALUE_MAX_CHARS {
+        let char_count = text.chars().count();
+        if char_count <= AUDIT_VALUE_MAX_CHARS {
             return value;
         }
+        truncated_preview(&text, char_count)
+    }
+
+    fn truncated_preview(text: &str, char_count: usize) -> Value {
         let preview: String = text.chars().take(AUDIT_VALUE_MAX_CHARS).collect();
         json!({
             "preview": preview,
             "truncated": true,
-            "originalLength": text.chars().count(),
+            "originalLength": char_count,
         })
     }
 
@@ -1137,20 +1143,23 @@ mod imp {
     }
 
     fn is_sensitive_key(key: &str) -> bool {
+        const SENSITIVE_KEYS: &[&str] = &[
+            "token",
+            "accesstoken",
+            "refreshtoken",
+            "apikey",
+            "password",
+            "secret",
+            "authorization",
+            "credential",
+            "credentials",
+        ];
         let normalized: String = key
             .chars()
             .filter(|character| character.is_ascii_alphanumeric())
             .flat_map(|character| character.to_lowercase())
             .collect();
-        normalized == "token"
-            || normalized == "accesstoken"
-            || normalized == "refreshtoken"
-            || normalized == "apikey"
-            || normalized == "password"
-            || normalized == "secret"
-            || normalized == "authorization"
-            || normalized == "credential"
-            || normalized == "credentials"
+        SENSITIVE_KEYS.contains(&normalized.as_str())
     }
 
     fn copy_json_field(
@@ -1170,30 +1179,20 @@ mod imp {
         action: &str,
         success: Option<bool>,
     ) -> bool {
-        if !request_type.is_empty()
-            && !item
-                .get("requestType")
+        field_eq_ignore_case(item, "requestType", request_type)
+            && field_eq_ignore_case(item, "action", action)
+            && success.map_or(true, |expected| {
+                item.get("success").and_then(Value::as_bool) == Some(expected)
+            })
+    }
+
+    fn field_eq_ignore_case(item: &Value, field: &str, expected: &str) -> bool {
+        expected.is_empty()
+            || item
+                .get(field)
                 .and_then(Value::as_str)
-                .map(|value| value.eq_ignore_ascii_case(request_type))
+                .map(|value| value.eq_ignore_ascii_case(expected))
                 .unwrap_or(false)
-        {
-            return false;
-        }
-        if !action.is_empty()
-            && !item
-                .get("action")
-                .and_then(Value::as_str)
-                .map(|value| value.eq_ignore_ascii_case(action))
-                .unwrap_or(false)
-        {
-            return false;
-        }
-        if let Some(expected) = success {
-            if item.get("success").and_then(Value::as_bool) != Some(expected) {
-                return false;
-            }
-        }
-        true
     }
 
     fn activity_timestamp_ms(item: &Value) -> i64 {

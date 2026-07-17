@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using UnityEditor;
 using UnityEngine;
 
@@ -17,6 +16,12 @@ namespace Pi.UnityHarness.Editor
         private const int MaxStackTraceLength = 8000;
         private static readonly object Gate = new object();
         private static readonly List<Entry> Entries = new List<Entry>();
+        private static readonly HashSet<string> ErrorLevels = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            LogType.Error.ToString(),
+            LogType.Exception.ToString(),
+            LogType.Assert.ToString(),
+        };
 
         static PiUnityConsoleLogBuffer()
         {
@@ -31,12 +36,21 @@ namespace Pi.UnityHarness.Editor
 
             lock (Gate)
             {
-                IEnumerable<Entry> query = Entries;
-                if (!string.IsNullOrWhiteSpace(level) && !string.Equals(level, "all", StringComparison.OrdinalIgnoreCase))
-                    query = query.Where(entry => MatchesLevel(entry.type, level));
+                bool filterAll = string.IsNullOrWhiteSpace(level)
+                    || string.Equals(level, "all", StringComparison.OrdinalIgnoreCase);
+                int take = Math.Min(limit, MaxLogs);
 
-                int skip = Math.Max(0, query.Count() - Math.Min(limit, MaxLogs));
-                return query.Skip(skip).Select(entry => entry.Clone()).ToList();
+                if (filterAll)
+                    return CloneTail(Entries, take);
+
+                List<Entry> matched = new List<Entry>();
+                for (int i = 0; i < Entries.Count; i++)
+                {
+                    if (MatchesLevel(Entries[i].type, level))
+                        matched.Add(Entries[i]);
+                }
+
+                return CloneTail(matched, take);
             }
         }
 
@@ -46,14 +60,19 @@ namespace Pi.UnityHarness.Editor
                 Entries.Clear();
         }
 
+        private static List<Entry> CloneTail(List<Entry> source, int take)
+        {
+            int start = Math.Max(0, source.Count - take);
+            List<Entry> result = new List<Entry>(source.Count - start);
+            for (int i = start; i < source.Count; i++)
+                result.Add(source[i].Clone());
+            return result;
+        }
+
         private static bool MatchesLevel(string actual, string requested)
         {
             if (string.Equals(requested, "error", StringComparison.OrdinalIgnoreCase))
-            {
-                return string.Equals(actual, LogType.Error.ToString(), StringComparison.OrdinalIgnoreCase)
-                    || string.Equals(actual, LogType.Exception.ToString(), StringComparison.OrdinalIgnoreCase)
-                    || string.Equals(actual, LogType.Assert.ToString(), StringComparison.OrdinalIgnoreCase);
-            }
+                return ErrorLevels.Contains(actual);
 
             if (string.Equals(requested, "info", StringComparison.OrdinalIgnoreCase))
                 requested = LogType.Log.ToString();
