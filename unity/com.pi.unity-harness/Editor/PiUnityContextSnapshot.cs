@@ -29,28 +29,9 @@ namespace Pi.UnityHarness.Editor
 
             Scene scene = SceneManager.GetActiveScene();
             HierarchyBuildState hierarchyState = new HierarchyBuildState(maxDepth, maxNodes, includeComponents);
-            List<HierarchyNode> roots = new List<HierarchyNode>();
-            if (scene.IsValid() && scene.isLoaded)
-            {
-                GameObject[] rootObjects = scene.GetRootGameObjects();
-                for (int i = 0; i < rootObjects.Length; i++)
-                {
-                    HierarchyNode node = BuildNode(rootObjects[i], 0, hierarchyState);
-                    if (node != null)
-                        roots.Add(node);
-                    if (hierarchyState.NodeCount >= maxNodes)
-                    {
-                        if (i + 1 < rootObjects.Length)
-                            hierarchyState.Truncated = true;
-                        break;
-                    }
-                }
-            }
-
+            List<HierarchyNode> roots = BuildRoots(scene, hierarchyState);
             List<PiUnityConsoleLogBuffer.Entry> logs = PiUnityConsoleLogBuffer.Get(logLimit, logLevel);
-            UnityEngine.Object activeObject = Selection.activeObject;
             Camera mainCamera = Camera.main;
-            string projectPath = Path.GetFullPath(Path.Combine(Application.dataPath, "..")).Replace('\\', '/');
 
             Snapshot snapshot = new Snapshot
             {
@@ -58,7 +39,7 @@ namespace Pi.UnityHarness.Editor
                 capturedAtUtc = DateTime.UtcNow.ToString("o"),
                 project = new ProjectSnapshot
                 {
-                    path = projectPath,
+                    path = Path.GetFullPath(Path.Combine(Application.dataPath, "..")).Replace('\\', '/'),
                     assetsPath = Application.dataPath.Replace('\\', '/'),
                     productName = Application.productName,
                     unityVersion = Application.unityVersion,
@@ -74,23 +55,11 @@ namespace Pi.UnityHarness.Editor
                     isFocused = Application.isFocused,
                     timeSinceStartup = EditorApplication.timeSinceStartup,
                 },
-                scene = new SceneSnapshot
-                {
-                    name = scene.IsValid() ? scene.name : null,
-                    path = scene.IsValid() ? scene.path : null,
-                    buildIndex = scene.IsValid() ? scene.buildIndex : -1,
-                    isLoaded = scene.IsValid() && scene.isLoaded,
-                    isDirty = scene.IsValid() && scene.isDirty,
-                    isValid = scene.IsValid(),
-                    rootCount = scene.IsValid() ? scene.rootCount : 0,
-                    openSceneCount = SceneManager.sceneCount,
-                    hasMainCamera = mainCamera != null,
-                    mainCameraPath = mainCamera != null ? HierarchyPath(mainCamera.transform) : null,
-                },
+                scene = BuildSceneSnapshot(scene, mainCamera),
                 selection = new SelectionSnapshot
                 {
                     count = Selection.objects != null ? Selection.objects.Length : 0,
-                    activeObject = BuildObjectReference(activeObject),
+                    activeObject = BuildObjectReference(Selection.activeObject),
                     activeGameObject = BuildObjectReference(Selection.activeGameObject),
                 },
                 hierarchy = new HierarchySnapshot
@@ -115,6 +84,48 @@ namespace Pi.UnityHarness.Editor
                 NullValueHandling = NullValueHandling.Ignore,
                 ReferenceLoopHandling = ReferenceLoopHandling.Ignore,
             });
+        }
+
+        private static List<HierarchyNode> BuildRoots(Scene scene, HierarchyBuildState state)
+        {
+            List<HierarchyNode> roots = new List<HierarchyNode>();
+            if (!scene.IsValid() || !scene.isLoaded)
+                return roots;
+
+            GameObject[] rootObjects = scene.GetRootGameObjects();
+            for (int i = 0; i < rootObjects.Length; i++)
+            {
+                HierarchyNode node = BuildNode(rootObjects[i], 0, state);
+                if (node != null)
+                    roots.Add(node);
+
+                if (state.NodeCount < state.MaxNodes)
+                    continue;
+
+                if (i + 1 < rootObjects.Length)
+                    state.Truncated = true;
+                break;
+            }
+
+            return roots;
+        }
+
+        private static SceneSnapshot BuildSceneSnapshot(Scene scene, Camera mainCamera)
+        {
+            bool valid = scene.IsValid();
+            return new SceneSnapshot
+            {
+                name = valid ? scene.name : null,
+                path = valid ? scene.path : null,
+                buildIndex = valid ? scene.buildIndex : -1,
+                isLoaded = valid && scene.isLoaded,
+                isDirty = valid && scene.isDirty,
+                isValid = valid,
+                rootCount = valid ? scene.rootCount : 0,
+                openSceneCount = SceneManager.sceneCount,
+                hasMainCamera = mainCamera != null,
+                mainCameraPath = mainCamera != null ? HierarchyPath(mainCamera.transform) : null,
+            };
         }
 
         private static HierarchyNode BuildNode(GameObject gameObject, int depth, HierarchyBuildState state)
@@ -169,6 +180,7 @@ namespace Pi.UnityHarness.Editor
                 if (child != null)
                     node.children.Add(child);
             }
+
             return node;
         }
 
@@ -178,8 +190,7 @@ namespace Pi.UnityHarness.Editor
                 return null;
 
             GameObject gameObject = obj as GameObject;
-            Component component = obj as Component;
-            if (gameObject == null && component != null)
+            if (gameObject == null && obj is Component component)
                 gameObject = component.gameObject;
 
             string assetPath = AssetDatabase.GetAssetPath(obj);
@@ -210,12 +221,8 @@ namespace Pi.UnityHarness.Editor
                 return null;
 
             Stack<string> names = new Stack<string>();
-            Transform current = transform;
-            while (current != null)
-            {
+            for (Transform current = transform; current != null; current = current.parent)
                 names.Push(current.name);
-                current = current.parent;
-            }
             return string.Join("/", names.ToArray());
         }
 

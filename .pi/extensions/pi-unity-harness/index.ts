@@ -1431,10 +1431,10 @@ export default function (pi: ExtensionAPI) {
     async execute(_toolCallId, params) {
       assertEnabled();
       const result = await client.request("timeline", {
-        ...(params.limit !== undefined ? { limit: params.limit } : {}),
-        ...(params.requestType !== undefined ? { requestType: params.requestType } : {}),
-        ...(params.action !== undefined ? { action: params.action } : {}),
-        ...(params.success !== undefined ? { success: params.success } : {}),
+        limit: params.limit,
+        requestType: params.requestType,
+        action: params.action,
+        success: params.success,
       }, 10000);
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],

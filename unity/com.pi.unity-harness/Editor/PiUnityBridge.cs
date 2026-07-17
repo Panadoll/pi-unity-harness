@@ -916,21 +916,25 @@ namespace Pi.UnityHarness.Editor
 
         private static void ContextSnapshot(NativeRequest request)
         {
-            int maxDepth = request.payload != null && request.payload.maxDepth >= 0
-                ? request.payload.maxDepth
+            ExecutePayload payload = request.payload;
+            int maxDepth = payload != null && payload.maxDepth >= 0
+                ? payload.maxDepth
                 : PiUnityContextSnapshot.DefaultMaxDepth;
-            int maxNodes = request.payload != null && request.payload.maxNodes > 0
-                ? request.payload.maxNodes
+            int maxNodes = payload != null && payload.maxNodes > 0
+                ? payload.maxNodes
                 : PiUnityContextSnapshot.DefaultMaxNodes;
-            int logLimit = request.payload != null && request.payload.logLimit >= 0
-                ? request.payload.logLimit
+            int logLimit = payload != null && payload.logLimit >= 0
+                ? payload.logLimit
                 : PiUnityContextSnapshot.DefaultLogLimit;
-            string logLevel = request.payload != null ? request.payload.logLevel : null;
-            bool includeComponents = request.payload != null && request.payload.includeComponents;
 
             try
             {
-                string snapshot = PiUnityContextSnapshot.BuildJson(maxDepth, maxNodes, logLimit, logLevel, includeComponents);
+                string snapshot = PiUnityContextSnapshot.BuildJson(
+                    maxDepth,
+                    maxNodes,
+                    logLimit,
+                    payload != null ? payload.logLevel : null,
+                    payload != null && payload.includeComponents);
                 CompleteJson(request.id, PiUnityJsonHelper.SuccessJson(request.id, snapshot));
             }
             catch (Exception ex)
