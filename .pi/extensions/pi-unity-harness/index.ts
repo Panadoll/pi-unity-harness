@@ -11,6 +11,7 @@ import {
   parseUnityMajorVersion,
   pipelineCommandTimeoutMs,
   pipelineCommandSummary,
+  resolveEvalFilePath,
   schemaToTypeBox,
   shouldRefreshPipelineCommands,
   type PipelineParameterInfo,
@@ -36,8 +37,23 @@ const CORE_UNITY_TOOLS = [
   "unity_timeline",
   "unity_pipeline",
   "unity_eval",
+  "unity_eval_file",
   "unity_recompile",
 ] as const;
+
+/** Injected into system prompt while harness tools are active. */
+const UNITY_VERIFY_WORKFLOW_PROMPT = `
+## Unity verify loop (required)
+When changing Unity scripts, scenes, assets, or runtime behavior, close the loop — do not stop after edits alone:
+
+1. **Observe**: call unity_snapshot (or a targeted unity_eval / unity_eval_file probe) before acting when context is unclear.
+2. **Act**: apply the change (files, eval, pipeline commands).
+3. **Compile**: after C# script edits, call unity_recompile and fix compile errors before claiming success.
+4. **Verify**: confirm with unity_snapshot logs, unity_run_tests / unity_pipeline list_tests+run_tests, PlayMode (editor_play/stop), or vision/input probes as appropriate.
+5. **Re-observe**: take a post-change unity_snapshot (or equivalent probe) and compare against the expected outcome.
+
+Prefer unity_eval_file over unity_eval for multi-line or non-trivial C# (write a .repl under Temp/PiUnityHarness/AgentScratch/, then pass that path). Never call AssetDatabase.Refresh or other Domain Reload triggers inside eval — use unity_recompile instead.
+`.trim();
 
 function isUnityManagedTool(name: string): boolean {
   if ((CORE_UNITY_TOOLS as readonly string[]).includes(name)) return true;
@@ -100,7 +116,7 @@ const INLINE_EVAL_CODE_LIMIT_BYTES = 512 * 1024;
 const CLIENT_HEARTBEAT_INTERVAL_MS = 5000;
 const CLIENT_HEARTBEAT_TIMEOUT_MS = 5000;
 const PIPELINE_PACKAGE_NAME = "com.unity.pipeline";
-const PIPELINE_PACKAGE_VERSION = "0.2.0-exp.2";
+const PIPELINE_PACKAGE_VERSION = "0.3.1-exp.1";
 
 // ---- State Plane 独立读取（不依赖 client 实例） ----
 
@@ -1017,10 +1033,21 @@ export default function (pi: ExtensionAPI) {
   });
 
   // Re-enforce disable before every agent turn (other extensions may re-enable tools).
-  pi.on("before_agent_start", async () => {
+  // When enabled, append the observe→act→verify workflow to the system prompt.
+  pi.on("before_agent_start", async (event) => {
     if (!runtimeEnabled) {
       applyToolActivation();
+      return;
     }
+
+    const current = event?.systemPrompt ?? "";
+    if (current.includes("Unity verify loop (required)")) {
+      return;
+    }
+
+    return {
+      systemPrompt: current ? `${current}\n\n${UNITY_VERIFY_WORKFLOW_PROMPT}` : UNITY_VERIFY_WORKFLOW_PROMPT,
+    };
   });
 
   // Hard block unity tool calls even if they remain active somehow.
@@ -1386,6 +1413,8 @@ export default function (pi: ExtensionAPI) {
       "Prefer unity_snapshot over separate status, hierarchy, selection, and log calls when you need broad context.",
       "Keep the default bounds unless deeper hierarchy or component type information is necessary.",
       "Use logLevel=all when normal logs are needed; the default error filter keeps context concise.",
+      "Call unity_snapshot before non-trivial Unity changes to observe baseline, and again after compile/play/tests to verify the outcome.",
+      "Do not claim a Unity fix is done until a post-change unity_snapshot (or equivalent probe/tests) confirms the expected state.",
     ],
     parameters: Type.Object({
       maxDepth: Type.Optional(Type.Integer({ description: "层级最大深度，默认 3，范围 0-20。" })),
@@ -1454,6 +1483,7 @@ export default function (pi: ExtensionAPI) {
       "Call unity_pipeline with no command when you need to know which Pipeline commands are available.",
       "Use the returned command names and parameter metadata to call unity_pipeline with command and params.",
       "Prefer shortcut tools only for frequent commands: unity_run_tests, unity_list_tests, unity_reload_file, unity_reload_file_override.",
+      "Use unity_run_tests (or unity_pipeline run_tests) as part of the verify loop after code changes that should be covered by EditMode/PlayMode tests.",
     ],
     parameters: Type.Object({
       command: Type.Optional(Type.String({ description: "Pipeline command 名称；省略时列出所有可用命令。" })),
@@ -1523,11 +1553,14 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "unity_eval",
     label: "Unity Eval",
-    description: "在 Unity Editor 主线程执行一段 C# 代码。",
-    promptSnippet: "Use unity_eval to inspect or mutate Unity Editor state from C# on the main thread.",
+    description: "在 Unity Editor 主线程执行一段 C# 代码。短表达式可用；多行代码优先用 unity_eval_file。",
+    promptSnippet: "Use unity_eval for short C# probes on the Unity main thread; prefer unity_eval_file for multi-line scripts.",
     promptGuidelines: [
-      "Use unity_eval for UnityEditor or UnityEngine operations that must run inside the Editor process.",
+      "Use unity_eval for short UnityEditor or UnityEngine probes that must run inside the Editor process.",
+      "Prefer unity_eval_file for multi-line or non-trivial C#: write Temp/PiUnityHarness/AgentScratch/*.repl with file tools, then call unity_eval_file — do not shell-concatenate C#.",
       "Never block the Unity main thread with Task.Wait/.Result/GetAwaiter().GetResult()/Thread.Sleep — it freezes the editor update loop and heartbeat. To await async work, return an IEnumerator (coroutine) from the eval code instead.",
+      "Never call AssetDatabase.Refresh or other Domain Reload triggers inside unity_eval — use unity_recompile instead.",
+      "After mutating Editor/runtime state with unity_eval, verify with unity_snapshot, tests, or PlayMode before claiming success.",
     ],
     parameters: Type.Object({
       code: Type.String({ description: "要在 Unity Editor 中执行的 C# 代码。" }),
@@ -1557,6 +1590,45 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
+  // ---- unity_eval_file ----
+
+  pi.registerTool({
+    name: "unity_eval_file",
+    label: "Unity Eval File",
+    description: "从 .repl/.cs 文件读取 C# 并在 Unity Editor 主线程校验后执行。相对路径相对项目根。",
+    promptSnippet: "Use unity_eval_file to run multi-line C# from a project file (prefer Temp/PiUnityHarness/AgentScratch/*.repl).",
+    promptGuidelines: [
+      "Prefer unity_eval_file over unity_eval for multi-line or non-trivial C# scripts.",
+      "Write the .repl with file tools under Temp/PiUnityHarness/AgentScratch/ (or another project path), then pass filePath — relative paths resolve against the Unity project root.",
+      "Use // #repl-mode: top-level or // #repl-mode: class at the top of the file; do not mix top-level statements with class declarations.",
+      "Never call AssetDatabase.Refresh or other Domain Reload triggers inside eval files — use unity_recompile instead.",
+      "After mutating Editor/runtime state with unity_eval_file, verify with unity_snapshot, tests, or PlayMode before claiming success.",
+    ],
+    parameters: Type.Object({
+      filePath: Type.String({ description: "要执行的 C#/.repl 文件路径；相对路径相对 Unity 项目根。" }),
+      timeoutMs: Type.Optional(Type.Number({ description: "请求超时，默认 20000ms。" })),
+    }),
+    async execute(_toolCallId, params) {
+      assertEnabled();
+      const projectRoot = client.getProjectRoot();
+      if (!projectRoot) {
+        throw new Error("未配置 Unity 项目。请先 unity_discover / /unity-discover 连接实例。");
+      }
+
+      const timeoutMs = typeof params.timeoutMs === "number" ? params.timeoutMs : 20000;
+      const { relativePath, absolutePath } = resolveEvalFilePath(projectRoot, String(params.filePath ?? ""));
+      if (!existsSync(absolutePath)) {
+        throw new Error(`eval file not found: ${absolutePath}`);
+      }
+
+      const result = await client.request("validate_execute_file", { filePath: relativePath }, timeoutMs);
+      return {
+        content: [{ type: "text", text: String(result?.output ?? "(ok)") }],
+        details: { ...result, filePath: relativePath },
+      };
+    },
+  });
+
   // ---- unity_recompile ----
 
   pi.registerTool({
@@ -1568,6 +1640,7 @@ export default function (pi: ExtensionAPI) {
       "Use unity_recompile after modifying C# scripts to trigger Unity compilation.",
       "This call blocks until compilation completes (up to 120s). Check the returned result for error details.",
       "On success: result.output is \"compilation_succeeded\". On failure: error_type is \"compile_error\" with the error summary.",
+      "After a successful unity_recompile, verify behavior with unity_snapshot, unity_run_tests, or PlayMode — compile success alone is not task completion.",
     ],
     parameters: Type.Object({}),
     async execute(_toolCallId, _params) {

@@ -60,14 +60,16 @@ namespace Pi.UnityHarness.Editor
             SessionState.SetBool(SessionKey_CompileHasErrors, false);
             SessionState.SetString(SessionKey_CompileErrorSummary, "");
 
-            // 触发刷新——可能导致编译 + 域重载
-            AssetDatabase.Refresh();
+            // 显式请求脚本编译。只用 AssetDatabase.Refresh 时，无脏脚本 /
+            // 仅资产刷新可能让 isCompiling=true 却永远不触发 compilationFinished，
+            // 导致 pipe 侧 recompile 一直挂起直至超时。
+            CompilationPipeline.RequestScriptCompilation();
 
-            // Unity 2019.3+ 可能在后续 editor update 才进入 isCompiling。
-            // 延迟数帧再判断“没有触发编译”，避免过早返回成功。
-            if (!s_callbackFired && !EditorApplication.isCompiling)
-                ScheduleDeferredNoCompileCheck(2);
-            // 如果 isCompiling 为 true，等待 compilationFinished 回调
+            // Unity 可能在后续 editor update 才进入 isCompiling。
+            // 延迟数帧再判断“没有触发编译”，避免过早返回成功；
+            // 即便当前已在 compiling，也挂兜底，防止 compilationFinished 漏发。
+            if (!s_callbackFired)
+                ScheduleDeferredNoCompileCheck(8);
         }
 
         /// <summary>
