@@ -1,3 +1,5 @@
+import { relative, resolve } from "node:path";
+
 export interface PipelineParameterInfo {
   name: string;
   description?: string;
@@ -141,4 +143,21 @@ export function pipelineCommandTimeoutMs(commandName: string, params: Record<str
   if (commandName === "list_tests") return 60000;
   if (commandName.startsWith("reload_file")) return 120000;
   return 30000;
+}
+
+/** Resolve eval file path for Unity: relative paths are project-root based; return forward-slash path for the pipe payload. */
+export function resolveEvalFilePath(projectRoot: string, filePath: string): { relativePath: string; absolutePath: string } {
+  const trimmed = filePath.trim();
+  if (!trimmed) {
+    throw new Error("filePath is required");
+  }
+
+  const absolutePath = resolve(projectRoot, trimmed);
+  const relativePath = relative(projectRoot, absolutePath).replace(/\\/g, "/");
+  if (!relativePath || relativePath.startsWith("..") || relativePath.includes(":")) {
+    // Absolute path outside project is still allowed if it exists; send absolute for Unity to open.
+    return { relativePath: absolutePath.replace(/\\/g, "/"), absolutePath };
+  }
+
+  return { relativePath, absolutePath };
 }

@@ -10,6 +10,7 @@ import {
   parseUnityMajorVersion,
   pipelineCommandTimeoutMs,
   pipelineCommandSummary,
+  resolveEvalFilePath,
   schemaToTypeBox,
   shouldRefreshPipelineCommands,
 } from "./helpers.ts";
@@ -191,4 +192,15 @@ test("normalizePipelineCommandParams accepts objects and rejects non objects", (
   assert.throws(() => normalizePipelineCommandParams([]), /params must be a JSON object, got array/);
   assert.throws(() => normalizePipelineCommandParams(null), /params must be a JSON object, got null/);
   assert.throws(() => normalizePipelineCommandParams("bad"), /params must be a JSON object, got string/);
+});
+
+test("resolveEvalFilePath resolves relative paths against project root", () => {
+  const project = "F:/UnityProjects/PencilForUgui2";
+  const resolved = resolveEvalFilePath(project, "Temp/PiUnityHarness/AgentScratch/probe.repl");
+  assert.equal(resolved.relativePath, "Temp/PiUnityHarness/AgentScratch/probe.repl");
+  assert.match(resolved.absolutePath.replace(/\\/g, "/"), /Temp\/PiUnityHarness\/AgentScratch\/probe\.repl$/);
+});
+
+test("resolveEvalFilePath rejects empty paths", () => {
+  assert.throws(() => resolveEvalFilePath("F:/proj", "  "), /filePath is required/);
 });

@@ -36,9 +36,13 @@ Unity C# worker
 
 - `unity_ping`：检查 native broker 是否在线
 - `unity_status`：查看 broker / managed state / pending queue
-- `unity_eval`：在 Unity Editor 主线程执行 C# 代码
+- `unity_eval`：在 Unity Editor 主线程执行短 C# 代码
+- `unity_eval_file`：从项目内 `.repl`/`.cs` 文件读取并执行多行 C#（相对路径相对项目根；推荐 `Temp/PiUnityHarness/AgentScratch/*.repl`）
+- `unity_recompile`：触发脚本编译并返回结果
 - `unity_snapshot`：一次获取 Editor 状态、活动场景层级、当前选择和近期日志；深度、节点数与日志数均有上限
 - `unity_timeline`：查询 `Temp/PiUnityHarness/ActionTimeline/*.jsonl` 中的追加式操作审计，支持按请求类型、动作和成功状态过滤
+- `unity_pipeline`：发现/执行 `com.unity.pipeline` `[CliCommand]`；高频命令动态注册为 shortcut（如 `unity_run_tests`）
+- verify 工作流：启用 harness 后，system prompt 会注入 observe → act → compile → verify → re-observe 闭环约束
 - `bridge.json`：Unity 启动后写入 `Library/PiUnityHarness/bridge.json`，供 pi 扩展发现 pipe 与 token
 - 后台保活：Editor 启动 bridge 时临时启用 `Application.runInBackground`，后台线程收到请求后用 `WM_NULL` 唤醒消息泵
 - 最小化恢复：收到请求时如果主窗口处于最小化状态，会先调用 `ShowWindow(SW_RESTORE)` 再唤醒消息泵
@@ -167,8 +171,17 @@ unity_status
 unity_snapshot { maxDepth: 3, maxNodes: 500, logLimit: 50, logLevel: "error" }
 unity_timeline { limit: 20, success: "failure" }
 unity_eval { code: "UnityEngine.Debug.Log(123); 123" }
+unity_eval_file { filePath: "Temp/PiUnityHarness/AgentScratch/probe.repl" }
+unity_recompile
 ```
 
+多行 C# 推荐：
+
+1. 用文件工具写入 `Temp/PiUnityHarness/AgentScratch/*.repl`（首行 `// #repl-mode: top-level` 或 `class`）
+2. 调用 `unity_eval_file` 执行
+3. 改脚本后 `unity_recompile`，再用 `unity_snapshot` / tests / PlayMode 验证
+
+启用 harness 后，system prompt 会要求 **observe → act → compile → verify → re-observe**，禁止只改文件不验证。
 ## 上下文快照与操作审计
 
 `unity_snapshot` 默认返回：
@@ -191,6 +204,6 @@ Action Timeline 在 native broker 接收请求时写 `started` 事件，在响�
 
 建议优先补三件事：
 
-1. `unity_recompile` / `unity_refresh` 工具
-2. 更强的请求分类与错误码（`managed_reloading`、`managed_not_ready`、`compile_failed`）
-3. 可选的 Locus 级 background hook（若需要避免恢复最小化窗口）
+1. 探测 PATH 上的官方 `unity` CLI（doctor / pipeline install / open）作为外层运维面
+2. 有 pipeline 时将复杂 eval 路由到 Roslyn；无 pipeline 时保留 Mono.CSharp
+3. 可选的 Locus 级 background hook（若需要避免恢复最小化窗口）/ 非 Windows HTTP fallback
