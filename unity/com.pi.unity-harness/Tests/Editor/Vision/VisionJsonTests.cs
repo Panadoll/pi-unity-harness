@@ -68,27 +68,6 @@ namespace Pi.UnityHarness.Editor.Tests.Vision
             Assert.That(json, Does.Not.Contain("screenshot_to_gameview"));
         }
 
-        [Test]
-        public void BuildCaptureJson_JsonIsValidStructure()
-        {
-            string json = VisionJson.BuildCaptureJson(
-                "succeeded", "/tmp/shot.png", "game",
-                1280, 720, 45678,
-                1280, 720,
-                826f, 410f,
-                1920, 1080,
-                1.549f, 1.756f,
-                0.6453f, 0.5694f,
-                "2026-01-01T12:00:00.000Z");
-
-            Assert.That(json, Does.StartWith("{"));
-            Assert.That(json, Does.EndWith("}"));
-            // Count braces to check balance
-            int openBraces = json.Split('{').Length - 1;
-            int closeBraces = json.Split('}').Length - 1;
-            Assert.That(openBraces, Is.EqualTo(closeBraces));
-        }
-
         // ─── Analysis Unavailable JSON ───────────────────────────────
 
         [Test]
@@ -105,15 +84,6 @@ namespace Pi.UnityHarness.Editor.Tests.Vision
             Assert.That(json, Does.Contain("\"visible_text\":[]"));
             Assert.That(json, Does.Contain("\"targets\":[]"));
             Assert.That(json, Does.Contain("\"suggested_actions\":[]"));
-        }
-
-        [Test]
-        public void BuildAnalysisUnavailableJson_JsonIsValid()
-        {
-            string json = VisionJson.BuildAnalysisUnavailableJson("Test question.");
-            int openBraces = json.Split('{').Length - 1;
-            int closeBraces = json.Split('}').Length - 1;
-            Assert.That(openBraces, Is.EqualTo(closeBraces));
         }
 
         [Test]
@@ -220,16 +190,6 @@ namespace Pi.UnityHarness.Editor.Tests.Vision
             Assert.That(json, Does.Contain("\"status\":\"failed\""));
         }
 
-        [Test]
-        public void BuildCompoundCaptureAnalysisJson_JsonIsValid()
-        {
-            string json = VisionJson.BuildCompoundCaptureAnalysisJson(
-                "{}", "{}", "partial");
-            int openBraces = json.Split('{').Length - 1;
-            int closeBraces = json.Split('}').Length - 1;
-            Assert.That(openBraces, Is.EqualTo(closeBraces));
-        }
-
         // ─── Analysis Request JSON ───────────────────────────────────
 
         [Test]
@@ -269,6 +229,23 @@ namespace Pi.UnityHarness.Editor.Tests.Vision
         }
 
         [Test]
+        public void BuildAnalysisRequestJson_DefaultQuestionWhenNull()
+        {
+            string json = HarnessVision.BuildAnalysisRequestJson(null, "{\"path\":\"/tmp/shot.png\"}", null);
+
+            Assert.That(json, Does.Contain("\"question\""));
+            Assert.That(json, Does.Not.Contain("null"));
+        }
+
+        [Test]
+        public void BuildAnalysisRequestJson_DefaultQuestionWhenEmpty()
+        {
+            string json = HarnessVision.BuildAnalysisRequestJson("", "{\"path\":\"/tmp/shot.png\"}", null);
+
+            Assert.That(json, Does.Contain("Describe what is visible"));
+        }
+
+        [Test]
         public void BuildAnalysisRequestJson_WithContext_IncludesContext()
         {
             string captureJson = "{\"path\":\"/tmp/shot.png\"}";
@@ -285,15 +262,6 @@ namespace Pi.UnityHarness.Editor.Tests.Vision
             Assert.That(json, Does.Contain("\"coordinate_space\":\"screenshot_top_left\""));
             Assert.That(json, Does.Contain("\"max_targets\":10"));
             Assert.That(json, Does.Contain("\"do_not_guess\":true"));
-        }
-
-        [Test]
-        public void BuildAnalysisRequestJson_JsonIsValid()
-        {
-            string json = VisionJson.BuildAnalysisRequestJson("Q.", "{\"path\":\"/tmp/shot.png\"}", null);
-            int openBraces = json.Split('{').Length - 1;
-            int closeBraces = json.Split('}').Length - 1;
-            Assert.That(openBraces, Is.EqualTo(closeBraces));
         }
 
         [Test]

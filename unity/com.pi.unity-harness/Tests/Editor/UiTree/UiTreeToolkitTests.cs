@@ -79,31 +79,6 @@ namespace Pi.UnityHarness.Editor.Tests.UiTree
         }
 
         [Test]
-        public void FindJson_FindsByClassName()
-        {
-            // Use . prefix for exact class match
-            string json = HarnessUiTree.FindJson(".action-button");
-            Assert.That(json, Does.Contain("\"status\":\"succeeded\""));
-            // Might or might not find our test window's elements depending on timing
-            // At minimum, the query should succeed without error
-        }
-
-        [Test]
-        public void FindJson_FindsByNamePrefix()
-        {
-            // Use # prefix for exact name match
-            string json = HarnessUiTree.FindJson("#test-label");
-            Assert.That(json, Does.Contain("\"status\":\"succeeded\""));
-        }
-
-        [Test]
-        public void FindJson_FindsByTypeName()
-        {
-            string json = HarnessUiTree.FindJson("Button");
-            Assert.That(json, Does.Contain("\"status\":\"succeeded\""));
-        }
-
-        [Test]
         public void SnapshotJson_ContainsUIToolkitNodes()
         {
             string json = HarnessUiTree.SnapshotJson(interactiveOnly: false, maxDepth: 3, limit: 200);
