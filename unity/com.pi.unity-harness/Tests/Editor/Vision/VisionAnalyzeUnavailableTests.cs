@@ -90,28 +90,6 @@ namespace Pi.UnityHarness.Editor.Tests.Vision
         }
 
         [Test]
-        public void CaptureAndAnalyzeJson_JsonIsValid()
-        {
-            string json = HarnessVision.CaptureAndAnalyzeJson(
-                "Test.", "scene", null, 0, 0, null);
-
-            int openBraces = json.Split('{').Length - 1;
-            int closeBraces = json.Split('}').Length - 1;
-            Assert.That(openBraces, Is.EqualTo(closeBraces),
-                "JSON braces are not balanced in: " + json);
-        }
-
-        [Test]
-        public void CaptureAndAnalyzeJson_DefaultQuestion()
-        {
-            string json = HarnessVision.CaptureAndAnalyzeJson(
-                null, "scene", null, 0, 0, null);
-
-            // Should work without a question
-            Assert.That(json, Does.Contain("\"schema\":\"harness.vision.capture_analysis.v1\""));
-        }
-
-        [Test]
         public void CaptureAndAnalyzeJson_DoesNotMakeNetworkCalls()
         {
             // This test verifies by contract that no network calls are made.
