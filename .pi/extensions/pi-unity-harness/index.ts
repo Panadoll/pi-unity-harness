@@ -116,7 +116,7 @@ const INLINE_EVAL_CODE_LIMIT_BYTES = 512 * 1024;
 const CLIENT_HEARTBEAT_INTERVAL_MS = 5000;
 const CLIENT_HEARTBEAT_TIMEOUT_MS = 5000;
 const PIPELINE_PACKAGE_NAME = "com.unity.pipeline";
-const PIPELINE_PACKAGE_VERSION = "0.3.1-exp.1";
+const PIPELINE_PACKAGE_VERSION = "0.4.0-exp.1";
 
 // ---- State Plane 独立读取（不依赖 client 实例） ----
 
@@ -460,6 +460,55 @@ class UnityBridgeClient {
     this.lineBuffer = "";
   }
 
+  async probeModalStatus(bridge: BridgeInfo): Promise<{ present: boolean; title?: string; buttons?: string[] } | null> {
+    try {
+      const status = await this.oneShotStatus(bridge);
+      const obs = status?.modalObservation;
+      if (!obs?.present || !obs?.windows?.length) return null;
+      const w = obs.windows[0];
+      return {
+        present: true,
+        title: w.title ?? undefined,
+        buttons: w.buttons ?? undefined,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private oneShotStatus(bridge: BridgeInfo): Promise<any> {
+    return new Promise((resolve, reject) => {
+      const socket = net.createConnection(bridge.pipe);
+      const message = JSON.stringify({ id: "modal-probe", type: "status", token: bridge.token }) + "\n";
+      let buf = "";
+      const timer = setTimeout(() => {
+        socket.destroy();
+        reject(new Error("modal probe timed out"));
+      }, 3000);
+      socket.on("error", (err) => {
+        clearTimeout(timer);
+        socket.destroy();
+        reject(err);
+      });
+      socket.on("data", (chunk: Buffer) => {
+        buf += chunk.toString("utf8");
+        const nl = buf.indexOf("\n");
+        if (nl < 0) return;
+        clearTimeout(timer);
+        socket.destroy();
+        try {
+          const msg = JSON.parse(buf.slice(0, nl));
+          resolve(msg.result ?? msg);
+        } catch {
+          reject(new Error("modal probe invalid json"));
+        }
+      });
+      socket.on("connect", () => {
+        socket.write(message);
+      });
+    });
+  }
+
   async request(type: string, payload: Record<string, unknown>, timeoutMs = 20000) {
     const bridge = this.loadBridgeInfo();
     await this.ensureConnected(bridge, timeoutMs);
@@ -468,14 +517,24 @@ class UnityBridgeClient {
     const message = JSON.stringify({ id, type, token: bridge.token, timeoutMs, payload }) + "\n";
 
     return await new Promise<any>((resolve, reject) => {
-      const timer = setTimeout(() => {
+      const timer = setTimeout(async () => {
         this.pending.delete(id);
         if (this.socket) {
           this.stopHeartbeat();
           this.socket.destroy();
           this.socket = undefined;
         }
-        reject(new Error(`unity request timed out after ${timeoutMs}ms (${type})`));
+        // Phase 2: probe modal before rejecting
+        const modal = await this.probeModalStatus(bridge);
+        if (modal?.present) {
+          const buttons = modal.buttons?.length ? ` [${modal.buttons.join(" | ")}]` : "";
+          reject(new Error(
+            `unity request timed out after ${timeoutMs}ms (${type}) — EDITOR_MODAL: "${modal.title ?? "?"}"${buttons}. ` +
+            `Close the dialog in Unity Editor manually, or retry with yolo mode.`
+          ));
+        } else {
+          reject(new Error(`unity request timed out after ${timeoutMs}ms (${type})`));
+        }
       }, timeoutMs);
 
       this.pending.set(id, { resolve, reject, timer });
@@ -1375,6 +1434,35 @@ export default function (pi: ExtensionAPI) {
     async execute() {
       assertEnabled();
       const result = await client.request("ping", {});
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        details: result,
+      };
+    },
+  });
+
+  // ---- unity_yolo ----
+
+  pi.registerTool({
+    name: "unity_yolo",
+    label: "Unity YOLO",
+    description: "设置 Unity Editor 弹窗自动处理策略。off=不处理 detect=仅检测 safe-auto=自动关闭安全弹窗",
+    promptSnippet: "Use unity_yolo { mode: \"safe-auto\" } to auto-dismiss modal dialogs when the Editor is blocked.",
+    promptGuidelines: [
+      "Use unity_yolo before triggering operations that may cause modal dialogs (scene changes, import settings).",
+      "safe-auto only clicks whitelisted buttons: Don't Save on scene dialogs, Apply on import dialogs, OK/Yes on generic prompts.",
+    ],
+    parameters: Type.Object({
+      mode: Type.String({
+        description: "弹窗处理模式：off、detect、safe-auto",
+        default: "detect",
+        enum: ["off", "detect", "safe-auto"],
+      }),
+    }),
+    async execute(_toolCallId: string, params: { mode?: string }) {
+      assertEnabled();
+      const mode = params?.mode ?? "detect";
+      const result = await client.request("set_yolo", { mode });
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
         details: result,
