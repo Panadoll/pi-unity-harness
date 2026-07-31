@@ -69,7 +69,7 @@ mod imp {
     const AUDIT_QUERY_MAX_EVENTS: usize = 20_000;
     const AUDIT_QUERY_DEFAULT_LIMIT: usize = 50;
     const AUDIT_QUERY_MAX_LIMIT: usize = 200;
-    const CAPABILITIES: [&str; 11] = [
+    const CAPABILITIES: [&str; 12] = [
         "native-broker",
         "direct-status",
         "reload-stable-pipe",
@@ -81,7 +81,37 @@ mod imp {
         "client-heartbeat-timeout",
         "context-snapshot-v1",
         "action-timeline-v1",
+        "modal-probe-v1",
     ];
+
+    const MODAL_PROBE_INTERVAL_MS: i64 = 500;
+    const YOLO_AUTO_CLICK_COOLDOWN_MS: i64 = 8_000;
+
+    /// YOLO mode: off (no action), detect (report only), safe-auto (click whitelisted buttons).
+    #[derive(Clone, Copy, PartialEq)]
+    enum YoloMode {
+        Off = 0,
+        Detect = 1,
+        SafeAuto = 2,
+    }
+
+    impl YoloMode {
+        fn from_i32(value: i32) -> Self {
+            match value {
+                1 => YoloMode::Detect,
+                2 => YoloMode::SafeAuto,
+                _ => YoloMode::Off,
+            }
+        }
+
+        fn as_str(&self) -> &'static str {
+            match self {
+                YoloMode::Off => "off",
+                YoloMode::Detect => "detect",
+                YoloMode::SafeAuto => "safe-auto",
+            }
+        }
+    }
 
     type Bool = i32;
     type Dword = u32;
@@ -110,6 +140,24 @@ mod imp {
         fn UnmapViewOfFile(lpBaseAddress: *const c_void) -> Bool;
         fn CloseHandle(hObject: Handle) -> Bool;
     }
+
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn EnumWindows(lpEnumFunc: unsafe extern "system" fn(isize, isize) -> i32, lParam: isize) -> i32;
+        fn GetWindowThreadProcessId(hWnd: isize, lpdwProcessId: *mut u32) -> u32;
+        fn IsWindowVisible(hWnd: isize) -> i32;
+        fn GetClassNameW(hWnd: isize, lpClassName: *mut u16, nMaxCount: i32) -> i32;
+        fn GetWindowTextW(hWnd: isize, lpString: *mut u16, nMaxCount: i32) -> i32;
+        fn GetWindowTextLengthW(hWnd: isize) -> i32;
+        fn EnumChildWindows(
+            hWnd: isize,
+            lpEnumFunc: unsafe extern "system" fn(isize, isize) -> i32,
+            lParam: isize,
+        ) -> i32;
+        fn SendMessageW(hWnd: isize, msg: u32, wParam: usize, lParam: isize) -> isize;
+    }
+
+    const BM_CLICK: u32 = 0x00F5;
 
     struct StatePlane {
         handle: Handle,
@@ -272,6 +320,21 @@ mod imp {
         window_state: String,
     }
 
+    #[derive(Clone, Default)]
+    struct ModalWindowInfo {
+        hwnd: isize,
+        title: String,
+        class_name: String,
+        buttons: Vec<String>,
+    }
+
+    #[derive(Clone, Default)]
+    struct ModalObservation {
+        present: bool,
+        detected_at_ms: i64,
+        windows: Vec<ModalWindowInfo>,
+    }
+
     struct Broker {
         pipe_name: String,
         project_path: String,
@@ -290,6 +353,9 @@ mod imp {
         state_plane: Mutex<Option<StatePlane>>,
         next_audit_action_id: AtomicU64,
         audit_io: Mutex<()>,
+        modal_observation: Mutex<ModalObservation>,
+        yolo_mode: AtomicI32,
+        last_auto_click_ms: AtomicI64,
     }
 
     impl Broker {
@@ -314,6 +380,9 @@ mod imp {
                 state_plane: Mutex::new(state_plane),
                 next_audit_action_id: AtomicU64::new((now_ms().max(0) as u64).saturating_mul(1000)),
                 audit_io: Mutex::new(()),
+                modal_observation: Mutex::new(ModalObservation::default()),
+                yolo_mode: AtomicI32::new(YoloMode::Detect as i32),
+                last_auto_click_ms: AtomicI64::new(0),
             }
         }
 
@@ -337,7 +406,9 @@ mod imp {
                 "windowState": editor.window_state,
                 "pending": self.pending.lock().map(|q| q.len()).unwrap_or(0),
                 "inFlight": self.in_flight.lock().map(|m| m.len()).unwrap_or(0),
-                "capabilities": CAPABILITIES
+                "capabilities": CAPABILITIES,
+                "modalObservation": self.modal_observation_json(),
+                "yoloMode": YoloMode::from_i32(self.yolo_mode.load(Ordering::SeqCst)).as_str()
             })
         }
 
@@ -399,6 +470,201 @@ mod imp {
         fn is_heartbeat_timed_out_at(&self, now: i64) -> bool {
             self.managed_state.load(Ordering::SeqCst) == MANAGED_STATE_READY
                 && self.heartbeat_age_ms(now) > HEARTBEAT_TIMEOUT_MS
+        }
+
+        fn modal_observation_json(&self) -> Value {
+            match self.modal_observation.lock() {
+                Ok(guard) => {
+                    let windows: Vec<Value> = guard
+                        .windows
+                        .iter()
+                        .map(|w| {
+                            json!({
+                                "hwnd": w.hwnd as u64,
+                                "title": w.title,
+                                "class": w.class_name,
+                                "buttons": w.buttons,
+                            })
+                        })
+                        .collect();
+                    json!({
+                        "present": guard.present,
+                        "detectedAtMs": guard.detected_at_ms,
+                        "windows": windows,
+                    })
+                }
+                Err(_) => json!({
+                    "present": false,
+                    "detectedAtMs": 0,
+                    "windows": [],
+                }),
+            }
+        }
+
+        fn refresh_modal_observation(&self) {
+            let now = now_ms();
+            // Only probe when editor_status indicates modal.
+            let is_modal = self
+                .editor_status
+                .lock()
+                .map(|s| s.contains("modal=1"))
+                .unwrap_or(false);
+            if !is_modal {
+                if let Ok(mut guard) = self.modal_observation.lock() {
+                    if guard.present {
+                        guard.present = false;
+                        guard.windows.clear();
+                    }
+                }
+                return;
+            }
+
+            let mut windows: Vec<ModalWindowInfo> = Vec::new();
+
+            // Enumerate top-level windows
+            let ctx_ptr = (&mut windows) as *mut Vec<ModalWindowInfo> as isize;
+            unsafe {
+                EnumWindows(modal_probe_enum_top_level, ctx_ptr);
+            }
+
+            // Filter: visible, owned by our PID, class == "#32770"
+            windows.retain(|w| {
+                if w.class_name != "#32770" {
+                    return false;
+                }
+                true
+            });
+
+            // For each dialog, enumerate child buttons
+            for w in &mut windows {
+                self.probe_dialog_buttons(w);
+            }
+
+            let has_modal = !windows.is_empty();
+            if let Ok(mut guard) = self.modal_observation.lock() {
+                guard.present = has_modal;
+                guard.detected_at_ms = now;
+                guard.windows = windows.clone();
+            }
+            // Safe-auto: try to dismiss whitelisted dialogs
+            if has_modal {
+                self.try_auto_dismiss(&windows);
+            }
+            // Also update editor_status to include mainThreadStale when modal
+            let editor = self.editor_observation();
+            if editor.status == "editing" || editor.status == "playing" {
+                let main_thread_stale = self.heartbeat_age_ms(now) > HEARTBEAT_TIMEOUT_MS;
+                if main_thread_stale {
+                    if let Ok(mut guard) = self.editor_status.lock() {
+                        if !guard.contains("mainThreadStale=1") {
+                            *guard = format!("{};mainThreadStale=1", *guard);
+                        }
+                    }
+                }
+            }
+        }
+
+        fn probe_dialog_buttons(&self, window: &mut ModalWindowInfo) {
+            let buttons_ptr = &mut window.buttons as *mut Vec<String> as isize;
+            unsafe {
+                EnumChildWindows(
+                    window.hwnd,
+                    modal_probe_enum_child_buttons,
+                    buttons_ptr,
+                );
+            }
+        }
+
+        fn try_auto_dismiss(&self, windows: &[ModalWindowInfo]) {
+            let mode = YoloMode::from_i32(self.yolo_mode.load(Ordering::SeqCst));
+            if mode != YoloMode::SafeAuto {
+                return;
+            }
+            let now = now_ms();
+            let last_click = self.last_auto_click_ms.load(Ordering::SeqCst);
+            if last_click > 0 && now.saturating_sub(last_click) < YOLO_AUTO_CLICK_COOLDOWN_MS {
+                return;
+            }
+            for window in windows {
+                if let Some(target_text) = self.resolve_yolo_button(window) {
+                    if self.click_button_by_text(window.hwnd, &target_text) {
+                        self.last_auto_click_ms.store(now, Ordering::SeqCst);
+                        eprintln!(
+                            "[pi-unity-native] yolo safe-auto clicked \"{}\" on \"{}\" [{}]",
+                            target_text,
+                            window.title,
+                            window.buttons.join(", ")
+                        );
+                        return;
+                    }
+                }
+            }
+        }
+
+        /// Resolve the safest button to click based on dialog title and button whites.
+        fn resolve_yolo_button(&self, window: &ModalWindowInfo) -> Option<String> {
+            let title_lower = window.title.to_lowercase();
+            let buttons: Vec<String> = window
+                .buttons
+                .iter()
+                .map(|b| b.to_lowercase())
+                .collect();
+
+            // Scene-save dialog: prefer "Don't Save" (non-destructive), fallback to "Save"
+            if title_lower.contains("scene") && title_lower.contains("modified") {
+                if buttons.iter().any(|b| b == "don't save") {
+                    return Some("Don't Save".to_string());
+                }
+                if buttons.iter().any(|b| b == "save") {
+                    return Some("Save".to_string());
+                }
+            }
+
+            // Import settings changed: prefer "Apply"
+            if title_lower.contains("import") {
+                if buttons.iter().any(|b| b == "apply") {
+                    return Some("Apply".to_string());
+                }
+            }
+
+            // Generic Unity dialog with OK
+            if buttons.iter().any(|b| b == "ok") {
+                return Some("OK".to_string());
+            }
+
+            // Generic yes/no dialog: prefer "Yes"
+            if buttons.iter().any(|b| b == "yes") {
+                return Some("Yes".to_string());
+            }
+
+            // Fallback: first button
+            if !window.buttons.is_empty() {
+                return Some(window.buttons[0].clone());
+            }
+
+            None
+        }
+
+        fn click_button_by_text(&self, parent_hwnd: isize, text: &str) -> bool {
+            let ctx = FindButtonContext {
+                target_text_lower: text.to_lowercase(),
+                found_hwnd: std::cell::Cell::new(0isize),
+            };
+            unsafe {
+                EnumChildWindows(
+                    parent_hwnd,
+                    find_button_by_text_callback,
+                    &ctx as *const FindButtonContext as isize,
+                );
+            }
+            let hwnd = ctx.found_hwnd.get();
+            if hwnd == 0 {
+                return false;
+            }
+            unsafe {
+                SendMessageW(hwnd, BM_CLICK, 0, 0);
+            }
+            true
         }
 
         fn reap_timeouts(&self) {
@@ -489,6 +755,8 @@ mod imp {
                 "pending": self.pending.lock().map(|q| q.len()).unwrap_or(0),
                 "inFlight": self.in_flight.lock().map(|m| m.len()).unwrap_or(0),
                 "capabilities": CAPABILITIES,
+                "modalObservation": self.modal_observation_json(),
+                "yoloMode": YoloMode::from_i32(self.yolo_mode.load(Ordering::SeqCst)).as_str(),
             })
             .to_string();
             if let Ok(mut guard) = self.state_plane.lock() {
@@ -640,6 +908,26 @@ mod imp {
                         }
                     };
                     self.send_line(self.ok_line(id, result));
+                }
+                "set_yolo" => {
+                    let mode = value
+                        .get("payload")
+                        .and_then(|p| p.get("mode"))
+                        .and_then(|m| m.as_str())
+                        .unwrap_or("detect");
+                    let mode_i32 = match mode {
+                        "off" => YoloMode::Off as i32,
+                        "safe-auto" => YoloMode::SafeAuto as i32,
+                        _ => YoloMode::Detect as i32,
+                    };
+                    self.yolo_mode.store(mode_i32, Ordering::SeqCst);
+                    let request = self.start_direct_audit(id, "set_yolo", "set_yolo", &value);
+                    let response = self.ok_line(
+                        id,
+                        json!({ "yoloMode": YoloMode::from_i32(mode_i32).as_str() }),
+                    );
+                    self.complete_direct_audit(&request, &response);
+                    self.send_line(response);
                 }
                 "bridge_capabilities" => self.send_line(self.ok_line(
                     id,
@@ -1300,6 +1588,108 @@ mod imp {
             .unwrap_or(0)
     }
 
+    // ── Modal probe helpers ────────────────────────────────────────────
+
+    unsafe extern "system" fn modal_probe_enum_top_level(hwnd: isize, lparam: isize) -> i32 {
+        if hwnd == 0 {
+            return 1;
+        }
+        let windows = &mut *(lparam as *mut Vec<ModalWindowInfo>);
+        if IsWindowVisible(hwnd) == 0 {
+            return 1;
+        }
+        let mut pid: u32 = 0;
+        GetWindowThreadProcessId(hwnd, &mut pid as *mut u32);
+        if pid != std::process::id() {
+            return 1;
+        }
+        let class_name = read_window_class(hwnd);
+        if class_name.is_empty() {
+            return 1;
+        }
+        let title = read_window_text(hwnd);
+        windows.push(ModalWindowInfo {
+            hwnd,
+            title,
+            class_name,
+            buttons: Vec::new(),
+        });
+        1
+    }
+
+    unsafe extern "system" fn modal_probe_enum_child_buttons(hwnd: isize, lparam: isize) -> i32 {
+        if hwnd == 0 {
+            return 1;
+        }
+        let class_name = read_window_class(hwnd);
+        // Common button class names in Win32 dialogs
+        let is_button = class_name.eq_ignore_ascii_case("button");
+        if !is_button {
+            return 1;
+        }
+        if IsWindowVisible(hwnd) == 0 {
+            return 1;
+        }
+        let text = read_window_text(hwnd);
+        if text.is_empty() {
+            return 1;
+        }
+        let buttons = &mut *(lparam as *mut Vec<String>);
+        buttons.push(text);
+        1
+    }
+
+    fn read_window_text(hwnd: isize) -> String {
+        unsafe {
+            let len = GetWindowTextLengthW(hwnd);
+            if len <= 0 {
+                return String::new();
+            }
+            let mut buf: Vec<u16> = vec![0u16; (len as usize) + 1];
+            let copied = GetWindowTextW(hwnd, buf.as_mut_ptr(), buf.len() as i32);
+            if copied <= 0 {
+                return String::new();
+            }
+            String::from_utf16_lossy(&buf[..copied as usize])
+        }
+    }
+
+    fn read_window_class(hwnd: isize) -> String {
+        unsafe {
+            let mut buf: Vec<u16> = vec![0u16; 128];
+            let copied = GetClassNameW(hwnd, buf.as_mut_ptr(), buf.len() as i32);
+            if copied <= 0 {
+                return String::new();
+            }
+            String::from_utf16_lossy(&buf[..copied as usize])
+        }
+    }
+
+    struct FindButtonContext {
+        target_text_lower: String,
+        found_hwnd: std::cell::Cell<isize>,
+    }
+
+    unsafe extern "system" fn find_button_by_text_callback(hwnd: isize, lparam: isize) -> i32 {
+        if hwnd == 0 {
+            return 1;
+        }
+        let ctx = &*(lparam as *const FindButtonContext);
+        let class_name = read_window_class(hwnd);
+        if !class_name.eq_ignore_ascii_case("button") {
+            return 1;
+        }
+        if IsWindowVisible(hwnd) == 0 {
+            return 1;
+        }
+        let text = read_window_text(hwnd);
+        if text.to_lowercase() == ctx.target_text_lower {
+            ctx.found_hwnd.set(hwnd);
+            return 0; // stop enumeration
+        }
+        1
+    }
+
     static BROKER: OnceLock<Arc<Broker>> = OnceLock::new();
 
     fn broker() -> Option<&'static Arc<Broker>> {
@@ -1374,6 +1764,14 @@ mod imp {
 
     async fn broker_main(broker: Arc<Broker>, pipe_name: String) {
         eprintln!("[pi-unity-native] broker listening on {pipe_name}");
+        // Background modal probe task: independently detect Unity dialogs.
+        let broker_clone = broker.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_millis(MODAL_PROBE_INTERVAL_MS as u64)).await;
+                broker_clone.refresh_modal_observation();
+            }
+        });
         loop {
             if broker.shutdown.load(Ordering::SeqCst) {
                 break;

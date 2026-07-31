@@ -1,8 +1,8 @@
 # com.unity.pipeline 集成设计与开发计划
 
 > 状态：实现稿 v1（Phase 0-3 已落地，Phase 4 可选未排期）
-> 目标包版本：`com.unity.pipeline@0.3.1-exp.1`（experimental，API 可能变动；asmdef 兼容范围 `[0.2.0-exp.2,0.4.0)`）
-> 验证项目：`F:\UnityProjects\Test`（Unity 6000.5.0f1，已安装 embedded `com.unity.pipeline@0.3.1-exp.1`）
+> 目标包版本：`com.unity.pipeline@0.4.0-exp.1`（experimental，API 可能变动；asmdef 兼容范围 `[0.2.0-exp.2,0.5.0)`）
+> 验证项目：`F:\UnityProjects\Test`（Unity 6000.5.0f1，已安装 embedded `com.unity.pipeline@0.4.0-exp.1`）
 
 ## 1. 背景与目标
 
@@ -78,7 +78,7 @@ harness 必须在**未安装** pipeline 的项目（含 2021.3）继续工作，
   "versionDefines": [
     // 注意：裸版本 "0.2" 在 Unity 版本表达式里意为 >= 0.2.0，会匹配未来 0.3/1.0，
     // 重新暴露 exp API 破坏风险。用半开区间锁定到已验证的版本线：
-    { "name": "com.unity.pipeline", "expression": "[0.2.0-exp.2,0.4.0)", "define": "PI_UNITY_PIPELINE" }
+    { "name": "com.unity.pipeline", "expression": "[0.2.0-exp.2,0.5.0)", "define": "PI_UNITY_PIPELINE" }
   ]
 }
 ```
@@ -304,7 +304,7 @@ supported for 'all' mode"）。coordinator 统一走 async 包装，因此：
    行为降级），并在 `setActiveTools()` 可用的宿主上将其移出活跃集
 6. **安装辅助**：`/unity-install` 增加可选步骤——检测项目 Unity 版本 ≥ 6000.0 且
    未安装 pipeline 时，**询问用户**是否向 `Packages/manifest.json` 添加
-   `com.unity.pipeline@0.3.1-exp.1`（固定版本，exp 包 API 不稳定；asmdef 用半开区间 `[0.2.0-exp.2,0.4.0)` 兼容 0.2/0.3 线）
+   `com.unity.pipeline@0.4.0-exp.1`（固定版本，exp 包 API 不稳定；asmdef 用半开区间 `[0.2.0-exp.2,0.5.0)` 兼容 0.2/0.3/0.4 线）
 
 ### 3.7 与官方 HTTP server 的共存
 
@@ -391,7 +391,7 @@ play mode 能收到失败响应（`cancelled`/`error` 终态）而非超时。
 
 | 风险 | 影响 | 缓解 |
 |---|---|---|
-| pipeline 是 exp 包，`CommandRegistry`/`CommandInfo` API 可能破坏性变更 | 升级即编译错误 | 默认安装固定 `0.3.1-exp.1`；所有引用集中在单一 executor 文件；versionDefines expression 锁定 `[0.2.0-exp.2,0.4.0)`（§3.1） |
+| pipeline 是 exp 包，`CommandRegistry`/`CommandInfo` API 可能破坏性变更 | 升级即编译错误 | 默认安装固定 `0.4.0-exp.1`；所有引用集中在单一 executor 文件；versionDefines expression 锁定 `[0.2.0-exp.2,0.5.0)`（§3.1） |
 | asmdef 迁移破坏 evaluator 的 `Mono.CSharp` 解析 | Phase 0 阻塞 | 预留反射方案兜底（见 Phase 0 风险） |
 | pipeline 命令内部假设 HTTP/`Dispatcher` 上下文 | 个别命令行为异常 | Phase 1 验收逐命令冒烟；异常命令加入路由黑名单 |
 | 所有命令（含 `MainThreadRequired=false`）都在主线程执行（§3.3 第 4 点） | 重 CPU 自定义命令阻塞 Editor update | 先接受简化模型；确有需求再为 `MainThreadRequired=false` 命令加 `Task.Run` 通道 |
