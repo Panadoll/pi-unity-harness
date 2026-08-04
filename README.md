@@ -19,6 +19,8 @@ Unity C# worker
   -> main-thread execute on EditorApplication.update
 ```
 
+> 通信协议（bridge.json、帧格式、请求类型、错误码、state plane、审计格式）见 [docs/protocol.md](docs/protocol.md)，任何客户端实现以此为准。
+
 ## 与两个上游的关系
 
 - 借鉴了 `unity-harness` 的思路：
