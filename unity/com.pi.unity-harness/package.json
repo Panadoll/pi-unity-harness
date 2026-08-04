@@ -5,7 +5,8 @@
   "description": "pi-coding-agent Unity bridge with a reload-stable native broker and Editor-side C# worker.",
   "unity": "2021.3",
   "dependencies": {
-    "com.unity.ugui": "1.0.0"
+    "com.unity.ugui": "1.0.0",
+    "com.unity.nuget.newtonsoft-json": "3.2.2"
   },
   "author": { "name": "Pi Unity Harness" },
   "keywords": ["pi", "unity", "agent", "automation", "bridge"]

@@ -1,0 +1,24 @@
+{
+    "name": "Unity.Pipeline",
+    "rootNamespace": "Unity.Pipeline",
+    "references": [
+        "Unity.InputSystem"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": true,
+    "precompiledReferences": [
+        "Newtonsoft.Json.dll"
+    ],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [
+        {
+            "name": "com.unity.modules.unitywebrequest",
+            "expression": "1.0.0",
+            "define": "UNITY_2022_3_OR_NEWER"
+        }
+    ],
+    "noEngineReferences": false
+}

@@ -1,0 +1,26 @@
+{
+  "name": "com.unity.pipeline",
+  "displayName": "Pi Unity Pipeline Compat",
+  "version": "0.4.0-exp.1",
+  "unity": "2021.3",
+  "category": "Pipeline",
+  "description": "2021.3/2022.x compatible fork of com.unity.pipeline@0.4.0-exp.1 for pi-unity-harness. UPM 名与官方一致以复用 versionDefines；经 `file:` 引用。Roslyn eval + HotReload ILPP 已 stub/移除，请用 harness unity_eval。",
+  "keywords": [
+    "pipeline",
+    "pi",
+    "unity",
+    "compat",
+    "2022"
+  ],
+  "dependencies": {
+    "com.unity.test-framework": "1.1.33",
+    "com.unity.modules.jsonserialize": "1.0.0",
+    "com.unity.nuget.newtonsoft-json": "3.2.1",
+    "com.unity.modules.uielements": "1.0.0",
+    "com.unity.modules.screencapture": "1.0.0",
+    "com.unity.inputsystem": "1.7.0"
+  },
+  "author": {
+    "name": "Pi Unity Harness"
+  }
+}

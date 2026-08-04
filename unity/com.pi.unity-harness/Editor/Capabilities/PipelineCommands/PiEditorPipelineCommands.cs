@@ -54,7 +54,11 @@ namespace Pi.UnityHarness.Editor.Capabilities.PipelineCommands
             {
                 activeObject = ToObjectRef(Selection.activeObject),
                 activeGameObject = PiMcpPipelineSupport.ToGameObjectData(Selection.activeGameObject),
+#if UNITY_6000_3_OR_NEWER
                 instanceIds = Selection.entityIds.Select(id => (long)EntityId.ToULong(id)).ToArray(),
+#else
+                instanceIds = Selection.instanceIDs.Select(id => (long)id).ToArray(),
+#endif
                 assetGuids = includeAssets ? Selection.assetGUIDs : null,
                 gameObjects = gameObjects,
             };

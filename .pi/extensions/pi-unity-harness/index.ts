@@ -27,7 +27,7 @@ import {
 } from "./config.ts";
 import net from "node:net";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
 
 const CORE_UNITY_TOOLS = [
@@ -103,6 +103,10 @@ interface PipelineCommandList {
 
 interface PipelineInstallStatus {
   installed: boolean;
+  /** 官方 com.unity.pipeline 或 compat fork */
+  packageName?: string;
+  /** "official" | "compat" */
+  flavor?: "official" | "compat";
   version?: string;
   source?: string;
 }
@@ -116,8 +120,12 @@ const STATE_PLANE_SLOT_PAYLOAD_OFFSET = 24;
 const INLINE_EVAL_CODE_LIMIT_BYTES = 512 * 1024;
 const CLIENT_HEARTBEAT_INTERVAL_MS = 5000;
 const CLIENT_HEARTBEAT_TIMEOUT_MS = 5000;
+/** Unity 6+ 官方包 */
 const PIPELINE_PACKAGE_NAME = "com.unity.pipeline";
 const PIPELINE_PACKAGE_VERSION = "0.4.0-exp.1";
+/** 2021.3 / 2022.x 兼容 fork（程序集名仍为 Unity.Pipeline） */
+const PIPELINE_COMPAT_PACKAGE_NAME = "com.pi.pipeline.compat";
+const PIPELINE_COMPAT_INPUTSYSTEM_VERSION = "1.7.0";
 
 // ---- State Plane 独立读取（不依赖 client 实例） ----
 
@@ -331,30 +339,73 @@ function readProjectUnityVersion(projectPath: string): string | undefined {
   }
 }
 
+function readEmbeddedPackageVersion(projectPath: string, packageName: string): string | undefined {
+  const embeddedPackageJson = join(projectPath, "Packages", packageName, "package.json");
+  if (!existsSync(embeddedPackageJson)) return undefined;
+  try {
+    let text = readFileSync(embeddedPackageJson, "utf8");
+    if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
+    const pkg = JSON.parse(text);
+    return typeof pkg.version === "string" ? pkg.version : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** 读取 embedded 包的 displayName，用于区分官方包与 compat fork */
+function readEmbeddedPackageDisplayName(projectPath: string, packageName: string): string | undefined {
+  const embeddedPackageJson = join(projectPath, "Packages", packageName, "package.json");
+  if (!existsSync(embeddedPackageJson)) return undefined;
+  try {
+    let text = readFileSync(embeddedPackageJson, "utf8");
+    if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
+    const pkg = JSON.parse(text);
+    return typeof pkg.displayName === "string" ? pkg.displayName : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function getPipelineInstallStatus(projectPath: string): PipelineInstallStatus {
   const manifest = readManifest(projectPath);
-  const manifestVersion = manifest?.dependencies?.[PIPELINE_PACKAGE_NAME];
-  const embeddedPackageJson = join(projectPath, "Packages", PIPELINE_PACKAGE_NAME, "package.json");
+  const deps = manifest?.dependencies ?? {};
 
-  if (existsSync(embeddedPackageJson)) {
-    try {
-      let text = readFileSync(embeddedPackageJson, "utf8");
-      if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
-      const pkg = JSON.parse(text);
-      return { installed: true, version: pkg.version ?? manifestVersion, source: "embedded" };
-    } catch {
-      return { installed: true, version: manifestVersion, source: "embedded" };
-    }
-  }
-
-  if (manifestVersion) {
-    return { installed: true, version: manifestVersion, source: String(manifestVersion).startsWith("file:") ? "local" : "registry" };
+  // compat fork 与官方包 UPM 名同为 com.unity.pipeline（官方 registry 或 embedded 复制）
+  const pipelineManifest = deps[PIPELINE_PACKAGE_NAME];
+  const embeddedVersion = readEmbeddedPackageVersion(projectPath, PIPELINE_PACKAGE_NAME);
+  if (embeddedVersion !== undefined || pipelineManifest) {
+    const manifestValue = String(pipelineManifest ?? "");
+    const embeddedDisplay = readEmbeddedPackageDisplayName(projectPath, PIPELINE_PACKAGE_NAME);
+    const isCompat =
+      (embeddedDisplay ?? "").toLowerCase().includes("compat") ||
+      manifestValue.toLowerCase().includes("compat") ||
+      manifestValue.toLowerCase().includes("pi.pipeline.compat");
+    return {
+      installed: true,
+      packageName: PIPELINE_PACKAGE_NAME,
+      flavor: isCompat ? "compat" : "official",
+      version: embeddedVersion ?? manifestValue,
+      source: embeddedVersion !== undefined ? "embedded" : manifestValue.startsWith("file:") ? "local" : "registry",
+    };
   }
 
   return { installed: false };
 }
 
-function installUnityPipeline(projectPath: string): { ok: boolean; message: string } {
+function resolvePipelineCompatPackageDir(): string | undefined {
+  const candidates = [
+    resolve(extensionDirPath(), "../../../unity/com.pi.pipeline.compat"),
+    resolve(process.cwd(), "unity", "com.pi.pipeline.compat"),
+    resolve(process.cwd(), "..", "pi-unity-harness", "unity", "com.pi.pipeline.compat"),
+  ];
+  for (const dir of candidates) {
+    if (existsSync(join(dir, "package.json"))) return dir;
+  }
+  return undefined;
+}
+
+/** Unity 6+：安装官方 com.unity.pipeline */
+function installOfficialUnityPipeline(projectPath: string): { ok: boolean; message: string } {
   const manifestPath = join(projectPath, "Packages", "manifest.json");
   const manifest = readManifest(projectPath);
   if (!manifest) {
@@ -362,8 +413,12 @@ function installUnityPipeline(projectPath: string): { ok: boolean; message: stri
   }
 
   manifest.dependencies ??= {};
-  if (manifest.dependencies[PIPELINE_PACKAGE_NAME]) {
-    return { ok: true, message: `${PIPELINE_PACKAGE_NAME} 已安装 (${manifest.dependencies[PIPELINE_PACKAGE_NAME]})` };
+  const existing = getPipelineInstallStatus(projectPath);
+  if (existing.installed) {
+    return {
+      ok: true,
+      message: `pipeline 已安装: ${existing.packageName}@${existing.version} (${existing.flavor})`,
+    };
   }
 
   manifest.dependencies[PIPELINE_PACKAGE_NAME] = PIPELINE_PACKAGE_VERSION;
@@ -373,6 +428,74 @@ function installUnityPipeline(projectPath: string): { ok: boolean; message: stri
   } catch (error: any) {
     return { ok: false, message: `写入 manifest.json 失败: ${error.message}` };
   }
+}
+
+/** 非 Unity 6：安装 com.pi.pipeline.compat（file: 本地 fork） */
+function installCompatUnityPipeline(projectPath: string): { ok: boolean; message: string } {
+  const manifestPath = join(projectPath, "Packages", "manifest.json");
+  const manifest = readManifest(projectPath);
+  if (!manifest) {
+    return { ok: false, message: `找不到或无法解析 Packages/manifest.json: ${projectPath}` };
+  }
+
+  const existing = getPipelineInstallStatus(projectPath);
+  if (existing.installed) {
+    return {
+      ok: true,
+      message: `pipeline 已安装: ${existing.packageName}@${existing.version} (${existing.flavor})`,
+    };
+  }
+
+  const pkgDir = resolvePipelineCompatPackageDir();
+  if (!pkgDir) {
+    return {
+      ok: false,
+      message: `找不到 compat 包目录（期望 unity/com.pi.pipeline.compat）`,
+    };
+  }
+
+  manifest.dependencies ??= {};
+  // Unity 2022 的 versionDefines 只认 embedded/registry 包，不认 file: 指向工程外的 local 包；
+  // 所以把 compat fork 复制成工程内 embedded 包 Packages/com.unity.pipeline。
+  // 仓库更新 compat 后重跑 /unity-install 即可重新同步。
+  delete manifest.dependencies[PIPELINE_COMPAT_PACKAGE_NAME];
+  try {
+    const targetDir = join(projectPath, "Packages", PIPELINE_PACKAGE_NAME);
+    rmSync(targetDir, { recursive: true, force: true });
+    cpSync(pkgDir, targetDir, { recursive: true, force: true });
+    manifest.dependencies[PIPELINE_PACKAGE_NAME] = "file:com.unity.pipeline";
+    if (!manifest.dependencies["com.unity.inputsystem"]) {
+      manifest.dependencies["com.unity.inputsystem"] = PIPELINE_COMPAT_INPUTSYSTEM_VERSION;
+    }
+    writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n", "utf8");
+    return {
+      ok: true,
+      message:
+        `已将 compat fork 复制为 embedded 包 ${PIPELINE_PACKAGE_NAME}（Packages/com.unity.pipeline）` +
+        `并确保 com.unity.inputsystem@${PIPELINE_COMPAT_INPUTSYSTEM_VERSION}。` +
+        `Unity Editor 将自动解析包；compat 不含 Roslyn eval/HotReload，请用 unity_eval。`,
+    };
+  } catch (error: any) {
+    return { ok: false, message: `写入 manifest / 复制包失败: ${error.message}` };
+  }
+}
+
+/** 按工程 Unity 主版本选择官方或 compat */
+function installUnityPipelineForProject(
+  projectPath: string,
+  unityMajor: number | undefined,
+): { ok: boolean; message: string; flavor?: "official" | "compat" } {
+  if (unityMajor !== undefined && unityMajor >= 6000) {
+    const r = installOfficialUnityPipeline(projectPath);
+    return { ...r, flavor: "official" };
+  }
+  const r = installCompatUnityPipeline(projectPath);
+  return { ...r, flavor: "compat" };
+}
+
+/** @deprecated 保留旧名，默认按官方安装；新代码请用 installUnityPipelineForProject */
+function installUnityPipeline(projectPath: string): { ok: boolean; message: string } {
+  return installOfficialUnityPipeline(projectPath);
 }
 
 function installPiUnityHarness(projectPath: string, packageSourceDir?: string): { ok: boolean; message: string } {
@@ -1362,15 +1485,22 @@ export default function (pi: ExtensionAPI) {
       const unityVersion = readProjectUnityVersion(resolvedProject);
       const major = parseUnityMajorVersion(unityVersion);
       const pipelineStatus = getPipelineInstallStatus(resolvedProject);
-      if (major !== undefined && major >= 6000 && !pipelineStatus.installed) {
-        const ok = await ctx.ui.confirm(
-          "安装 com.unity.pipeline?",
-          `项目 Unity 版本为 ${unityVersion ?? "unknown"}，是否添加 ${PIPELINE_PACKAGE_NAME}@${PIPELINE_PACKAGE_VERSION} 到 Packages/manifest.json?`,
-        );
+      if (!pipelineStatus.installed) {
+        const isUnity6 = major !== undefined && major >= 6000;
+        const title = isUnity6 ? "安装 com.unity.pipeline?" : "安装 pipeline compat fork?";
+        const detail = isUnity6
+          ? `项目 Unity 版本为 ${unityVersion ?? "unknown"}（Unity 6+），是否添加官方 ${PIPELINE_PACKAGE_NAME}@${PIPELINE_PACKAGE_VERSION}？`
+          : `项目 Unity 版本为 ${unityVersion ?? "unknown"}（非 Unity 6），官方 pipeline 不可用。是否以 ${PIPELINE_PACKAGE_NAME}（compat fork，file: 指向仓库 unity/com.pi.pipeline.compat）接入命令面？Roslyn eval/HotReload 请用 harness unity_eval。`;
+        const ok = await ctx.ui.confirm(title, detail);
         if (ok) {
-          const pipelineResult = installUnityPipeline(resolvedProject);
+          const pipelineResult = installUnityPipelineForProject(resolvedProject, major);
           ctx.ui.notify(pipelineResult.message, pipelineResult.ok ? "info" : "error");
         }
+      } else {
+        ctx.ui.notify(
+          `pipeline 已存在: ${pipelineStatus.packageName}@${pipelineStatus.version} (${pipelineStatus.flavor})`,
+          "info",
+        );
       }
     },
   });
