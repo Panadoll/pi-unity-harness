@@ -11,9 +11,14 @@
 | 维度 | com.unity.pipeline | pi-unity-harness |
 |---|---|---|
 | 传输 | HTTP（Editor 7800-7849 / Player 7900-7949），**域重载时 server 销毁** | Rust native broker + named pipe，**跨域重载存活** |
-| Unity 版本 | 仅 6000.0+ | 2021.3+ |
+| Unity 版本 | 官方仅 6000.0+；非 6 用仓库内 `com.pi.pipeline.compat` | 2021.3+ |
 | 命令体系 | `[CliCommand]` 属性 + TypeCache 自动发现 + 参数 schema | 硬编码 switch（eval / recompile / status / ping） |
 | 独有能力 | 测试运行、play mode 控制、热重载（in-place ILPostProcessor + override）、dev Player 控制 | 阻塞式跨重载 recompile、后台消息泵唤醒、主线程 eval + validate + coroutine pump |
+
+> **compat fork**：`unity/com.pi.pipeline.compat` 派生自 `com.unity.pipeline@0.4.0-exp.1`（Companion License）。
+> `/unity-install` 按工程 Unity 主版本选择：`>=6000` → 官方；否则 → 把 compat 复制为 embedded `Packages/com.unity.pipeline`
+> （Unity 2022 的 versionDefines 只认 embedded/registry 包，不认 file: 指向工程外的 local 包）。
+> 两包程序集名同为 `Unity.Pipeline`，**不可同装**。compat 去掉 Roslyn eval / HotReload CodeGen；命令面（含 `uitree_*`）可用。
 
 > ⚠️ **平台边界**：harness 当前仅支持 **Windows x64 Editor**——native broker 为
 > Windows 条件编译（`native/src/lib.rs` `#[cfg(windows)]`），插件仅提供
@@ -25,9 +30,11 @@
 pi 扩展做统一门面**。pipeline 作为可选增强：检测到就桥接，检测不到退回现有最小闭环。
 
 **非目标**：
-- 不 vendor pipeline 源码进本仓库（Unity Companion License；运行时依赖 registry 安装的包本体，源码仅用于理解接口）
+- 不把官方 Unity 6 pipeline 源码当默认依赖进仓库（Unity 6 仍装 registry/embedded 官方包）
 - 不替代 pipeline 的 HTTP server（外部 CI/CLI 用户仍可走 HTTP）
 - dev Player（运行中的 development build）控制不在前三阶段范围内——broker 只活在 Editor 进程
+
+**例外（已落地）**：为非 Unity 6 维护 `com.pi.pipeline.compat` fork（派生自 0.4.0-exp.1），仅用于 2021.3/2022 命令面；再分发需自行合规 Companion License。
 
 ## 2. 架构总览
 

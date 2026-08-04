@@ -43,7 +43,9 @@ Unity C# worker
 - `unity_recompile`：触发脚本编译并返回结果
 - `unity_snapshot`：一次获取 Editor 状态、活动场景层级、当前选择和近期日志；深度、节点数与日志数均有上限
 - `unity_timeline`：查询 `Temp/PiUnityHarness/ActionTimeline/*.jsonl` 中的追加式操作审计，支持按请求类型、动作和成功状态过滤
-- `unity_pipeline`：发现/执行 `com.unity.pipeline` `[CliCommand]`；高频命令动态注册为 shortcut（如 `unity_run_tests`）
+- `unity_pipeline`：发现/执行 pipeline `[CliCommand]`；高频命令动态注册为 shortcut（如 `unity_run_tests`）
+  - Unity 6+：官方 `com.unity.pipeline`
+  - 非 Unity 6（2021.3 / 2022）：`/unity-install` 会把仓库内 `com.pi.pipeline.compat` 复制为 embedded `com.unity.pipeline`（程序集名一致，`PI_UNITY_PIPELINE` 生效；无 Roslyn eval/HotReload，用 harness `unity_eval`）
 - verify 工作流：启用 harness 后，system prompt 会注入 observe → act → compile → verify → re-observe 闭环约束
 - `bridge.json`：Unity 启动后写入 `Library/PiUnityHarness/bridge.json`，供 pi 扩展发现 pipe 与 token
 - 后台保活：Editor 启动 bridge 时临时启用 `Application.runInBackground`，后台线程收到请求后用 `WM_NULL` 唤醒消息泵
