@@ -18,6 +18,7 @@ import {
 } from "./helpers.ts";
 import {
   describeSettingsPaths,
+  extensionDirPath,
   inspectUnityHarnessSettings,
   loadUnityHarnessSettings,
   persistEnabled,
@@ -220,8 +221,13 @@ function discoverUnityInstances(): UnityInstance[] {
       const pid = parseInt(pidMatch[1], 10);
       const cmdLine = cmdMatch ? cmdMatch[1].trim() : "";
 
-      const ppMatch = cmdLine.match(/-projectPath\s+"([^"]+)"/i) ??
-        cmdLine.match(/-projectPath\s+(\S+)/i);
+      // 跳过批量导入 worker 等辅助进程，只保留主 Editor 实例
+      if (/AssetImportWorker|-adb2|(^|\s)-batchMode(\s|$)/i.test(cmdLine)) continue;
+
+      // Hub 创建新项目用 -createproject，普通打开用 -projectPath；
+      // 两种格式参数都可能被引号包裹（"-projectPath" "path"）
+      const ppMatch = cmdLine.match(/-projectPath[\s"]+"?([^"\s]+)/i) ??
+        cmdLine.match(/-createproject[\s"]+"?([^"\s]+)/i);
       const projectPath = ppMatch ? resolve(ppMatch[1]) : null;
       if (!projectPath) continue;
 
@@ -375,17 +381,31 @@ function installPiUnityHarness(projectPath: string, packageSourceDir?: string): 
     return { ok: false, message: `找不到 Packages/manifest.json: ${projectPath} 可能不是 Unity 项目` };
   }
 
+  // 先检查是否已安装，避免已装好的项目因包源码定位失败而误报
+  try {
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    if (manifest.dependencies?.["com.pi.unity-harness"]) {
+      return { ok: true, message: `com.pi.unity-harness 已安装 (${manifest.dependencies["com.pi.unity-harness"]})` };
+    }
+  } catch (error: any) {
+    return { ok: false, message: `读取 manifest.json 失败: ${error.message}` };
+  }
+
   let pkgDir: string;
   if (packageSourceDir) {
     pkgDir = resolve(packageSourceDir);
   } else {
-    // 从 cwd 推断仓库根目录
-    pkgDir = resolve(process.cwd(), "unity", "com.pi.unity-harness");
+    // 优先从扩展自身位置推断仓库根目录（与启动目录无关）
+    pkgDir = resolve(extensionDirPath(), "../../../unity/com.pi.unity-harness");
     if (!existsSync(join(pkgDir, "package.json"))) {
-      // 尝试从父级仓库目录推断
-      const alt = resolve(process.cwd(), "..", "pi-unity-harness", "unity", "com.pi.unity-harness");
-      if (existsSync(join(alt, "package.json"))) {
-        pkgDir = alt;
+      // 兜底：从 cwd 推断仓库根目录（扩展被复制到全局目录时）
+      pkgDir = resolve(process.cwd(), "unity", "com.pi.unity-harness");
+      if (!existsSync(join(pkgDir, "package.json"))) {
+        // 尝试从父级仓库目录推断
+        const alt = resolve(process.cwd(), "..", "pi-unity-harness", "unity", "com.pi.unity-harness");
+        if (existsSync(join(alt, "package.json"))) {
+          pkgDir = alt;
+        }
       }
     }
   }
