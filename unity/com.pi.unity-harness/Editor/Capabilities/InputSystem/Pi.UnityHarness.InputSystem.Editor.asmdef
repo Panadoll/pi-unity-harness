@@ -1,0 +1,25 @@
+{
+  "name": "Pi.UnityHarness.InputSystem.Editor",
+  "rootNamespace": "Pi.UnityHarness.Editor.Capabilities.Input",
+  "references": [
+    "Pi.UnityHarness.Editor",
+    "Unity.InputSystem"
+  ],
+  "includePlatforms": ["Editor"],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [
+    "PI_UNITY_INPUT_SYSTEM"
+  ],
+  "versionDefines": [
+    {
+      "name": "com.unity.inputsystem",
+      "expression": "1.0.0",
+      "define": "PI_UNITY_INPUT_SYSTEM"
+    }
+  ],
+  "noEngineReferences": false
+}

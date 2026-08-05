@@ -1,0 +1,191 @@
+using System;
+using System.Collections;
+using System.Collections.Generic;
+
+namespace Pi.UnityHarness.Editor
+{
+    /// <summary>
+    /// Drives IEnumerator coroutines on the main thread, frame by frame.
+    /// Does not depend on MonoBehaviour; driven via EditorApplication.update.
+    /// Supports serial queueing, timeouts, cancellation, and nested IEnumerators.
+    /// </summary>
+    internal sealed class PiUnityCoroutinePump : IDisposable
+    {
+        private const int MaxQueue = 8;
+        private const int MaxStepsPerTick = 1000;
+
+        private readonly Queue<CoroutineEntry> _queue = new Queue<CoroutineEntry>();
+        private CoroutineEntry _active;
+        private bool _disposed;
+
+        public int PendingCount => _queue.Count + (_active.Stack != null ? 1 : 0);
+
+        public bool Enqueue(IEnumerator coroutine, string requestId, Action<bool, string, string> onComplete, int timeoutMs = 60000)
+        {
+            return Enqueue(coroutine, requestId, onComplete, timeoutMs, false);
+        }
+
+        public bool Enqueue(IEnumerator coroutine, string requestId, Action<bool, string, string> onComplete, int timeoutMs, bool captureLastString)
+        {
+            if (_disposed || coroutine == null)
+                return false;
+
+            if (_queue.Count >= MaxQueue)
+                return false;
+
+            int effectiveTimeoutMs = timeoutMs > 0 ? timeoutMs : 60000;
+            var stack = new Stack<IEnumerator>();
+            stack.Push(coroutine);
+
+            _queue.Enqueue(new CoroutineEntry
+            {
+                Stack = stack,
+                RequestId = requestId,
+                OnComplete = onComplete,
+                TimeoutMs = effectiveTimeoutMs,
+                StartTime = DateTime.UtcNow,
+                CaptureLastString = captureLastString,
+            });
+            return true;
+        }
+
+        public void Tick()
+        {
+            if (_disposed)
+                return;
+
+            if (_active.Stack == null && _queue.Count > 0)
+            {
+                _active = _queue.Dequeue();
+                _active.StartTime = DateTime.UtcNow;
+            }
+
+            if (_active.Stack == null)
+                return;
+
+            double elapsed = (DateTime.UtcNow - _active.StartTime).TotalMilliseconds;
+            if (elapsed > _active.TimeoutMs)
+            {
+                Complete(false, "TIMEOUT: coroutine exceeded " + _active.TimeoutMs + "ms", "timeout");
+                return;
+            }
+
+            try
+            {
+                StepActiveStack();
+                if (_active.Stack != null && _active.Stack.Count == 0)
+                {
+                    string text = _active.CaptureLastString ? (_active.LastString ?? "{}") : "(ok)";
+                    string typeName = _active.CaptureLastString ? "string" : "void";
+                    Complete(true, text, typeName);
+                }
+            }
+            catch (Exception ex)
+            {
+                Complete(false, "RUNTIME ERROR: coroutine failed: " + ex.GetType().Name + ": " + ex.Message, "runtime_error");
+            }
+        }
+
+        private void StepActiveStack()
+        {
+            int steps = 0;
+            while (_active.Stack != null && _active.Stack.Count > 0)
+            {
+                double elapsed = (DateTime.UtcNow - _active.StartTime).TotalMilliseconds;
+                if (elapsed > _active.TimeoutMs)
+                {
+                    Complete(false, "TIMEOUT: coroutine exceeded " + _active.TimeoutMs + "ms", "timeout");
+                    return;
+                }
+
+                if (steps++ >= MaxStepsPerTick)
+                {
+                    // Prevent purely nested coroutines without ordinary yields from expanding
+                    // unboundedly within a single frame; continue on the next frame.
+                    return;
+                }
+
+                IEnumerator current = _active.Stack.Peek();
+                bool hasNext = current.MoveNext();
+                if (!hasNext)
+                {
+                    _active.Stack.Pop();
+                    continue;
+                }
+
+                if (current.Current is IEnumerator nested)
+                {
+                    _active.Stack.Push(nested);
+                    continue;
+                }
+
+                if (_active.CaptureLastString && current.Current is string yieldedText)
+                    _active.LastString = yieldedText;
+
+                // Ordinary yield instructions (WaitForSeconds/AsyncOperation/null etc.) wait one frame.
+                return;
+            }
+        }
+
+        public void Cancel(string requestId)
+        {
+            if (_active.RequestId == requestId)
+            {
+                Complete(false, "CANCELLED: client disconnected", "cancelled");
+                return;
+            }
+
+            if (_queue.Count == 0)
+                return;
+
+            var remaining = new Queue<CoroutineEntry>();
+            while (_queue.Count > 0)
+            {
+                var entry = _queue.Dequeue();
+                if (entry.RequestId != requestId)
+                    remaining.Enqueue(entry);
+                else
+                    entry.OnComplete?.Invoke(false, "CANCELLED: client disconnected", "cancelled");
+            }
+            while (remaining.Count > 0)
+                _queue.Enqueue(remaining.Dequeue());
+        }
+
+        public void Dispose()
+        {
+            if (_disposed)
+                return;
+
+            _disposed = true;
+
+            if (_active.Stack != null)
+                Complete(false, "DISPOSED: coroutine pump shutting down", "cancelled");
+
+            while (_queue.Count > 0)
+            {
+                var entry = _queue.Dequeue();
+                entry.OnComplete?.Invoke(false, "DISPOSED: coroutine pump shutting down", "cancelled");
+            }
+
+            _active = default(CoroutineEntry);
+        }
+
+        private void Complete(bool success, string text, string typeName)
+        {
+            var entry = _active;
+            _active = default(CoroutineEntry);
+            entry.OnComplete?.Invoke(success, text, typeName);
+        }
+
+        private struct CoroutineEntry
+        {
+            public Stack<IEnumerator> Stack;
+            public string RequestId;
+            public Action<bool, string, string> OnComplete;
+            public int TimeoutMs;
+            public DateTime StartTime;
+            public bool CaptureLastString;
+            public string LastString;
+        }
+    }
+}

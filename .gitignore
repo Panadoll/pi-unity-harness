@@ -1,0 +1,7 @@
+native/target/
+unity/com.pi.unity-harness/Editor/Plugins/x86_64/*.pdb
+unity/com.pi.unity-harness/Editor/Plugins/x86_64/*.lib
+*.user
+.augment/
+.pi/todos/
+.pi/settings.json
