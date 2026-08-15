@@ -86,6 +86,11 @@ namespace Pi.UnityHarness.Editor.Capabilities.Input
             bool useEventSystemDispatch = ShouldUseEventSystemFallback();
             if (!s_eventSystemOwnsPointer)
                 ApplyMouseState(mouse, Vector2.zero);
+            // EventSystem 拥有指针（拖拽中）时跳过 ApplyMouseState 以避免重复派发，
+            // 但 UI 处理器可能直接读 Mouse.current / Input.mousePosition，必须同步位置
+            // （对照上游修复：拖拽期间保持游戏鼠标坐标与模拟坐标一致，防止漂移）。
+            else
+                SyncMousePositionOnly(mouse);
             if (useEventSystemDispatch)
                 DispatchPointerMoveOrDrag();
         }
@@ -382,6 +387,19 @@ namespace Pi.UnityHarness.Editor.Capabilities.Input
             }
 
             return null;
+        }
+
+        /// <summary>
+        /// 仅同步 Mouse 设备的位置（不触碰按钮状态、不排队 StateEvent），
+        /// 用于 EventSystem 拥有指针期间保持 Mouse.current / Input.mousePosition
+        /// 与模拟坐标一致。
+        /// </summary>
+        private static void SyncMousePositionOnly(Mouse mouse)
+        {
+            if (mouse == null)
+                return;
+            InputSystem.QueueDeltaStateEvent(mouse.position, s_mousePosition);
+            InputSystem.Update();
         }
 
         private static void ApplyMouseState(
