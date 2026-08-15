@@ -1411,13 +1411,14 @@ export default function (pi: ExtensionAPI) {
         return;
       }
 
-      const chosen = await ctx.ui.select("Choose a Unity instance to connect:", choices.map((c) => ({
-        label: c.label,
-        value: c.value,
-        hint: c.hint,
-      })));
+      // ctx.ui.select 只接受字符串数组；用显示串 -> 项目路径的映射保证选中后能反查路径
+      const display = (c: { label: string; value: string; hint?: string }) =>
+        `${c.label} ${c.value}${c.hint ? ` (${c.hint})` : ""}`;
+      const byDisplay = new Map(choices.map((c) => [display(c), c.value]));
+      const chosenDisplay = await ctx.ui.select("Choose a Unity instance to connect:", [...byDisplay.keys()]);
 
-      if (chosen) {
+      if (chosenDisplay) {
+        const chosen = byDisplay.get(chosenDisplay)!;
         const inst = instances.find((i) => i.projectPath === chosen);
         client.setProjectRoot(chosen);
         if (inst?.bridgeReady && !inst?.pipeOccupied) {
@@ -1462,16 +1463,12 @@ export default function (pi: ExtensionAPI) {
         if (notReady.length === 1) {
           projectPath = notReady[0].projectPath;
         } else {
-          const chosen = await ctx.ui.select(
-            "Choose a project to install:",
-            notReady.map((i) => ({
-              label: basename(i.projectPath),
-              value: i.projectPath,
-              hint: `PID ${i.pid}`,
-            })),
+          const byDisplay = new Map(
+            notReady.map((i) => [`${basename(i.projectPath)} ${i.projectPath} (PID ${i.pid})`, i.projectPath]),
           );
-          if (!chosen) return;
-          projectPath = chosen;
+          const chosenDisplay = await ctx.ui.select("Choose a project to install:", [...byDisplay.keys()]);
+          if (!chosenDisplay) return;
+          projectPath = byDisplay.get(chosenDisplay)!;
         }
       }
 
