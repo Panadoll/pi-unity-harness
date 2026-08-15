@@ -33,24 +33,12 @@ namespace Pi.UnityHarness.Editor.Capabilities.PipelineCommands
 
         public static long ObjectId(UnityEngine.Object obj)
         {
-            if (obj == null)
-                return 0;
-#if UNITY_6000_3_OR_NEWER
-            return (long)EntityId.ToULong(obj.GetEntityId());
-#else
-            return obj.GetInstanceID();
-#endif
+            return UnityObjectIdentity.GetId(obj);
         }
 
         public static UnityEngine.Object ObjectFromId(long id)
         {
-            if (id == 0)
-                return null;
-#if UNITY_6000_3_OR_NEWER
-            return EditorUtility.EntityIdToObject(EntityId.FromULong((ulong)id));
-#else
-            return EditorUtility.InstanceIDToObject((int)id);
-#endif
+            return UnityObjectIdentity.Resolve(id);
         }
 
         public static GameObject ResolveGameObject(long instanceId = 0, string path = null, string name = null, bool required = true)

@@ -54,8 +54,9 @@ namespace Pi.UnityHarness.Editor.Capabilities.PipelineCommands
             {
                 activeObject = ToObjectRef(Selection.activeObject),
                 activeGameObject = PiMcpPipelineSupport.ToGameObjectData(Selection.activeGameObject),
-#if UNITY_6000_3_OR_NEWER
-                instanceIds = Selection.entityIds.Select(id => (long)EntityId.ToULong(id)).ToArray(),
+#if UNITY_6000_5_OR_NEWER
+                // Unity 6.5：selection 用 EntityId 数组，转 long 携带完整原始值（与 UnityObjectIdentity 边界一致）
+                instanceIds = Selection.entityIds.Select(id => unchecked((long)EntityId.ToULong(id))).ToArray(),
 #else
                 instanceIds = Selection.instanceIDs.Select(id => (long)id).ToArray(),
 #endif
