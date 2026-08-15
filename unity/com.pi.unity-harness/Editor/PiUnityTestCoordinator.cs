@@ -28,6 +28,11 @@ namespace Pi.UnityHarness.Editor
         private const double NoTestsGraceSeconds = 5.0d;
         private const double PollIntervalSeconds = 0.5d;
 
+        /// <summary>
+        /// 可注入的 isPlaying 委托（默认取 EditorApplication.isPlaying），测试可替换以模拟播放状态。
+        /// </summary>
+        internal static Func<bool> IsPlayingProvider = () => EditorApplication.isPlaying;
+
         private static Action<string, string> s_completeJson;
         private static bool s_updateRegistered;
         private static double s_lastPollAt;
@@ -64,6 +69,17 @@ namespace Pi.UnityHarness.Editor
             if (mode == null)
             {
                 completeJson(requestId, PiUnityJsonHelper.ErrorJson(requestId, "parameter_error", "mode must be editor, playmode, or all"));
+                return;
+            }
+
+            // 播放模式下拒绝运行 PlayMode 测试（含 all 的 PlayMode 段），避免与运行中的播放状态冲突；
+            // EditorMode 测试不受影响。守卫必须在设置 SessionState 之前返回，保证不进入测试执行路径。
+            if (ShouldRejectPlaymodeRun(mode, IsPlayingProvider()))
+            {
+                completeJson(requestId, PiUnityJsonHelper.ErrorJson(
+                    requestId,
+                    "playmode_active",
+                    "Cannot run PlayMode tests while the editor is in play mode. Exit play mode (editor_stop) and retry."));
                 return;
             }
 
@@ -392,6 +408,17 @@ namespace Pi.UnityHarness.Editor
                 default:
                     return null;
             }
+        }
+
+        /// <summary>
+        /// 播放模式下是否应拒绝该模式的测试运行：PlayMode 与 all（含 PlayMode 段）拒绝，EditorMode 放行。
+        /// 独立为纯函数以便 EditMode 测试直接验证。
+        /// </summary>
+        private static bool ShouldRejectPlaymodeRun(string mode, bool isPlaying)
+        {
+            if (!isPlaying)
+                return false;
+            return mode == "playmode" || mode == "all";
         }
 
         private static bool HasPendingRequest()
