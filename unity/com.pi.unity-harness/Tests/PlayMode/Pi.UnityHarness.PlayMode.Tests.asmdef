@@ -6,7 +6,8 @@
     "Pi.UnityHarness.InputSystem.Editor",
     "UnityEngine.TestRunner",
     "UnityEditor.TestRunner",
-    "UnityEngine.UI"
+    "UnityEngine.UI",
+    "Unity.InputSystem"
   ],
   "includePlatforms": [],
   "excludePlatforms": [],
