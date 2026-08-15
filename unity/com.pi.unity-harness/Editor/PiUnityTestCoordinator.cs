@@ -33,6 +33,18 @@ namespace Pi.UnityHarness.Editor
         /// </summary>
         internal static Func<bool> IsPlayingProvider = () => EditorApplication.isPlaying;
 
+        /// <summary>
+        /// 可注入的“pipeline 测试运行中”检测委托（默认走 TestCommands.GetTestStatus）。
+        /// EditMode 测试本身运行在 pipeline 测试运行器中，若不注入会误判为 busy。
+        /// </summary>
+        internal static Func<bool> PipelineTestRunRunningProvider = () => IsPipelineTestRunRunning();
+
+        /// <summary>
+        /// 可注入的测试段执行委托（默认走 TestCommands.RunTests）。测试替身可避免真实启动测试执行。
+        /// 签名与 TestCommands.RunTests 前 5 个参数一致（asyncTests 恒为 true）。
+        /// </summary>
+        internal static Func<string, string, string, bool, int, Task<TestExecutionResponse>> RunTestsInvoker;
+
         private static Action<string, string> s_completeJson;
         private static bool s_updateRegistered;
         private static double s_lastPollAt;
@@ -52,7 +64,7 @@ namespace Pi.UnityHarness.Editor
                 return;
             }
 
-            if (IsPipelineTestRunRunning())
+            if (PipelineTestRunRunningProvider())
             {
                 completeJson(requestId, PiUnityJsonHelper.ErrorJson(requestId, "busy", "pipeline test run already in progress"));
                 return;
@@ -80,6 +92,14 @@ namespace Pi.UnityHarness.Editor
                     requestId,
                     "playmode_active",
                     "Cannot run PlayMode tests while the editor is in play mode. Exit play mode (editor_stop) and retry."));
+                return;
+            }
+
+            // 启动测试前应用 dirtyAction 脏场景策略（与 scene_open / scene_create / scene_unload 共用）
+            string dirtyPolicyError = ApplyDirtyPolicy(parameters, "run_tests");
+            if (dirtyPolicyError != null)
+            {
+                completeJson(requestId, PiUnityJsonHelper.ErrorJson(requestId, "dirty_scene", dirtyPolicyError));
                 return;
             }
 
@@ -187,7 +207,9 @@ namespace Pi.UnityHarness.Editor
             {
                 s_noTestsFirstSeenUtcTicks = 0;
                 s_startSegment = segmentMode;
-                s_startTask = TestCommands.RunTests(segmentMode, filter, filterType, includeExplicit, true, timeout);
+                s_startTask = RunTestsInvoker != null
+                    ? RunTestsInvoker(segmentMode, filter, filterType, includeExplicit, timeout)
+                    : TestCommands.RunTests(segmentMode, filter, filterType, includeExplicit, true, timeout);
                 if (s_startTask.IsCompleted)
                     HandleStartTask();
             }
@@ -419,6 +441,24 @@ namespace Pi.UnityHarness.Editor
             if (!isPlaying)
                 return false;
             return mode == "playmode" || mode == "all";
+        }
+
+        /// <summary>
+        /// 解析 dirtyAction 参数并对当前所有已打开场景应用策略（run_tests 专用）。
+        /// 返回 null 表示可继续；返回非 null 为错误信息（请求应中止）。
+        /// </summary>
+        private static string ApplyDirtyPolicy(JObject parameters, string commandName)
+        {
+            string dirtyAction = ReadString(parameters, "dirty_action", "abort");
+            var action = Capabilities.PipelineCommands.DirtyScenePolicy.Parse(dirtyAction, commandName, out string parseError);
+            if (parseError != null)
+                return parseError;
+
+            var openScenes = new System.Collections.Generic.List<UnityEngine.SceneManagement.Scene>();
+            for (int i = 0; i < UnityEngine.SceneManagement.SceneManager.sceneCount; i++)
+                openScenes.Add(UnityEngine.SceneManagement.SceneManager.GetSceneAt(i));
+
+            return Capabilities.PipelineCommands.DirtyScenePolicy.Apply(action, openScenes, commandName);
         }
 
         private static bool HasPendingRequest()

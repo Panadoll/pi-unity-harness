@@ -19,8 +19,13 @@ namespace Pi.UnityHarness.Editor.Capabilities.PipelineCommands
     internal static partial class PiMcpPipelineCommands
     {
         [CliCommand("scene_create", "Create a new scene")]
-        public static string SceneCreate([CliArg("path", "Optional scene path")] string path = null, [CliArg("setup", "Scene setup")] string setup = "DefaultGameObjects")
+        public static string SceneCreate([CliArg("path", "Optional scene path")] string path = null, [CliArg("setup", "Scene setup")] string setup = "DefaultGameObjects", [CliArg("dirty_action", "Dirty scene policy: save / discard / abort (default abort)")] string dirtyAction = "abort")
         {
+            // 新建场景会替换当前场景：先应用脏场景策略（save 保存 / discard 丢弃 / abort 报错）
+            string policyError = ApplyDirtyScenePolicy(dirtyAction, "scene_create");
+            if (policyError != null)
+                return PiMcpPipelineSupport.Ok(new { ok = false, error = policyError });
+
             var sceneSetup = string.Equals(setup, "Empty", StringComparison.OrdinalIgnoreCase)
                 ? NewSceneSetup.EmptyScene
                 : NewSceneSetup.DefaultGameObjects;
@@ -31,11 +36,20 @@ namespace Pi.UnityHarness.Editor.Capabilities.PipelineCommands
         }
 
         [CliCommand("scene_open", "Open a scene")]
-        public static string SceneOpen([CliArg("path", "Scene asset path")] string path, [CliArg("mode", "Single or Additive")] string mode = "Single")
+        public static string SceneOpen([CliArg("path", "Scene asset path")] string path, [CliArg("mode", "Single or Additive")] string mode = "Single", [CliArg("dirty_action", "Dirty scene policy: save / discard / abort (default abort)")] string dirtyAction = "abort")
         {
             var openMode = string.Equals(mode, "Additive", StringComparison.OrdinalIgnoreCase)
                 ? OpenSceneMode.Additive
                 : OpenSceneMode.Single;
+
+            // Single 模式会替换当前场景：先应用脏场景策略；Additive 不替换当前场景，无需处理
+            if (openMode == OpenSceneMode.Single)
+            {
+                string policyError = ApplyDirtyScenePolicy(dirtyAction, "scene_open");
+                if (policyError != null)
+                    return PiMcpPipelineSupport.Ok(new { ok = false, error = policyError });
+            }
+
             var scene = EditorSceneManager.OpenScene(path, openMode);
             return PiMcpPipelineSupport.Ok(new { opened = ToSceneData(scene), scenes = OpenedScenes() });
         }
@@ -70,11 +84,43 @@ namespace Pi.UnityHarness.Editor.Capabilities.PipelineCommands
         }
 
         [CliCommand("scene_unload", "Unload scene")]
-        public static string SceneUnload([CliArg("path", "Scene path")] string path)
+        public static string SceneUnload([CliArg("path", "Scene path")] string path, [CliArg("dirty_action", "Dirty scene policy: save / discard / abort (default abort)")] string dirtyAction = "abort")
         {
             var scene = FindOpenScene(path);
+            if (!scene.IsValid())
+                return PiMcpPipelineSupport.Ok(new { ok = false, error = $"Scene '{path}' is not open." });
+
+            // 关闭脏场景前应用策略：save 先保存 / discard 直接关 / abort 报错
+            var action = DirtyScenePolicy.Parse(dirtyAction, "scene_unload", out string parseError);
+            if (parseError != null)
+                return PiMcpPipelineSupport.Ok(new { ok = false, error = parseError });
+
+            string policyError = DirtyScenePolicy.Apply(
+                action,
+                new List<UnityEngine.SceneManagement.Scene> { scene },
+                "scene_unload");
+            if (policyError != null)
+                return PiMcpPipelineSupport.Ok(new { ok = false, error = policyError });
+
             bool unloaded = EditorSceneManager.CloseScene(scene, true);
             return PiMcpPipelineSupport.Ok(new PiMcpUnloadSceneResult { Unloaded = unloaded, Path = path });
+        }
+
+        /// <summary>
+        /// 对当前所有已打开场景应用 dirtyAction 策略（scene_create / scene_open 共用）。
+        /// 返回 null 表示可继续；返回非 null 为错误信息（命令应中止）。
+        /// </summary>
+        private static string ApplyDirtyScenePolicy(string dirtyAction, string commandName)
+        {
+            var action = DirtyScenePolicy.Parse(dirtyAction, commandName, out string parseError);
+            if (parseError != null)
+                return parseError;
+
+            var openScenes = new List<UnityEngine.SceneManagement.Scene>();
+            for (int i = 0; i < UnityEngine.SceneManagement.SceneManager.sceneCount; i++)
+                openScenes.Add(UnityEngine.SceneManagement.SceneManager.GetSceneAt(i));
+
+            return DirtyScenePolicy.Apply(action, openScenes, commandName);
         }
     }
 }
