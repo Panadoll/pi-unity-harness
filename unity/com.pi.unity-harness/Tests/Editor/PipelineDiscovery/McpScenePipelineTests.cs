@@ -16,6 +16,8 @@ namespace Pi.UnityHarness.Editor.Tests.PipelineDiscovery
         [SetUp]
         public void SetUp()
         {
+            // 重置为干净空场景，避免前序测试残留的脏场景触发 dirtyAction=abort 拒绝
+            EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
             if (!AssetDatabase.IsValidFolder(TestFolder))
                 AssetDatabase.CreateFolder("Assets", "PiMcpSceneTests");
         }
