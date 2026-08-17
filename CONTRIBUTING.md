@@ -27,6 +27,19 @@ cd native && cargo test
 Unity 侧验证：把 `unity/com.pi.unity-harness` 以本地 UPM 包加入项目，运行
 EditMode / PlayMode 测试（过滤器 `Pi.UnityHarness`）。
 
+测试宿主必须满足：
+
+- 宿主项目 `Packages/manifest.json` 的 `dependencies` 用 `file:` 引用本包；
+- `testables` 数组包含 `"com.pi.unity-harness"`（否则包内测试程序集不会被
+  Test Runner 发现，"绿了"不算数）；
+- 验证命令（pi 会话内）：
+  - `unity_run_tests(mode="editor", filter="Pi.UnityHarness")`
+  - `unity_run_tests(mode="playmode", filter="Pi.UnityHarness")`
+
+注意：PlayMode 测试依赖 Editor 会话状态，**每次会话的第一次 PlayMode 运行最
+可靠**；若后续运行返回 0 个测试且 Console 出现 `Run started: 0 test(s)`，
+重启 Editor 后重新执行。
+
 ## 提交规范
 
 - 提交信息遵循 Conventional Commits（`feat:` / `fix:` / `docs:` / `chore:` / `refactor:` / `test:`）
