@@ -217,7 +217,7 @@ namespace Pi.UnityHarness.Editor.Capabilities.Shared
             }
         }
 
-        private static void DrawMarkersOnPng(string path, PiVisionAnnotationSet set)
+        public static void DrawMarkersOnPng(string path, PiVisionAnnotationSet set)
         {
             byte[] bytes = File.ReadAllBytes(path);
             var texture = new Texture2D(2, 2, TextureFormat.RGBA32, false);
