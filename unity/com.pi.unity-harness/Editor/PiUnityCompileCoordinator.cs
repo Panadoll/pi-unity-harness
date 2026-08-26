@@ -123,8 +123,12 @@ namespace Pi.UnityHarness.Editor
             if (string.IsNullOrEmpty(s_pendingRequestId) || s_callbackFired)
                 return;
 
-            if (EditorApplication.isCompiling)
+            if (EditorApplication.isCompiling || EditorApplication.isUpdating)
+            {
+                // 仍在编译/刷新中：顺延检查，避免检查链丢失导致请求永不回调（pipe 端只能等超时）
+                EditorApplication.delayCall += OnDeferredNoCompileCheck;
                 return;
+            }
 
             s_deferredNoCompileChecks--;
             if (s_deferredNoCompileChecks > 0)

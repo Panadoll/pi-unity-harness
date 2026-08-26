@@ -204,3 +204,50 @@ test("resolveEvalFilePath resolves relative paths against project root", () => {
 test("resolveEvalFilePath rejects empty paths", () => {
   assert.throws(() => resolveEvalFilePath("F:/proj", "  "), /filePath is required/);
 });
+
+test("stripLargeBase64 strips long base64 string from capture results with savedPath", async () => {
+  const fakePngBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==".repeat(10);
+  const captureResult = {
+    Width: 1280,
+    Height: 720,
+    Encoding: "png",
+    Base64: fakePngBase64,
+    Bytes: 100000,
+    SavedPath: "Screenshots/gameplay.png",
+  };
+  const sanitized = (await import("./helpers.ts")).stripLargeBase64(captureResult) as any;
+  assert.equal(sanitized.Width, 1280);
+  assert.equal(sanitized.SavedPath, "Screenshots/gameplay.png");
+  assert.match(sanitized.Base64, /\[Base64 Image .* stripped.*Screenshots\/gameplay\.png\]/);
+});
+
+test("stripLargeBase64 strips standalone data:image base64 strings", async () => {
+  const dataUrl = "data:image/png;base64," + "A".repeat(500);
+  const helpers = await import("./helpers.ts");
+  const sanitized = helpers.stripLargeBase64(dataUrl) as string;
+  assert.match(sanitized, /\[Base64 Image data .* stripped.*\]/);
+});
+
+test("stripLargeBase64 preserves normal strings and small objects", async () => {
+  const helpers = await import("./helpers.ts");
+  assert.equal(helpers.stripLargeBase64("hello world"), "hello world");
+  assert.deepEqual(helpers.stripLargeBase64({ a: 1, b: "test" }), { a: 1, b: "test" });
+});
+
+test("safeFormatToolResponse preserves normal short output", async () => {
+  const helpers = await import("./helpers.ts");
+  const res = helpers.safeFormatToolResponse({ output: "compilation_succeeded", typeName: "compile_status" });
+  assert.equal(res.text, "compilation_succeeded");
+});
+
+test("safeFormatToolResponse truncates huge strings to prevent 413 Payload Too Large", async () => {
+  const helpers = await import("./helpers.ts");
+  const hugeText = "Line error " + "A".repeat(100000);
+  const res = helpers.safeFormatToolResponse(hugeText, undefined, 1000);
+  assert.ok(res.text.length <= 1500, `Output length ${res.text.length} exceeded limit`);
+  assert.match(res.text, /WARNING: Tool output was truncated/);
+  assert.match(res.text, /413 \(Payload Too Large\)/);
+  assert.match(res.text, /--- Output \(first/);
+  assert.match(res.text, /--- Output \(last/);
+});
+
