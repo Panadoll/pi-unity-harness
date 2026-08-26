@@ -279,25 +279,9 @@ namespace Pi.UnityHarness.Editor
         {
             Start();
             // Complete compile requests pending before domain reload (responses can only be sent after Start)
-            PiUnityCompileCoordinator.FinalizeAfterReload((id, success, result, errorSummary) =>
-            {
-                if (success)
-                {
-                    string payload =
-                        "{\"reply_to\":" + PiUnityJsonHelper.JsonString(id) +
-                        ",\"ok\":true,\"result\":{\"output\":" + PiUnityJsonHelper.JsonString(result ?? "compilation_succeeded") +
-                        ",\"typeName\":\"compile_status\"}}";
-                    CompleteJson(id, payload);
-                }
-                else
-                {
-                    string payload =
-                        "{\"reply_to\":" + PiUnityJsonHelper.JsonString(id) +
-                        ",\"ok\":false,\"error_type\":\"compile_error\",\"error\":" +
-                        PiUnityJsonHelper.JsonString(errorSummary ?? "Compilation failed") + "}";
-                    CompleteJson(id, payload);
-                }
-            });
+            PiUnityCompileCoordinator.FinalizeAfterReload(CompleteCompileResult);
+            // Resume recompiles deferred while waiting for PlayMode to exit (crash defense)
+            PiUnityRecompileGuard.ResumeAfterReload(CompleteCompileResult);
             PiUnityTestCoordinator.ResumeAfterReload(CompleteJson);
         }
 
@@ -860,27 +844,32 @@ namespace Pi.UnityHarness.Editor
         {
             UnityEngine.Debug.Log("[PiUnityHarness] recompile request id=" + request.id);
 
-            PiUnityCompileCoordinator.StartCompile(request.id,
-                (compileId, success, resultText, errorSummary) =>
-                {
-                    if (success)
-                    {
-                        string successPayload =
-                            "{\"reply_to\":" + PiUnityJsonHelper.JsonString(compileId) +
-                            ",\"ok\":true,\"result\":{\"output\":" + PiUnityJsonHelper.JsonString(resultText ?? "compilation_succeeded") +
-                            ",\"typeName\":\"compile_status\"}}";
-                        CompleteJson(compileId, successPayload);
-                    }
-                    else
-                    {
-                        string errorType = string.Equals(resultText, "busy", StringComparison.Ordinal) ? "busy" : "compile_error";
-                        string errorPayload =
-                            "{\"reply_to\":" + PiUnityJsonHelper.JsonString(compileId) +
-                            ",\"ok\":false,\"error_type\":" + PiUnityJsonHelper.JsonString(errorType) + ",\"error\":" +
-                            PiUnityJsonHelper.JsonString(errorSummary ?? "Compilation failed") + "}";
-                        CompleteJson(compileId, errorPayload);
-                    }
-                });
+            // 统一走守卫：确保 PlayMode 已安全退出后再触发 Domain Reload，避免 Playable 销毁回调
+            // 访问上一域 GC handle 导致编辑器 SIGSEGV 闪退
+            PiUnityRecompileGuard.RequestRecompile(request.id, CompleteCompileResult);
+        }
+
+        private static void CompleteCompileResult(string compileId, bool success, string resultText, string errorSummary)
+        {
+            if (success)
+            {
+                string successPayload =
+                    "{\"reply_to\":" + PiUnityJsonHelper.JsonString(compileId) +
+                    ",\"ok\":true,\"result\":{\"output\":" + PiUnityJsonHelper.JsonString(resultText ?? "compilation_succeeded") +
+                    ",\"typeName\":\"compile_status\"}}";
+                CompleteJson(compileId, successPayload);
+            }
+            else
+            {
+                string errorType = string.Equals(resultText, "busy", StringComparison.Ordinal) ? "busy"
+                    : string.Equals(resultText, "playmode_exit_timeout", StringComparison.Ordinal) ? "playmode_exit_timeout"
+                    : "compile_error";
+                string errorPayload =
+                    "{\"reply_to\":" + PiUnityJsonHelper.JsonString(compileId) +
+                    ",\"ok\":false,\"error_type\":" + PiUnityJsonHelper.JsonString(errorType) + ",\"error\":" +
+                    PiUnityJsonHelper.JsonString(errorSummary ?? "Compilation failed") + "}";
+                CompleteJson(compileId, errorPayload);
+            }
         }
 
         // --- Pipeline command bridge ---

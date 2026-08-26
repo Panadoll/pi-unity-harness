@@ -1,4 +1,6 @@
-import { relative, resolve } from "node:path";
+import { relative, resolve, join } from "node:path";
+import { writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { tmpdir } from "node:os";
 
 export interface PipelineParameterInfo {
   name: string;
@@ -161,3 +163,144 @@ export function resolveEvalFilePath(projectRoot: string, filePath: string): { re
 
   return { relativePath, absolutePath };
 }
+
+export const MAX_SAFE_RESPONSE_CHARS = 32768; // 32KB max response size per tool call
+const MIN_BASE64_DETECT_LENGTH = 256;
+
+/** Checks if a string looks like Base64 image payload or data URL */
+function isBase64Data(str: string): boolean {
+  if (str.startsWith("data:image/") && str.includes(";base64,")) return true;
+  if (str.length >= MIN_BASE64_DETECT_LENGTH) {
+    const prefix = str.slice(0, 128);
+    return /^[A-Za-z0-9+/=]+$/.test(prefix);
+  }
+  return false;
+}
+
+/** Recursively sanitize large base64 image strings from tool output */
+export function stripLargeBase64(value: unknown, projectRoot?: string, depth = 0): unknown {
+  if (depth > 20 || value === null || value === undefined) return value;
+
+  if (typeof value === "string") {
+    if (isBase64Data(value)) {
+      const isDataUrl = value.startsWith("data:image/");
+      const rawBase64 = isDataUrl ? value.slice(value.indexOf(";base64,") + 8) : value;
+      const sizeBytes = Math.round(rawBase64.length * 0.75);
+      const sizeKB = (sizeBytes / 1024).toFixed(1);
+
+      if (projectRoot && existsSync(projectRoot)) {
+        try {
+          const captureDir = join(projectRoot, "Temp", "PiUnityHarness", "Captures");
+          if (!existsSync(captureDir)) mkdirSync(captureDir, { recursive: true });
+          const fileName = `capture_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.png`;
+          const filePath = join(captureDir, fileName);
+          writeFileSync(filePath, Buffer.from(rawBase64, "base64"));
+          const relPath = relative(projectRoot, filePath).replace(/\\/g, "/");
+          return `[Base64 Image (${sizeKB} KB) stripped to prevent 413 Payload Too Large. Saved to: ${relPath}]`;
+        } catch {
+          // Fall back if disk write fails
+        }
+      }
+      return `[Base64 Image data (${sizeKB} KB) stripped to prevent 413 Payload Too Large]`;
+    }
+    return value;
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((item) => stripLargeBase64(item, projectRoot, depth + 1));
+  }
+
+  if (typeof value === "object") {
+    const obj = value as Record<string, unknown>;
+    const result: Record<string, unknown> = {};
+
+    const siblingSavedPath = typeof obj.SavedPath === "string" ? obj.SavedPath
+      : typeof obj.savedPath === "string" ? obj.savedPath
+      : typeof obj.filePath === "string" ? obj.filePath
+      : typeof obj.path === "string" ? obj.path
+      : undefined;
+
+    for (const [key, val] of Object.entries(obj)) {
+      const isBase64Key = /^(base64|image_base64|rawimage|screenshot_base64)$/i.test(key);
+      if (isBase64Key && typeof val === "string" && val.length > 64) {
+        const sizeBytes = Math.round(val.length * 0.75);
+        const sizeKB = (sizeBytes / 1024).toFixed(1);
+        if (siblingSavedPath) {
+          result[key] = `[Base64 Image (${sizeKB} KB) stripped to prevent 413 Payload Too Large. Image saved at: ${siblingSavedPath}]`;
+        } else {
+          result[key] = stripLargeBase64(val, projectRoot, depth + 1);
+        }
+      } else {
+        result[key] = stripLargeBase64(val, projectRoot, depth + 1);
+      }
+    }
+    return result;
+  }
+
+  return value;
+}
+
+/** Formats and truncates tool output safely to ensure request payloads never exceed LLM context bounds (Error 413) */
+export function safeFormatToolResponse(
+  rawResult: unknown,
+  projectRoot?: string,
+  maxChars = MAX_SAFE_RESPONSE_CHARS,
+): { text: string; details: unknown } {
+  const sanitizedDetails = stripLargeBase64(rawResult, projectRoot);
+
+  let text: string;
+  if (typeof sanitizedDetails === "string") {
+    text = sanitizedDetails;
+  } else if (
+    sanitizedDetails &&
+    typeof sanitizedDetails === "object" &&
+    "output" in (sanitizedDetails as Record<string, unknown>) &&
+    Object.keys(sanitizedDetails as Record<string, unknown>).length <= 3
+  ) {
+    const obj = sanitizedDetails as { output?: unknown; typeName?: unknown; error?: unknown };
+    text = typeof obj.output === "string" ? obj.output : JSON.stringify(obj.output ?? obj, null, 2);
+  } else {
+    text = JSON.stringify(sanitizedDetails, null, 2);
+  }
+
+  if (text.length <= maxChars) {
+    return { text, details: sanitizedDetails };
+  }
+
+  let savedScratchPath: string | undefined;
+  if (projectRoot && existsSync(projectRoot)) {
+    try {
+      const scratchDir = join(projectRoot, "Temp", "PiUnityHarness", "AgentScratch");
+      if (!existsSync(scratchDir)) mkdirSync(scratchDir, { recursive: true });
+      const fileName = `large_tool_output_${Date.now()}.txt`;
+      const fullPath = join(scratchDir, fileName);
+      writeFileSync(fullPath, text, "utf8");
+      savedScratchPath = relative(projectRoot, fullPath).replace(/\\/g, "/");
+    } catch {
+      // Fallback
+    }
+  }
+
+  if (!savedScratchPath) {
+    try {
+      const tempPath = join(tmpdir(), `pi_unity_large_output_${Date.now()}.txt`);
+      writeFileSync(tempPath, text, "utf8");
+      savedScratchPath = tempPath;
+    } catch {
+      // Ignore
+    }
+  }
+
+  const headSize = Math.floor(maxChars * 0.75);
+  const tailSize = Math.floor(maxChars * 0.20);
+  const head = text.slice(0, headSize);
+  const tail = text.slice(-tailSize);
+  const omittedCount = text.length - headSize - tailSize;
+
+  const warningHeader = `[WARNING: Tool output was truncated from ${text.length.toLocaleString()} to ${maxChars.toLocaleString()} characters to prevent Error 413 (Payload Too Large).\nFull un-truncated output saved to: ${savedScratchPath ?? "Temp/PiUnityHarness/AgentScratch/"}]\n\n`;
+
+  const truncatedText = `${warningHeader}--- Output (first ${headSize.toLocaleString()} chars) ---\n${head}\n\n... [${omittedCount.toLocaleString()} characters omitted] ...\n\n--- Output (last ${tailSize.toLocaleString()} chars) ---\n${tail}`;
+
+  return { text: truncatedText, details: sanitizedDetails };
+}
+

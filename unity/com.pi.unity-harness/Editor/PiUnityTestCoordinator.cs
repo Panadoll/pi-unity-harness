@@ -602,5 +602,18 @@ namespace Pi.UnityHarness.Editor
         }
 
 #endif
+
+        /// <summary>
+        /// 是否有测试正在运行（含 pipeline 运行器占用）。
+        /// 供编译守卫判断是否可安全重编译：测试运行中强制返回 busy，既避免打断测试，也避免在测试 PlayMode 中触发 Domain Reload 导致闪退。
+        /// </summary>
+        internal static bool IsTestRunInProgress()
+        {
+#if PI_UNITY_PIPELINE
+            return HasPendingRequest() || PipelineTestRunRunningProvider();
+#else
+            return false;
+#endif
+        }
     }
 }

@@ -12,6 +12,7 @@ import {
   pipelineCommandTimeoutMs,
   pipelineCommandSummary,
   resolveEvalFilePath,
+  safeFormatToolResponse,
   schemaToTypeBox,
   shouldRefreshPipelineCommands,
   type PipelineParameterInfo,
@@ -1090,9 +1091,10 @@ export default function (pi: ExtensionAPI) {
     const parametersJson = JSON.stringify(parameters);
     const timeoutMs = pipelineCommandTimeoutMs(command.name, parameters);
     const result = await client.request("command", { name: command.name, parametersJson }, timeoutMs);
+    const formatted = safeFormatToolResponse(result, client.getProjectRoot());
     return {
-      content: [{ type: "text", text: String(result?.output ?? "(ok)") }],
-      details: result,
+      content: [{ type: "text", text: formatted.text }],
+      details: formatted.details,
     };
   };
 
@@ -1543,29 +1545,28 @@ export default function (pi: ExtensionAPI) {
       }
       const pipelineStatus = current ? getPipelineInstallStatus(current) : undefined;
 
+      const formatted = safeFormatToolResponse({
+        current: current ?? null,
+        instances: instances.map((i) => ({
+          projectPath: i.projectPath,
+          pid: i.pid,
+          bridgeReady: i.bridgeReady,
+          pipeOccupied: i.pipeOccupied ?? false,
+          selected: current ? resolve(i.projectPath) === resolve(current) : false,
+          pipeline: getPipelineInstallStatus(i.projectPath),
+        })),
+        pipelineAvailable: client.pipelineStatusSnapshot().pipelineAvailable,
+        pipelineCommandCount: client.pipelineStatusSnapshot().pipelineCommandCount,
+        pipeline: pipelineStatus,
+        hint: readyInstances.length === 0 && occupiedInstances.length > 0
+          ? `Found ${occupiedInstances.length} bridge(s), all occupied by other sessions. Close the occupying session(s), then retry /unity-discover.`
+          : readyInstances.length === 0 && instances.length > 0
+            ? `Found ${instances.length} running Unity instance(s) without the bridge installed. Install with /unity-install.`
+            : undefined,
+      }, client.getProjectRoot());
+
       return {
-        content: [{
-          type: "text",
-          text: JSON.stringify({
-            current: current ?? null,
-            instances: instances.map((i) => ({
-              projectPath: i.projectPath,
-              pid: i.pid,
-              bridgeReady: i.bridgeReady,
-              pipeOccupied: i.pipeOccupied ?? false,
-              selected: current ? resolve(i.projectPath) === resolve(current) : false,
-              pipeline: getPipelineInstallStatus(i.projectPath),
-            })),
-            pipelineAvailable: client.pipelineStatusSnapshot().pipelineAvailable,
-            pipelineCommandCount: client.pipelineStatusSnapshot().pipelineCommandCount,
-            pipeline: pipelineStatus,
-            hint: readyInstances.length === 0 && occupiedInstances.length > 0
-              ? `Found ${occupiedInstances.length} bridge(s), all occupied by other sessions. Close the occupying session(s), then retry /unity-discover.`
-              : readyInstances.length === 0 && instances.length > 0
-                ? `Found ${instances.length} running Unity instance(s) without the bridge installed. Install with /unity-install.`
-                : undefined,
-          }, null, 2),
-        }],
+        content: [{ type: "text", text: formatted.text }],
         details: { current, instances, pipeline: pipelineStatus, pipelineStatus: client.pipelineStatusSnapshot() },
       };
     },
@@ -1583,9 +1584,10 @@ export default function (pi: ExtensionAPI) {
     async execute() {
       assertEnabled();
       const result = await client.request("ping", {});
+      const formatted = safeFormatToolResponse(result, client.getProjectRoot());
       return {
-        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-        details: result,
+        content: [{ type: "text", text: formatted.text }],
+        details: formatted.details,
       };
     },
   });
@@ -1612,9 +1614,10 @@ export default function (pi: ExtensionAPI) {
       assertEnabled();
       const mode = params?.mode ?? "detect";
       const result = await client.request("set_yolo", { mode });
+      const formatted = safeFormatToolResponse(result, client.getProjectRoot());
       return {
-        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-        details: result,
+        content: [{ type: "text", text: formatted.text }],
+        details: formatted.details,
       };
     },
   });
@@ -1632,9 +1635,10 @@ export default function (pi: ExtensionAPI) {
       assertEnabled();
       try { await client.listPipelineCommands(false, 5000); } catch { /* status may still degrade gracefully */ }
       const result = await client.status();
+      const formatted = safeFormatToolResponse(result, client.getProjectRoot());
       return {
-        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-        details: result,
+        content: [{ type: "text", text: formatted.text }],
+        details: formatted.details,
       };
     },
   });
@@ -1669,9 +1673,10 @@ export default function (pi: ExtensionAPI) {
         logLevel: params.logLevel ?? "error",
         includeComponents: params.includeComponents ?? false,
       }, 30000);
+      const formatted = safeFormatToolResponse(result, client.getProjectRoot());
       return {
-        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-        details: result,
+        content: [{ type: "text", text: formatted.text }],
+        details: formatted.details,
       };
     },
   });
@@ -1702,9 +1707,10 @@ export default function (pi: ExtensionAPI) {
         action: params.action,
         success: params.success,
       }, 10000);
+      const formatted = safeFormatToolResponse(result, client.getProjectRoot());
       return {
-        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-        details: result,
+        content: [{ type: "text", text: formatted.text }],
+        details: formatted.details,
       };
     },
   });
@@ -1748,9 +1754,10 @@ export default function (pi: ExtensionAPI) {
           throw new Error(`pipeline unavailable: cannot execute command "${requestedCommand}". Check unity_status and pipeline package installation.`);
         }
         const result = { pipelineAvailable: false, commands: [], count: 0 };
+        const formatted = safeFormatToolResponse(result, client.getProjectRoot());
         return {
-          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-          details: result,
+          content: [{ type: "text", text: formatted.text }],
+          details: formatted.details,
         };
       }
 
@@ -1761,9 +1768,10 @@ export default function (pi: ExtensionAPI) {
           shortcutCommands: [...PIPELINE_SHORTCUT_COMMANDS].filter((name) => commands.some((command) => command.name === name)),
           commands: commands.map((command) => pipelineCommandSummary(command)),
         };
+        const formatted = safeFormatToolResponse(result, client.getProjectRoot());
         return {
-          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-          details: result,
+          content: [{ type: "text", text: formatted.text }],
+          details: formatted.details,
         };
       }
 
@@ -1775,9 +1783,10 @@ export default function (pi: ExtensionAPI) {
 
       if (params.describeOnly === true) {
         const result = pipelineCommandSummary(command, true);
+        const formatted = safeFormatToolResponse(result, client.getProjectRoot());
         return {
-          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-          details: result,
+          content: [{ type: "text", text: formatted.text }],
+          details: formatted.details,
         };
       }
 
@@ -1820,9 +1829,10 @@ export default function (pi: ExtensionAPI) {
       } else {
         result = await client.request("validate_execute_code", { code: params.code }, timeoutMs);
       }
+      const formatted = safeFormatToolResponse(result, projectRoot);
       return {
-        content: [{ type: "text", text: String(result?.output ?? "(ok)") }],
-        details: result,
+        content: [{ type: "text", text: formatted.text }],
+        details: formatted.details,
       };
     },
   });
@@ -1859,9 +1869,10 @@ export default function (pi: ExtensionAPI) {
       }
 
       const result = await client.request("validate_execute_file", { filePath: relativePath }, timeoutMs);
+      const formatted = safeFormatToolResponse(result, projectRoot);
       return {
-        content: [{ type: "text", text: String(result?.output ?? "(ok)") }],
-        details: { ...result, filePath: relativePath },
+        content: [{ type: "text", text: formatted.text }],
+        details: { ...(typeof formatted.details === "object" ? formatted.details : {}), filePath: relativePath },
       };
     },
   });
@@ -1884,9 +1895,10 @@ export default function (pi: ExtensionAPI) {
       assertEnabled();
       const timeoutMs = 120000; // Compilation may take a while
       const result = await client.request("recompile", {}, timeoutMs);
+      const formatted = safeFormatToolResponse(result, client.getProjectRoot());
       return {
-        content: [{ type: "text", text: String(result?.output ?? "(ok)") }],
-        details: result,
+        content: [{ type: "text", text: formatted.text }],
+        details: formatted.details,
       };
     },
   });
