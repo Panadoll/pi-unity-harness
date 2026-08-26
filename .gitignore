@@ -5,3 +5,4 @@ unity/com.pi.unity-harness/Editor/Plugins/x86_64/*.lib
 .augment/
 .pi/todos/
 .pi/settings.json
+node_modules/
