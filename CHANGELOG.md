@@ -23,6 +23,7 @@
 
 ### Changed
 
+- 结构收口：`PiUnityBridge` 拆成 Native/Pump/Status/Eval/Session partial；CLI 拆成 args/client/discovery/output/commands；native broker 拆出 `imp.rs`/`ffi.rs`。ping/status 只由 native 回答；C# 不再扫 `#32770`。YOLO 默认 `off`，模态以 `modalObservation` 为准。编译入口统一为 `PiUnityCompileCoordinator.RequestRecompile`。
 - `.pi/extensions/pi-unity-harness` 由直连 named pipe 的完整实现改为 typed tools
   薄封装，底层统一调用 `pi-unity` CLI；`enabled` 默认值改为 `true`。
 - `docs/protocol.md`：pipe 名改为 `pi_unity_` + 项目路径 SHA-256 前 6 字节（12 位 hex），
@@ -34,8 +35,8 @@
 
 ### Removed
 
-- MCP 架构：`scripts/mcp-server.mjs`、`scripts/mcp-handshake.mjs` 标记为 deprecated
-  legacy archive，不再作为接口（源码保留便于对照）。
+- `scripts/mcp-server.mjs`、`scripts/mcp-handshake.mjs`（从未声明 MCP SDK，无法运行）。
+- 零引用 `PiMcpUnityMcpAliases.cs`。
 - 旧 skill：`skills/unity-harness-mcp/SKILL.md`、`skills/unity-playtest-loop/SKILL.md`
   （以 MCP 为前提），由细粒度 CLI skills 取代。
 

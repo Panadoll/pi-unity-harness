@@ -33,6 +33,23 @@ namespace Pi.UnityHarness.Editor
         private static Action<string, bool, string, string> s_onComplete;
 
         /// <summary>
+        /// Unified recompile entry: wait for a safe EditMode, then start compile.
+        /// </summary>
+        public static void RequestRecompile(string requestId, Action<string, bool, string, string> onComplete)
+        {
+            PiUnityRecompileGuard.RequestRecompile(requestId, onComplete);
+        }
+
+        /// <summary>
+        /// After domain reload: resume a PlayMode-exit wait, then complete any pending compile result.
+        /// </summary>
+        public static void ResumeAfterReload(Action<string, bool, string, string> onComplete)
+        {
+            PiUnityRecompileGuard.ResumeAfterReload(onComplete);
+            FinalizeAfterReload(onComplete);
+        }
+
+        /// <summary>
         /// Starts a compile request.
         /// </summary>
         public static void StartCompile(
