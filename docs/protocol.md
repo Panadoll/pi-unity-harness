@@ -1,8 +1,9 @@
 # pi-unity-harness 通信协议规范（v1）
 
 > 本文档是 pi-unity-harness 客户端 ↔ Unity 进程通信协议的**唯一事实来源**。
-> 实现依据：`native/src/lib.rs`（Rust native broker）、`unity/com.pi.unity-harness/Editor/PiUnityBridge.cs`（C# managed worker）、`.pi/extensions/pi-unity-harness/index.ts`（参考客户端）。
-> 任何实现（pi 扩展、CLI、MCP server、其他语言客户端）都必须遵循本文档，不得自行扩展或改变字段语义。
+> 实现依据：`native/src/lib.rs`（Rust native broker）、`unity/com.pi.unity-harness/Editor/PiUnityBridge.cs`（C# managed worker）、`native/src/bin/pi_unity.rs`（原生 CLI 客户端）、`.pi/extensions/pi-unity-harness/index.ts`（pi 薄封装扩展）。
+> 任何实现（CLI、pi 扩展、其他语言客户端）都必须遵循本文档，不得自行扩展或改变字段语义。
+
 
 ## 1. 总体架构
 
@@ -30,7 +31,7 @@ Unity Editor 启动、broker 初始化后写入 `<UnityProject>/Library/PiUnityH
 {
   "project": "/path/to/UnityProject",
   "pid": 12345,
-  "pipe": "\\\\.\\pipe\\pi_unity_harness_<hash>",
+  "pipe": "\\\\.\\pipe\\pi_unity_<sha256前6字节hex>",
   "token": "0123456789abcdef0123456789abcdef",
   "generation": 3,
   "statePlaneName": "Local\\PiUnityHarnessState_<hash>"
@@ -46,7 +47,7 @@ Unity Editor 启动、broker 初始化后写入 `<UnityProject>/Library/PiUnityH
 | `generation` | number | managed 域代次，每次 Domain Reload +1 |
 | `statePlaneName` | string | 共享内存状态平面名（`Local\` 前缀），pipe 不可达时的降级状态源 |
 
-pipe 名与 statePlaneName 均由项目路径 FNV-1a hash 派生，同一项目多次启动结果稳定。
+pipe 名为 `pi_unity_` + 项目路径 SHA-256 前 6 字节（12 位 hex）；`statePlaneName` 由归一化项目路径的 64 位 FNV-1a hash 派生。二者对同一项目多次启动结果稳定。客户端应以 `bridge.json` 的 `pipe` 字段为唯一真相，禁止按公式推导。
 
 ## 3. 帧格式
 

@@ -2,32 +2,48 @@
 
 [中文](README.md) | English
 
-pi-unity-harness is a bridge between an AI coding agent (pi) and the Unity Editor. It lets the agent execute C# code inside the Unity Editor, trigger compilation and tests, read scene/log snapshots via `unity_*` tools, and reuse the command system of the official Unity `com.unity.pipeline` package.
+`pi-unity-harness` is a command-line bridge (CLI-First / No-MCP) connecting AI coding agents with the Unity Editor. Through the native `pi-unity` CLI binary and Agent Skills, any AI coding agent (Claude Code, Codex, Antigravity, Pi, Aider, etc.) or developer can directly drive Unity Editor over shell commands to execute C# code, trigger compilation, run test suites, capture scene snapshots, and perform perceptual playtesting.
 
-- `native/` — a Rust `cdylib` that hosts a named pipe server inside the Unity process and survives domain reloads
-- `unity/com.pi.unity-harness/` — a Unity Editor package; the C# side handles main-thread execution and domain-reload lifecycle
-- `.pi/extensions/pi-unity-harness/` — a pi TypeScript extension exposing connection, context snapshot, action audit, pipeline, and eval tools
+- `native/` — Rust implementation: Native Broker (`cdylib` plugin, survives domain reloads) + standalone `pi-unity` native CLI binary
+- `unity/com.pi.unity-harness/` — Unity Editor package; C# side handles main-thread dispatching and Pipeline command execution
+- `skills/` — Fine-grained Agent Skills source files, installable to `.agents/skills/` or `.claude/skills/` via `pi-unity skills install`
+- `.pi/extensions/pi-unity-harness/` — Thin wrapper providing typed tools for pi-coding-agent (shells out to `pi-unity` CLI)
 
-## Features
+---
 
-- `unity_ping` / `unity_status`: check broker liveness and Editor runtime state
-- `unity_eval` / `unity_eval_file`: execute short C# snippets or multi-line `.repl`/`.cs` files on the Unity Editor main thread
-- `unity_recompile`: trigger script compilation and return the result
-- `unity_snapshot`: fetch a bounded snapshot of Editor state, active scene hierarchy, current selection, and recent logs
-- `unity_timeline`: query the append-only action audit (request summaries, results, durations, success status)
-- `unity_pipeline`: discover/execute pipeline `[CliCommand]`s; frequently used commands are dynamically registered as shortcuts (e.g. `unity_run_tests`)
-  - Unity 6+: official `com.unity.pipeline`; pre-Unity 6 (2021.3 / 2022): built-in `com.pi.pipeline.compat` compatibility fork
+## Key Features
 
-> `com.pi.pipeline.compat` is a compatibility fork of the official Unity `com.unity.pipeline`. Its original license (Unity Package Distribution License) is preserved at `unity/com.pi.pipeline.compat/LICENSE.md`; it is only meant for local embedded installs on pre-Unity 6 projects.
+- **Pure CLI Architecture (No-MCP)**: No Node.js runtime dependency, millisecond startup time, decoupled lifecycle, and process crash immunity.
+- **Dual-Mode Workflow**:
+  - **Speed Mode (Default)**: `snapshot` + `eval` + `uitree_*` white-box inspection, takes tens of milliseconds, no large images, saves tokens.
+  - **GUI Mode (On-Demand)**: `observe` + `capture` multi-frame capture and dHash change detection. Large images are saved to disk (`Temp/PiUnityHarness/Captures/`), never dumping Base64 to stdout.
+- **Automatic Domain Reload Reconnection**: `pi-unity compile` manages connection drop and polls until `managedState == "ready"`.
+- **Standard Exit Codes & Formatting**: Human-readable and `--json` structured outputs; Exit Code `0` (Success), `1` (Runtime Error), `2` (Not Connected), `3` (Timeout).
 
-## Requirements
+---
 
-- Windows (only the named pipe transport is implemented so far)
-- Unity Editor 2021.3+
+## CLI Command Reference
 
-## Install
+| CLI Command | Options | Description |
+| :--- | :--- | :--- |
+| `pi-unity ping` | `--timeout <ms>` | Probe Unity Broker responsiveness |
+| `pi-unity status` | `--json` | Get Editor status, domain reload generation, focus and modal dialogs |
+| `pi-unity eval <code>` | `-f, --file <path>` | Execute C# code or expression in Unity main thread |
+| `pi-unity compile` | `--timeout <ms>` | Trigger script compilation and wait for domain reload to ready |
+| `pi-unity snapshot` | `--depth <N>` `--max-nodes <N>` `--log-limit <N>` `--log-level <error\|warning\|all>` `--no-components` | Get active scene hierarchy, components, selection, and logs |
+| `pi-unity list-commands` | `--json` | List all registered Pipeline `[CliCommand]`s |
+| `pi-unity pipeline <name>` | `-p <key=val>` `--params-json <json>` | Execute a registered Unity Pipeline command |
+| `pi-unity run-tests` | `--mode <edit\|play>` `--filter <pattern>` | Run Unity UTF test suites (EditMode / PlayMode) |
+| `pi-unity observe` | `--frames <N>` `--interval <ms>` `--overlay <grid\|annotations\|both\|none>` | Multi-frame vision observation + dHash change detection |
+| `pi-unity capture` | `--mode <game\|scene>` `--out <path>` | Viewport screenshot capture (Speed mode) |
+| `pi-unity timeline` | `--limit <N>` `--success <all\|success\|failure>` | Query recent operations timeline and audit history |
+| `pi-unity skills install` | `--agents` `--claude` `--target <dir>` | Install Agent Skills into target project |
 
-### Install in a Unity project
+---
+
+## Quick Start
+
+### 1. Install Harness in Unity Project
 
 Add `unity/com.pi.unity-harness` as a local UPM package in `Packages/manifest.json`:
 
@@ -39,48 +55,45 @@ Add `unity/com.pi.unity-harness` as a local UPM package in `Packages/manifest.js
 }
 ```
 
-On Editor startup the package automatically initializes the native broker, writes `Library/PiUnityHarness/bridge.json`, and reconnects after domain reloads.
+### 2. Build and Run CLI
 
-### Install the pi extension
+Run the build script in the repository root:
 
-Register it as a global extension in `~/.pi/agent/settings.json` (not `~/.pi/settings.json`):
-
-```json
-{
-  "extensions": [
-    "<path-to-pi-unity-harness>/.pi/extensions/pi-unity-harness"
-  ],
-  "pi-unity-harness": {
-    "enabled": false
-  }
-}
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\build-native.ps1
 ```
 
-`enabled` defaults to `false` (no `unity_*` tool registered); enable it manually when needed:
+The compiled `pi-unity.exe` is located in `bin/` and `dist/`:
+
+```bash
+# Verify connection
+pi-unity ping
+
+# Check Editor status
+pi-unity status
+
+# Evaluate C# expression
+pi-unity eval "UnityEngine.Application.unityVersion"
+
+# Install Skills to .agents/skills/
+pi-unity skills install --agents
+```
+
+---
+
+## Verify Loop Workflow
 
 ```text
-/unity-harness on              # current session only
-/unity-harness on --persist    # current session + write settings (on by default next time)
-/unity-harness off             # disable
-/unity-harness status          # show runtime / settings / currently active unity tools
+1. Observe   → pi-unity snapshot (baseline observation)
+2. Act       → apply changes to code / assets / scene
+3. Compile   → pi-unity compile (await domain reload, verify 0 errors)
+4. Verify    → pi-unity run-tests --mode edit or pi-unity eval probe
+5. Re-observe→ pi-unity snapshot (compare post-change state with expected outcome)
 ```
 
-Per-project overrides go into `<project>/.pi/settings.json` (same key; project wins over global). Changes to `enabled` take effect in a new pi session (or via `/unity-harness on|off`).
-
-## Usage
-
-```text
-unity_ping
-unity_status
-unity_snapshot { maxDepth: 3, maxNodes: 500, logLimit: 50, logLevel: "error" }
-unity_timeline { limit: 20, success: "failure" }
-unity_eval { code: "UnityEngine.Debug.Log(123); 123" }
-unity_eval_file { filePath: "Temp/PiUnityHarness/AgentScratch/probe.repl" }
-unity_recompile
-```
+---
 
 ## License
 
-The code in this repository (`native/`, `unity/com.pi.unity-harness/`, `.pi/`, `docs/`) is released under the MIT License — see [LICENSE](LICENSE).
-
-`unity/com.pi.pipeline.compat/` is a compatibility fork of the official Unity `com.unity.pipeline` and is released under the Unity Package Distribution License — see `unity/com.pi.pipeline.compat/LICENSE.md`.
+Core repository code is licensed under the MIT License — see [LICENSE](LICENSE).
+`unity/com.pi.pipeline.compat/` is released under the Unity Package Distribution License — see `unity/com.pi.pipeline.compat/LICENSE.md`.

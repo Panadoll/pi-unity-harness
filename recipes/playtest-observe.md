@@ -6,17 +6,14 @@
 ## 前置
 
 ```text
-gui 模式已声明（见 skills/unity-playtest-loop/SKILL.md 的升级信号）
-editor_play                       # 进入 PlayMode
-path_prefix=Library/PiUnityHarness/playtest/smoke/step_001
+gui 模式已声明（见 skills/pi-unity-observe/SKILL.md 的升级信号）
+editor_play                       # 进入 PlayMode（pi-unity pipeline editor_play）
 ```
 
 ## 1. 观察（多帧 + 指纹 + 网格）
 
-```json
-{"command": "vision_observe",
- "params": {"mode": "game", "frames": 3, "interval_ms": 160,
-            "overlay": "both", "path_prefix": "Library/PiUnityHarness/playtest/smoke/step_001"}}
+```bash
+pi-unity observe --frames 3 --interval 160 --overlay both
 ```
 
 返回要点：
@@ -29,16 +26,15 @@ path_prefix=Library/PiUnityHarness/playtest/smoke/step_001
 
 ## 2. 并行取 UI 上下文
 
-```json
-{"command": "uitree_roots", "params": {}}
-{"command": "uitree_snapshot", "params": {"interactive_only": true}}
+```bash
+pi-unity pipeline uitree_roots
+pi-unity pipeline uitree_snapshot -p interactive_only=true
 ```
 
 ## 3. 确认命中（像素动作必须）
 
-```json
-{"command": "input_probe",
- "params": {"x": 523, "y": 236}}
+```bash
+pi-unity pipeline input_probe -p x=523 -p y=236
 ```
 
 返回 `would_hit` / `would_hit_kind` / `blocked_by`；命中对象不是目标时
@@ -46,15 +42,14 @@ path_prefix=Library/PiUnityHarness/playtest/smoke/step_001
 
 ## 4. 执行动作
 
-```json
-{"command": "input_click", "params": {"x": 523, "y": 236}}
+```bash
+pi-unity pipeline input_click -p x=523 -p y=236
 ```
 
 ## 5. 动作后连拍（普通翻页用 short，快速反馈用 burst）
 
-```json
-{"command": "vision_capture_after",
- "params": {"mode": "short", "path_prefix": "Library/PiUnityHarness/playtest/smoke/step_001"}}
+```bash
+pi-unity pipeline vision_capture_after -p mode=short -p path_prefix=Library/PiUnityHarness/playtest/smoke/step_001
 ```
 
 返回 `sheet`（带毫秒时间戳的序列图）作为下一步的 pending_feedback。
@@ -63,5 +58,5 @@ path_prefix=Library/PiUnityHarness/playtest/smoke/step_001
 
 把 observation/reasoning/action/expected_result 追加到 `events.jsonl`，
 更新 working_memory；每 12 步或上下文超限时压缩进 `memory.json`（见
-`skills/unity-playtest-loop/SKILL.md`；先对账 `session.json` 的
+`skills/pi-unity-observe/SKILL.md`；先对账 `session.json` 的
 `last_compressed_step`）。

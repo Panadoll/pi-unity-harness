@@ -1,4 +1,9 @@
+/**
+ * @deprecated LEGACY ARCHIVE: pi-unity-harness has migrated to CLI-Only architecture (No MCP).
+ * Use `pi-unity` CLI instead.
+ */
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { resolve } from "node:path";
 

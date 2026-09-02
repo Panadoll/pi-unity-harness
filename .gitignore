@@ -6,3 +6,5 @@ unity/com.pi.unity-harness/Editor/Plugins/x86_64/*.lib
 .pi/todos/
 .pi/settings.json
 node_modules/
+bin/
+dist/

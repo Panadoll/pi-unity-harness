@@ -1,6 +1,8 @@
 {
   "name": "pi-unity-harness-extension",
+  "type": "module",
   "private": true,
+
   "license": "MIT",
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"

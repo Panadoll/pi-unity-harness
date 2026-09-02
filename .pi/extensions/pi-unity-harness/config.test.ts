@@ -7,14 +7,12 @@ import {
   SETTINGS_KEY,
 } from "./config.ts";
 
-test("loadUnityHarnessSettings defaults to disabled when no env override", () => {
+test("loadUnityHarnessSettings defaults to enabled when no env override", () => {
   const prev = process.env.PI_UNITY_HARNESS_ENABLED;
   delete process.env.PI_UNITY_HARNESS_ENABLED;
   try {
-    assert.equal(DEFAULT_SETTINGS.enabled, false);
+    assert.equal(DEFAULT_SETTINGS.enabled, true);
     assert.equal(SETTINGS_KEY, "pi-unity-harness");
-    // Without a project/global override that forces true, default is off.
-    // Global settings may still enable it; env is unset so resolved is boolean.
     const settings = loadUnityHarnessSettings();
     assert.equal(typeof settings.enabled, "boolean");
   } finally {
@@ -23,9 +21,10 @@ test("loadUnityHarnessSettings defaults to disabled when no env override", () =>
   }
 });
 
-test("DEFAULT_SETTINGS.enabled is false", () => {
-  assert.equal(DEFAULT_SETTINGS.enabled, false);
+test("DEFAULT_SETTINGS.enabled is true", () => {
+  assert.equal(DEFAULT_SETTINGS.enabled, true);
 });
+
 
 test("PI_UNITY_HARNESS_ENABLED env overrides settings", () => {
   const prev = process.env.PI_UNITY_HARNESS_ENABLED;
