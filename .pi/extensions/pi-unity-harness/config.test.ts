@@ -21,11 +21,6 @@ test("loadUnityHarnessSettings defaults to enabled when no env override", () => 
   }
 });
 
-test("DEFAULT_SETTINGS.enabled is true", () => {
-  assert.equal(DEFAULT_SETTINGS.enabled, true);
-});
-
-
 test("PI_UNITY_HARNESS_ENABLED env overrides settings", () => {
   const prev = process.env.PI_UNITY_HARNESS_ENABLED;
   try {

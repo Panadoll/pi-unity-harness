@@ -92,6 +92,48 @@ namespace Pi.UnityHarness.Editor.Tests.PipelineDiscovery
                 "type_get_json_schema",
                 "skills_create",
                 "skills_generate",
+
+                "input_ready_state",
+                "input_wait_ready",
+                "input_click",
+                "input_sequence",
+                "input_raycast",
+                "input_probe",
+
+                "uitree_roots",
+                "uitree_snapshot",
+                "uitree_find",
+                "uitree_describe",
+                "uitree_text",
+
+                "vision_capture",
+                "vision_capture_gameview",
+                "vision_capture_async",
+                "vision_annotate",
+                "vision_build_analysis_request",
+                "vision_analyze_image",
+                "vision_capture_and_analyze",
+                "vision_settings",
+                "vision_test_provider",
+                "vision_observe",
+                "vision_capture_after",
+                "vision_annotate_raycast",
+
+                "hot_reload",
+                "hot_reload_status",
+                "hot_reload_revert_all",
+
+                "pause_point_enable",
+                "pause_point_clear",
+                "pause_point_status",
+                "pause_point_await",
+
+                "input_record_start",
+                "input_record_stop",
+                "input_record_status",
+                "input_replay",
+                "input_replay_stop",
+                "input_replay_status",
             };
 
             foreach (var name in expected)
