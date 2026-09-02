@@ -6,7 +6,7 @@
 
 - `native/` — Rust 实现：Native Broker（`cdylib` 插件，跨域重载存活）+ `pi-unity` 独立原生 CLI 二进制
 - `unity/com.pi.unity-harness/` — Unity Editor 包，C# 侧负责主线程调度与 Pipeline 命令执行
-- `skills/` — 细粒度 Agent Skills 源文件，支持通过 `pi-unity skills install` 一键同步到 `.agents/skills/` 或 `.claude/skills/`
+- `skills/` — 一份 `pi-unity` Agent Skill（细节在 `references/`），`pi-unity skills install` 会递归拷到 `.agents/skills/` 或 `.claude/skills/`。下次安装会清掉旧的九份细粒度 skill（目录里只有匹配的 `SKILL.md` 才删）
 - `.pi/extensions/pi-unity-harness/` — pi-coding-agent 专用的 typed tools 薄封装（底层统一调用 `pi-unity` CLI）
 
 ---
@@ -126,8 +126,8 @@ pi-unity skills install --agents
 # 开启粘性会话
 pi-unity session start --task "重构战斗系统"
 
-# 标记 Skill 使用
-pi-unity mark --skill pi-unity-compile --event used
+# 可选：额外标记一次 skill 使用（CLI 调用本身已经记日志）
+pi-unity mark --skill pi-unity --event used
 
 # 结束会话
 pi-unity session end

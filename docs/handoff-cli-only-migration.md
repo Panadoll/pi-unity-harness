@@ -131,7 +131,7 @@ graph TD
 
 ### Step 3：建立 CLI-First Agent Skills（参考 `uloop`）
 1. 对齐 `uloop` 的实际做法——**每个高频命令一个细粒度 Skill + 安装同步机制**：uloop 在 `.agents/skills/` 维护约 20 个 `uloop-*` skill，源文件集中在包内，由 `uloop skills install` 生成副本同步到 `.agents/` / `.claude/`（生成副本禁止直接编辑，见 `unity-cli-loop/AGENTS.md` "Generated Skill Files" 一节）。本仓库对应落地：
-   - Skill 源文件放 `skills/`（如 `pi-unity-status`、`pi-unity-eval`、`pi-unity-compile`…），并提供安装/同步脚本或明确的拷贝步骤；
+   - Skill 源文件放 `skills/`（现为单份 `pi-unity`，细节在 `references/`），并提供安装/同步脚本或明确的拷贝步骤；
    - **改造或替换**既有的 `skills/unity-harness-mcp` 与 `skills/unity-playtest-loop`（二者均以 MCP 为前提），并清理已安装的生成副本（如 `.agents/skills/unity-harness-mcp`）。
 2. Skill 内容须传达：
    - 基础命令格式与参数。

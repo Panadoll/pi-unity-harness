@@ -117,7 +117,7 @@ pub(crate) struct SessionStartArgs {
 
 #[derive(Args, Debug)]
 pub(crate) struct MarkArgs {
-    /// Name of the skill (e.g. pi-unity-compile)
+    /// Name of the skill (e.g. pi-unity)
     #[arg(long)]
     pub(crate) skill: String,
 
