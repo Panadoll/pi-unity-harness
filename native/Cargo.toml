@@ -5,12 +5,20 @@ edition = "2021"
 license = "MIT"
 
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 
-[target.'cfg(windows)'.dependencies]
-tokio = { version = "1", features = ["rt", "io-util", "net", "sync", "time", "macros"] }
+[[bin]]
+name = "pi-unity"
+path = "src/bin/pi_unity.rs"
+
+[dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "io-util", "net", "sync", "time", "macros", "process"] }
+clap = { version = "4.5", features = ["derive"] }
+base64 = "0.22"
+regex = "1"
+
 
 [profile.release]
 lto = "thin"

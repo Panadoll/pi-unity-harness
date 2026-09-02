@@ -3,7 +3,7 @@
 Source: `F:/Projects-Test/unity-ai-tool/unity-cli-loop` (package 3.1.0).
 Target: `unity/com.pi.unity-harness/Vendor/Uloop` plus `[CliCommand]` wrappers.
 
-MCP is not used. Commands are discovered through existing pipeline metadata (`unity_pipeline({})`).
+MCP is not used. Commands are discovered through pipeline metadata (`pi-unity list-commands` / `pi-unity pipeline <name>`).
 
 ## Commands
 

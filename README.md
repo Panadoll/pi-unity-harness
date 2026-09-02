@@ -2,34 +2,50 @@
 
 中文 | [English](README.en.md)
 
-pi-unity-harness 是 AI 编码代理（pi）与 Unity Editor 之间的桥接层。它让代理通过 `unity_*` 工具在 Unity Editor 内执行 C# 代码、触发编译与测试、读取场景与日志快照，并复用 Unity 官方 `com.unity.pipeline` 的命令体系。
+`pi-unity-harness` 是 AI 编码代理（Agent）与 Unity Editor 之间的纯命令行桥接层（CLI-First / No-MCP）。通过轻量、高效的 `pi-unity` 命令行工具和 Agent Skills，任何 AI 代理（Claude Code, Codex, Antigravity, Pi, Aider 等）或开发者均可通过 Shell 命令直接驱动 Unity Editor 执行 C# 代码、触发编译与测试、读取场景快照及执行视觉跑测。
 
-- `native/` — Rust `cdylib`，在 Unity 进程内持有 named pipe server，域重载期间不销毁
-- `unity/com.pi.unity-harness/` — Unity Editor 包，C# 侧负责主线程执行与域重载生命周期
-- `.pi/extensions/pi-unity-harness/` — pi TypeScript 扩展，暴露连接、上下文快照、操作审计、Pipeline 与 eval 工具
+- `native/` — Rust 实现：Native Broker（`cdylib` 插件，跨域重载存活）+ `pi-unity` 独立原生 CLI 二进制
+- `unity/com.pi.unity-harness/` — Unity Editor 包，C# 侧负责主线程调度与 Pipeline 命令执行
+- `skills/` — 细粒度 Agent Skills 源文件，支持通过 `pi-unity skills install` 一键同步到 `.agents/skills/` 或 `.claude/skills/`
+- `.pi/extensions/pi-unity-harness/` — pi-coding-agent 专用的 typed tools 薄封装（底层统一调用 `pi-unity` CLI）
 
-## Features
+---
 
-- `unity_ping` / `unity_status`：检查 broker 在线状态与 Editor 运行状态
-- `unity_eval` / `unity_eval_file`：在 Unity Editor 主线程执行短 C# 代码或多行 `.repl`/`.cs` 文件
-- `unity_recompile`：触发脚本编译并返回结果
-- `unity_snapshot`：有界获取 Editor 状态、活动场景层级、当前选择和近期日志
-- `unity_timeline`：查询追加式操作审计（请求摘要、结果、耗时与成功状态）
-- `unity_pipeline`：发现/执行 pipeline `[CliCommand]`；高频命令动态注册为 shortcut（如 `unity_run_tests`）
-  - Unity 6+：官方 `com.unity.pipeline`；非 Unity 6（2021.3 / 2022）：内置 `com.pi.pipeline.compat` 兼容 fork
+## 核心特性
 
-> `com.pi.pipeline.compat` 是 Unity 官方 `com.unity.pipeline` 的兼容 fork，保留其原始许可证（Unity Package Distribution License，见 `unity/com.pi.pipeline.compat/LICENSE.md`），仅用于非 Unity 6 项目的本地 embedded 安装。
+- **纯 CLI 架构（No-MCP）**：无 Node.js 运行时依赖，启动毫秒级，天然解耦与防崩溃。
+- **双模式运行机制**：
+  - **速度模式（默认）**：`snapshot` + `eval` + `uitree_*` 白盒交互，耗时几十毫秒，不看大图，节省 Token。
+  - **GUI 模式（按需）**：`observe` + `capture` 多帧捕获与 dHash 变化检测，大图自动存盘（`Temp/PiUnityHarness/Captures/`），禁止 Base64 倾倒到 stdout。
+- **自动域重载重连**：`pi-unity compile` 触发编译后，自动接管连接断开并在重载完成后轮询至 `ready` 状态。
+- **标准退出码与格式化输出**：支持人类可读与 `--json` 结构化输出；Exit Code `0`（成功）、`1`（失败）、`2`（未连接）、`3`（超时）。
 
-## Requirements
+---
 
-- Windows（目前只实现了 named pipe 路径）
-- Unity Editor 2021.3+
+## CLI 命令速查
 
-## Install
+| CLI 子命令 | 参数选项 | 行为描述 |
+| :--- | :--- | :--- |
+| `pi-unity ping` | `--timeout <ms>` | 探测 Unity Broker 连通性 |
+| `pi-unity status` | `--json` | 获取 Editor 状态、域重载代次、焦点与模态弹窗状态 |
+| `pi-unity eval <code>` | `-f, --file <path>` | 在 Unity 主线程执行 C# 表达式或 `.repl`/`.cs` 文件 |
+| `pi-unity compile` | `--timeout <ms>` | 触发 Unity 脚本重新编译并自动等待就绪 |
+| `pi-unity snapshot` | `--depth <N>` `--max-nodes <N>` `--log-limit <N>` `--log-level <error\|warning\|all>` `--no-components` | 获取活动场景层级、组件选择和近期日志 |
+| `pi-unity list-commands` | `--json` | 列举全部已注册的 Pipeline `[CliCommand]` |
+| `pi-unity pipeline <name>` | `-p <key=val>` `--params-json <json>` | 执行 Unity Pipeline `[CliCommand]` |
+| `pi-unity run-tests` | `--mode <edit\|play>` `--filter <pattern>` | 运行 Unity 测试套件（EditMode / PlayMode） |
+| `pi-unity observe` | `--frames <N>` `--interval <ms>` `--overlay <grid\|annotations\|both\|none>` | 视觉跑测感知（多帧捕获 + dHash + 变化检测） |
+| `pi-unity capture` | `--mode <game\|scene>` `--out <path>` | 单张视口截图（速度模式） |
+| `pi-unity timeline` | `--limit <N>` `--success <all\|success\|failure>` | 查询操作审计历史 |
+| `pi-unity skills install` | `--agents` `--claude` `--target <dir>` | 安装 Agent Skills 到目标项目 |
 
-### 在 Unity 项目中安装
+---
 
-把 `unity/com.pi.unity-harness` 作为本地 UPM 包加入 `Packages/manifest.json`：
+## 安装与快速上手
+
+### 1. 在 Unity 项目中安装 Harness 包
+
+把 `unity/com.pi.unity-harness` 作为本地 UPM 包加入 Unity 项目的 `Packages/manifest.json`：
 
 ```json
 {
@@ -39,11 +55,35 @@ pi-unity-harness 是 AI 编码代理（pi）与 Unity Editor 之间的桥接层�
 }
 ```
 
-Unity Editor 启动后自动初始化 native broker，写入 `Library/PiUnityHarness/bridge.json`，并在域重载后自动重连。
+Unity Editor 打开后会自动初始化 native broker 并写入 `Library/PiUnityHarness/bridge.json`。
 
-### 在 pi 中安装扩展
+### 2. 构建与使用 CLI
 
-在 `~/.pi/agent/settings.json`（不是 `~/.pi/settings.json`）中注册为全局扩展：
+在仓库根目录下运行构建脚本：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\build-native.ps1
+```
+
+编译出的 `pi-unity.exe` 位于 `bin/` 和 `dist/`，可加入系统 PATH，或直接调用：
+
+```bash
+# 验证连通性
+pi-unity ping
+
+# 查看编辑器状态
+pi-unity status
+
+# 执行 C# 表达式
+pi-unity eval "UnityEngine.Application.unityVersion"
+
+# 同步 Skills 到当前项目的 .agents/skills/
+pi-unity skills install --agents
+```
+
+### 3. 在 pi-coding-agent 中使用（可选）
+
+如需在 pi-coding-agent 中使用 typed tools，在 `~/.pi/agent/settings.json` 中配置：
 
 ```json
 {
@@ -51,36 +91,28 @@ Unity Editor 启动后自动初始化 native broker，写入 `Library/PiUnityHar
     "<pi-unity-harness-仓库路径>/.pi/extensions/pi-unity-harness"
   ],
   "pi-unity-harness": {
-    "enabled": false
+    "enabled": true
   }
 }
 ```
 
-`enabled` 默认 `false`（不注册任何 `unity_*` 工具），需要时手动开启：
+---
+
+## 验证闭环工作流（Verify Loop）
+
+所有修改 Unity 代码、场景或资产的 Agent 都应遵循标准闭环：
 
 ```text
-/unity-harness on              # 仅当前会话
-/unity-harness on --persist    # 当前会话 + 写入 settings（下次默认也开）
-/unity-harness off             # 关掉
-/unity-harness status          # 查看 runtime / settings / 当前激活的 unity 工具
+1. Observe 观察   → pi-unity snapshot （建立改前基线）
+2. Act 行动       → 修改代码 / 资产 / 场景
+3. Compile 编译   → pi-unity compile （等待域重载完成，确认 0 错误）
+4. Verify 验证     → pi-unity run-tests --mode edit 或 pi-unity eval 探针
+5. Re-observe 复核 → pi-unity snapshot （对比改后状态与预期结果）
 ```
 
-项目级覆盖写在 `<project>/.pi/settings.json`（同 key，项目优先于全局）；改完 `enabled` 后需新开 pi 会话（或 `/unity-harness on|off`）生效。
-
-## Usage
-
-```text
-unity_ping
-unity_status
-unity_snapshot { maxDepth: 3, maxNodes: 500, logLimit: 50, logLevel: "error" }
-unity_timeline { limit: 20, success: "failure" }
-unity_eval { code: "UnityEngine.Debug.Log(123); 123" }
-unity_eval_file { filePath: "Temp/PiUnityHarness/AgentScratch/probe.repl" }
-unity_recompile
-```
+---
 
 ## License
 
-本仓库代码（`native/`、`unity/com.pi.unity-harness/`、`.pi/`、`docs/`）以 MIT 协议发布，见 [LICENSE](LICENSE)。
-
-`unity/com.pi.pipeline.compat/` 是 Unity 官方 `com.unity.pipeline` 的兼容 fork，按 Unity Package Distribution License 发布，见 `unity/com.pi.pipeline.compat/LICENSE.md`。
+本仓库核心代码以 MIT 协议发布，见 [LICENSE](LICENSE)。
+`unity/com.pi.pipeline.compat/` 按 Unity Package Distribution License 发布，见 `unity/com.pi.pipeline.compat/LICENSE.md`。

@@ -1,6 +1,11 @@
 #!/usr/bin/env node
+/**
+ * @deprecated LEGACY ARCHIVE: pi-unity-harness has migrated to CLI-Only architecture (No MCP).
+ * Use the `pi-unity` native CLI binary (`bin/pi-unity.exe` or `pi-unity <command>`) and Agent Skills instead.
+ */
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,

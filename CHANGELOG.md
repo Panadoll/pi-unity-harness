@@ -8,6 +8,36 @@
 ### Added
 
 - 初始开源版本：native broker、Unity Editor 包、pi 扩展、文档
+- 纯 CLI 架构（CLI-First / No-MCP）：新增 `pi-unity` 独立原生 CLI 二进制
+  （`native/src/bin/pi_unity.rs`，基于 clap），覆盖 ping / status / eval / compile /
+  snapshot / list-commands / pipeline / run-tests / observe / capture / timeline /
+  skills 十二个子命令，支持 `--json` 结构化输出与统一退出码
+  （0 成功 / 1 失败 / 2 未连接 / 3 超时）。
+- 细粒度 Agent Skills 源文件（`skills/`）：pi-unity、pi-unity-status、
+  pi-unity-eval、pi-unity-compile、pi-unity-snapshot、pi-unity-observe、
+  pi-unity-capture、pi-unity-timeline、pi-unity-pipeline、pi-unity-run-tests，
+  支持 `pi-unity skills install --agents|--claude` 一键同步。
+- 双模式运行机制文档化：速度模式（snapshot + eval + uitree_* 白盒）与
+  GUI 模式（observe + capture，大图落地 `Temp/PiUnityHarness/Captures/`）。
+- 文档 handoff：`docs/handoff-cli-only-migration.md` 完整记录 MCP → CLI 迁移指南。
+
+### Changed
+
+- `.pi/extensions/pi-unity-harness` 由直连 named pipe 的完整实现改为 typed tools
+  薄封装，底层统一调用 `pi-unity` CLI；`enabled` 默认值改为 `true`。
+- `docs/protocol.md`：pipe 名改为 `pi_unity_` + 项目路径 SHA-256 前 6 字节（12 位 hex），
+  `statePlaneName` 由归一化项目路径 64 位 FNV-1a hash 派生；明确以 `bridge.json`
+  的 `pipe` 字段为唯一真相。
+- `native/Cargo.toml`：crate-type 增加 `rlib`，加入 CLI 所需依赖（clap、base64、regex）。
+- `scripts/build-native.ps1`：构建后同时拷贝 CLI 二进制到 `bin/`，DLL 拷贝失败时
+  非 Strict 模式降级为警告（Unity 占用插件目录场景）。
+
+### Removed
+
+- MCP 架构：`scripts/mcp-server.mjs`、`scripts/mcp-handshake.mjs` 标记为 deprecated
+  legacy archive，不再作为接口（源码保留便于对照）。
+- 旧 skill：`skills/unity-harness-mcp/SKILL.md`、`skills/unity-playtest-loop/SKILL.md`
+  （以 MCP 为前提），由细粒度 CLI skills 取代。
 
 ### Fixed
 

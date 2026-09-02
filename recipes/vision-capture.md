@@ -1,4 +1,4 @@
-# 截图 recipe：vision_capture / vision_observe
+# 截图 recipe：capture / observe
 
 给编码代理的截图规范。坐标系统、命令选择与证据管理。
 
@@ -15,30 +15,29 @@
 
 | 场景 | 命令 |
 |------|------|
-| 单张 SceneView 截图（编辑模式） | `vision_capture(mode="scene")` |
-| 单张 GameView 截图（PlayMode，含 Overlay UI） | `vision_capture_gameview` 或 `vision_capture_async(mode="game")` |
-| 需要 UI/3D 可点击候选 | `vision_capture(annotate=true)` 或 `vision_annotate` |
-| 多帧观察 + 变化检测 + 指纹 + 网格 | `vision_observe`（见 playtest-observe.md） |
-| 动作后连拍反馈 | `vision_capture_after`（见 playtest-observe.md） |
+| 单张 SceneView 截图（编辑模式） | `pi-unity capture --mode scene` |
+| 单张 GameView 截图（PlayMode，含 Overlay UI） | `pi-unity capture --mode game` |
+| 多帧观察 + 变化检测 + 指纹 + 网格 | `pi-unity observe`（见 playtest-observe.md） |
+| 动作后连拍反馈 | `pi-unity pipeline vision_capture_after -p mode=short` |
 
-> `vision_observe` / `vision_capture_after` 只支持 `mode="game"`（`auto` 与 `game`
-> 等价，均要求 PlayMode 且依赖渲染帧）；非 PlayMode 返回 `not_supported`，不要改
-> `mode="scene"` 绕过——SceneView 捕获请用 `vision_capture` / `vision_capture_async`。
+> `observe` / `vision_capture_after` 只支持 `mode="game"`（自动要求 PlayMode 且依赖
+> 渲染帧）；非 PlayMode 返回 `not_supported`，不要试图改 `mode="scene"` 绕过——
+> SceneView 捕获请用 `pi-unity capture --mode scene`。
 
 ## 默认路径
 
-- 单张截图默认写到 `Temp/Harness/vision/<时间戳>.png`。
-- 跑测会话写到 `Library/PiUnityHarness/playtest/<session>/`（见 playtest skill）。
+- 单张截图默认写到 `Temp/PiUnityHarness/Captures/<时间戳>.png`。
+- 跑测会话写到 `Library/PiUnityHarness/playtest/<session>/`（见 observe skill）。
 - 响应只回路径，不内嵌图片；代理按需读取文件再交给视觉模型。
 
 ## 使用规则
 
-1. PlayMode 未开启时 `mode="game"` 会失败（EOF 捕获依赖渲染帧）；先
-   `editor_play`。SceneView 单张截图用 `mode="scene"`，不要拿它当 game 的
-   fallback。
-2. 需要精确点击时：先 `input_probe(x,y)` 确认命中对象，再
-   `input_click(x,y)`；能用 `uitree_find` 的节点优先走 uitree。
-3. `annotate=true` 会额外收集 UGUI Selectable 与物理网格命中并画到 PNG，
-   仅在需要交互候选时开启（有额外开销）。
+1. PlayMode 未开启时 `capture --mode game` 会失败（EOF 捕获依赖渲染帧）；先
+   `pi-unity pipeline editor_play`。SceneView 单张截图用 `--mode scene`，不要拿它当
+   game 的 fallback。
+2. 需要精确点击时：先 `pi-unity pipeline input_probe -p x=.. -p y=..` 确认命中对象，
+   再 `input_click`；能用 `uitree_find` 的节点优先走 uitree。
+3. 需要 UI/3D 可点击候选时用 `pi-unity pipeline vision_capture -p mode=game -p annotate=true`
+   （额外收集 UGUI Selectable 与物理网格命中并画到 PNG，仅在需要交互候选时开启）。
 4. 画面判断交给视觉模型时，附上 capture JSON（含尺寸与换算系数），不要只给
    图片路径。

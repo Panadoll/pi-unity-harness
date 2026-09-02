@@ -1,8 +1,9 @@
 # pi-unity-harness Communication Protocol Specification (v1)
 
 > This document is the **single source of truth** for the pi-unity-harness client ↔ Unity process communication protocol.
-> Reference implementations: `native/src/lib.rs` (Rust native broker), `unity/com.pi.unity-harness/Editor/PiUnityBridge.cs` (C# managed worker), `.pi/extensions/pi-unity-harness/index.ts` (reference client).
-> Any implementation (pi extension, CLI, MCP server, client in another language) MUST follow this document and MUST NOT extend or change field semantics on its own.
+> Reference implementations: `native/src/lib.rs` (Rust native broker), `unity/com.pi.unity-harness/Editor/PiUnityBridge.cs` (C# managed worker), `native/src/bin/pi_unity.rs` (native CLI client), `.pi/extensions/pi-unity-harness/index.ts` (pi thin-wrapper extension).
+> Any implementation (CLI, pi extension, client in another language) MUST follow this document and MUST NOT extend or change field semantics on its own.
+
 
 ## 1. Overall architecture
 
@@ -30,7 +31,7 @@ Written at `<UnityProject>/Library/PiUnityHarness/bridge.json` (UTF-8, possibly 
 {
   "project": "/path/to/UnityProject",
   "pid": 12345,
-  "pipe": "\\\\.\\pipe\\pi_unity_harness_<hash>",
+  "pipe": "\\\\.\\pipe\\pi_unity_<sha256-first-6-bytes-hex>",
   "token": "0123456789abcdef0123456789abcdef",
   "generation": 3,
   "statePlaneName": "Local\\PiUnityHarnessState_<hash>"
@@ -46,7 +47,7 @@ Written at `<UnityProject>/Library/PiUnityHarness/bridge.json` (UTF-8, possibly 
 | `generation` | number | Managed domain generation; incremented by 1 on every domain reload |
 | `statePlaneName` | string | Shared-memory state plane name (`Local\` prefix); degraded state source when the pipe is unreachable |
 
-Both the pipe name and `statePlaneName` are derived from an FNV-1a hash of the project path, so repeated launches of the same project are stable.
+The pipe name is `pi_unity_` + the first 6 SHA-256 bytes (12 hex chars) of the project path, while `statePlaneName` is derived from a 64-bit FNV-1a hash of the normalized project path. Both are stable across launches of the same project. Clients MUST use the `pipe` field from `bridge.json` verbatim and MUST NOT re-derive the name.
 
 ## 3. Frame format
 

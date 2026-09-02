@@ -1,5 +1,10 @@
 # 从 game_test_agent 借鉴核心跑测循环到 pi-unity-harness
 
+> 状态注记：本文为历史计划文档。落地后 skill 已细粒度化为 `skills/pi-unity-observe`、
+> `skills/pi-unity-capture` 等 CLI skill（`pi-unity skills install` 安装）；文中引用的
+> `unity-harness-mcp` / `unity-playtest-loop` 旧 skill 名与 MCP 路径均已废弃，
+> 仅保留用于追溯设计过程。
+
 来源：`F:\Projects-Test\game_test_agent-master` 的 `_run()` 闭环。  
 目标：只借感知原语和 Agent 侧协议，不把黑盒 Python runner 搬进 UPM。
 

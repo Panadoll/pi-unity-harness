@@ -17,8 +17,9 @@ export interface UnityHarnessSettings {
 }
 
 export const DEFAULT_SETTINGS: UnityHarnessSettings = {
-  enabled: false,
+  enabled: true,
 };
+
 
 function agentDir(): string {
   const envDir = process.env.PI_CODING_AGENT_DIR?.trim();
