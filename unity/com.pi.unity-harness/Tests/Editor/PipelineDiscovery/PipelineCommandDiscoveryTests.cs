@@ -5,10 +5,10 @@ using Unity.Pipeline.Commands;
 
 namespace Pi.UnityHarness.Editor.Tests.PipelineDiscovery
 {
-    public sealed class McpPipelineDiscoveryTests
+    public sealed class PipelineCommandDiscoveryTests
     {
         [Test]
-        public void DiscoversMigratedMcpCommands()
+        public void DiscoversRegisteredPipelineCommands()
         {
             var names = CommandRegistry.DiscoverCommands()
                 .Select(command => command.Name)
