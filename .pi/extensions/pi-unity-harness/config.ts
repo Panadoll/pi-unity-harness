@@ -54,8 +54,8 @@ export function coerceEnabled(value: unknown): boolean | undefined {
   if (typeof value === "number" && Number.isFinite(value)) return value !== 0;
   if (typeof value === "string") {
     const raw = value.trim().toLowerCase();
-    if (raw === "0" || raw === "false" || raw === "off" || raw === "no" || raw === "disabled") return false;
-    if (raw === "1" || raw === "true" || raw === "on" || raw === "yes" || raw === "enabled") return true;
+    if (raw === "0" || raw === "false" || raw === "off" || raw === "no" || raw === "disabled" || raw === "disable") return false;
+    if (raw === "1" || raw === "true" || raw === "on" || raw === "yes" || raw === "enabled" || raw === "enable") return true;
   }
   return undefined;
 }
