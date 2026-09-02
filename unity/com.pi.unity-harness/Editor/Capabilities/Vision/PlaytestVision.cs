@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
+using Pi.UnityHarness.Editor;
 using Pi.UnityHarness.Editor.Capabilities.Shared;
 using Pi.UnityHarness.Runtime.Capabilities.Vision;
 using UnityEditor;
@@ -790,7 +791,7 @@ namespace Pi.UnityHarness.Editor.Capabilities.Vision
         {
             if (value == null)
                 return "null";
-            return "\"" + PiAbilityJson.Escape(value) + "\"";
+            return "\"" + PiUnityJsonHelper.EscapeJson(value) + "\"";
         }
 
         private static string F(float value)
