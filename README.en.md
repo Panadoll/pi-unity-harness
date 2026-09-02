@@ -6,7 +6,7 @@
 
 - `native/` — Rust implementation: Native Broker (`cdylib` plugin, survives domain reloads) + standalone `pi-unity` native CLI binary
 - `unity/com.pi.unity-harness/` — Unity Editor package; C# side handles main-thread dispatching and Pipeline command execution
-- `skills/` — Fine-grained Agent Skills source files, installable to `.agents/skills/` or `.claude/skills/` via `pi-unity skills install`
+- `skills/` — One `pi-unity` Agent Skill (details in `references/`). `pi-unity skills install` copies the whole skill directory to `.agents/skills/` or `.claude/skills/`. A later install removes the old nine split skills when a directory contains only a matching `SKILL.md`
 - `.pi/extensions/pi-unity-harness/` — Thin wrapper providing typed tools for pi-coding-agent (shells out to `pi-unity` CLI)
 
 ---
@@ -107,8 +107,8 @@ pi-unity skills install --agents
 # Start sticky session
 pi-unity session start --task "Refactor battle flow"
 
-# Mark skill usage
-pi-unity mark --skill pi-unity-compile --event used
+# Optional extra skill mark (each CLI call already logs an event)
+pi-unity mark --skill pi-unity --event used
 
 # End active session
 pi-unity session end

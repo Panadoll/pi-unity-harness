@@ -23,6 +23,7 @@
 
 ### Changed
 
+- `skills/` 收成一份 `pi-unity`：子命令细节在 `skills/pi-unity/references/`。`pi-unity skills install` 递归拷整个 skill 目录。已安装的九份细粒度 skill（目录里只有匹配的 `SKILL.md`）会在下次 install 时删掉。pipeline 示例改为 `gameobject_find` / `gameobject_create` / `uitree_find -p query=`。skill 不再要求先跑 `pi-unity mark`。
 - 结构收口：`PiUnityBridge` 拆成 Native/Pump/Status/Eval/Session partial；CLI 拆成 args/client/discovery/output/commands；native broker 拆出 `imp.rs`/`ffi.rs`。ping/status 只由 native 回答；C# 不再扫 `#32770`。YOLO 默认 `off`，模态以 `modalObservation` 为准。编译入口统一为 `PiUnityCompileCoordinator.RequestRecompile`。
 - `.pi/extensions/pi-unity-harness` 由直连 named pipe 的完整实现改为 typed tools
   薄封装，底层统一调用 `pi-unity` CLI；`enabled` 默认值改为 `true`。
@@ -37,8 +38,8 @@
 
 - `scripts/mcp-server.mjs`、`scripts/mcp-handshake.mjs`（从未声明 MCP SDK，无法运行）。
 - 零引用 `PiMcpUnityMcpAliases.cs`。
-- 旧 skill：`skills/unity-harness-mcp/SKILL.md`、`skills/unity-playtest-loop/SKILL.md`
-  （以 MCP 为前提），由细粒度 CLI skills 取代。
+- 旧 skill：`skills/unity-harness-mcp/SKILL.md`、`skills/unity-playtest-loop/SKILL.md`（以 MCP 为前提）。
+- 九份按子命令拆的消费 skill：`pi-unity-eval`、`pi-unity-compile`、`pi-unity-status`、`pi-unity-snapshot`、`pi-unity-pipeline`、`pi-unity-run-tests`、`pi-unity-observe`、`pi-unity-capture`、`pi-unity-timeline`。内容并进 `skills/pi-unity/`。
 
 ### Fixed
 

@@ -6,7 +6,7 @@
 ## 前置
 
 ```text
-gui 模式已声明（见 skills/pi-unity-observe/SKILL.md 的升级信号）
+gui 模式已声明（见 skills/pi-unity/references/observe.md）
 editor_play                       # 进入 PlayMode（pi-unity pipeline editor_play）
 ```
 
@@ -58,5 +58,5 @@ pi-unity pipeline vision_capture_after -p mode=short -p path_prefix=Library/PiUn
 
 把 observation/reasoning/action/expected_result 追加到 `events.jsonl`，
 更新 working_memory；每 12 步或上下文超限时压缩进 `memory.json`（见
-`skills/pi-unity-observe/SKILL.md`；先对账 `session.json` 的
+`skills/pi-unity/references/observe.md`；先对账 `session.json` 的
 `last_compressed_step`）。

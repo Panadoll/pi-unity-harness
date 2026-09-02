@@ -59,6 +59,18 @@ pub(crate) fn parse_param_pairs(pairs: &[String], explicit_json: Option<&str>) -
     Ok(Value::Object(map))
 }
 
+const LEGACY_CONSUMER_SKILLS: &[&str] = &[
+    "pi-unity-eval",
+    "pi-unity-compile",
+    "pi-unity-status",
+    "pi-unity-snapshot",
+    "pi-unity-pipeline",
+    "pi-unity-run-tests",
+    "pi-unity-observe",
+    "pi-unity-capture",
+    "pi-unity-timeline",
+];
+
 pub(crate) fn handle_skills_command(
     args: SkillsArgs,
     project_root: &Path,
@@ -86,6 +98,11 @@ pub(crate) fn handle_skills_command(
         }
     }
 
+    for target_dir in &target_dirs {
+        let _ = fs::create_dir_all(target_dir);
+        remove_safe_legacy_skills(target_dir);
+    }
+
     let mut installed_count = 0;
     let mut installed_skills: Vec<String> = Vec::new();
 
@@ -101,13 +118,7 @@ pub(crate) fn handle_skills_command(
             if skill_file.exists() {
                 for target_dir in &target_dirs {
                     let dest_skill_dir = target_dir.join(&skill_name);
-                    let _ = fs::create_dir_all(&dest_skill_dir);
-                    if let Ok(content) = fs::read_to_string(&skill_file) {
-                        let dest_file = dest_skill_dir.join("SKILL.md");
-                        if fs::write(&dest_file, content).is_ok() {
-                            installed_count += 1;
-                        }
-                    }
+                    installed_count += copy_skill_dir(&path, &dest_skill_dir);
                 }
                 installed_skills.push(skill_name);
             }
@@ -132,6 +143,74 @@ pub(crate) fn handle_skills_command(
             result["targets"].as_array().map(|a| a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join("; ")).unwrap_or_default()
         );
         Ok(msg)
+    }
+}
+
+fn should_skip_skill_entry(name: &str) -> bool {
+    name.starts_with('.') || name.eq_ignore_ascii_case("Thumbs.db")
+}
+
+fn copy_skill_dir(src: &Path, dest: &Path) -> usize {
+    let mut copied = 0;
+    if fs::create_dir_all(dest).is_err() {
+        return 0;
+    }
+    let Ok(entries) = fs::read_dir(src) else {
+        return 0;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if should_skip_skill_entry(&name_str) {
+            continue;
+        }
+        let from = entry.path();
+        let to = dest.join(&name);
+        if from.is_dir() {
+            copied += copy_skill_dir(&from, &to);
+        } else if fs::copy(&from, &to).is_ok() {
+            copied += 1;
+        }
+    }
+    copied
+}
+
+fn is_tool_managed_legacy_skill(dir: &Path, expected_name: &str) -> bool {
+    let skill_file = dir.join("SKILL.md");
+    if !skill_file.is_file() {
+        return false;
+    }
+    let Ok(entries) = fs::read_dir(dir) else {
+        return false;
+    };
+    let mut saw_skill = false;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if should_skip_skill_entry(&name_str) {
+            continue;
+        }
+        if name_str == "SKILL.md" && entry.path().is_file() {
+            saw_skill = true;
+            continue;
+        }
+        return false;
+    }
+    if !saw_skill {
+        return false;
+    }
+    let Ok(content) = fs::read_to_string(skill_file) else {
+        return false;
+    };
+    content.contains(&format!("name: {expected_name}"))
+}
+
+fn remove_safe_legacy_skills(target_dir: &Path) {
+    for name in LEGACY_CONSUMER_SKILLS {
+        let dir = target_dir.join(name);
+        if dir.is_dir() && is_tool_managed_legacy_skill(&dir, name) {
+            let _ = fs::remove_dir_all(&dir);
+        }
     }
 }
 
@@ -540,5 +619,57 @@ pub(crate) async fn execute_harness_command(
         }
 
         Commands::Skills(_) | Commands::Session(_) | Commands::Mark(_) => unreachable!(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write_file(path: &Path, contents: &str) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(path, contents).unwrap();
+    }
+
+    #[test]
+    fn copy_skill_dir_includes_references() {
+        let root = std::env::temp_dir().join(format!("pi-unity-skill-copy-{}", std::process::id()));
+        let src = root.join("src");
+        let dest = root.join("dest");
+        write_file(&src.join("SKILL.md"), "---\nname: foo\n---\n");
+        write_file(&src.join("references/bar.md"), "# bar\n");
+        write_file(&src.join(".hidden"), "nope");
+        let copied = copy_skill_dir(&src, &dest);
+        assert_eq!(copied, 2);
+        assert!(dest.join("SKILL.md").is_file());
+        assert!(dest.join("references/bar.md").is_file());
+        assert!(!dest.join(".hidden").exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn legacy_skill_with_only_matching_skill_md_is_removed() {
+        let root = std::env::temp_dir().join(format!("pi-unity-skill-legacy-{}", std::process::id()));
+        let target = root.join("skills");
+        write_file(
+            &target.join("pi-unity-eval/SKILL.md"),
+            "---\nname: pi-unity-eval\n---\n# eval\n",
+        );
+        write_file(
+            &target.join("pi-unity-eval-keep/SKILL.md"),
+            "---\nname: pi-unity-eval\n---\n# keep\n",
+        );
+        write_file(&target.join("pi-unity-eval-keep/notes.md"), "user file\n");
+        write_file(
+            &target.join("other-skill/SKILL.md"),
+            "---\nname: other-skill\n---\n",
+        );
+        remove_safe_legacy_skills(&target);
+        assert!(!target.join("pi-unity-eval").exists());
+        assert!(target.join("pi-unity-eval-keep/notes.md").is_file());
+        assert!(target.join("other-skill/SKILL.md").is_file());
+        let _ = fs::remove_dir_all(root);
     }
 }
