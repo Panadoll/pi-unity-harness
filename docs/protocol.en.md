@@ -118,7 +118,7 @@ Clients MUST ignore unknown events. The broker currently reserves this frame typ
 | `ping` | none | `{"pong": true}` | keepalive / connectivity probe |
 | `status` | none | status payload (see 6.1) | broker-level status; does not require managed ready |
 | `timeline` | `{limit?, requestType?, action?, success?}` | audit query result (see 7) | `limit` 1–200, default 50; `success` = `all`/`success`/`failure`; queries are not audited themselves |
-| `set_yolo` | `{mode: "off"\|"detect"\|"safe-auto"}` | `{"yoloMode": "..."}` | sets the Win32 modal-dialog auto-handling policy; `safe-auto` only clicks whitelisted buttons (Scene dialogs: Don't Save/Save, Import dialogs: Apply, generic OK/Yes) |
+| `set_yolo` | `{mode: "off"\|"detect"\|"safe-auto"}` | `{"yoloMode": "..."}` | sets the Win32 modal-dialog auto-handling policy (default `off`); `safe-auto` only clicks whitelisted buttons (Scene dialogs: Don't Save/Save, Import dialogs: Apply, generic OK/Yes). Modal presence is `status.modalObservation` |
 | `bridge_capabilities` | none | `{protocolVersion, capabilities[]}` | protocol version and capability list |
 
 ### 4.2 Managed forwarding (requires `managedState == ready`)
@@ -192,7 +192,7 @@ When managed is `initializing` / `reloading` / `quitting`, these requests fail i
   "inFlight": 0,
   "capabilities": ["native-broker", "state-plane-v1", "..."],
   "modalObservation": { "present": false, "detectedAtMs": 0, "windows": [] },
-  "yoloMode": "detect"
+  "yoloMode": "off"
 }
 ```
 
@@ -200,7 +200,7 @@ When managed is `initializing` / `reloading` / `quitting`, these requests fail i
 |-------|-------------|
 | `managedState` | `initializing` / `ready` / `reloading` / `quitting` |
 | `connected` | whether a client is currently connected (used as the "occupied" flag in the state plane) |
-| `editorStatus` | semicolon-separated status string; first segment is the state (`editing` / `playing` / `reloading` / `quitting`), followed by `key=value` pairs: `focus=foreground|background`, `window=normal|minimized`, `modal=1` (modal dialog present), `mainThreadStale=1` (main thread stalled) |
+| `editorStatus` | semicolon-separated status string; first segment is the state (`editing` / `playing` / `blocked` / `reloading` / `quitting`), followed by `key=value` pairs: `focus=foreground|background`, `window=normal|minimized`, `mainThreadStale=1` (main thread stalled). Win32 modal dialogs are reported by `modalObservation.present`, not `modal=1` |
 | `capabilities` | capability list: `native-broker`, `direct-status`, `reload-stable-pipe`, `state-plane-v1`, `background-runner`, `focus-state`, `heartbeat-timeout`, `request-timeout`, `client-heartbeat-timeout`, `context-snapshot-v1`, `action-timeline-v1`, `modal-probe-v1` |
 | `modalObservation.windows[]` | `{hwnd, title, class, buttons[]}`; `class` is the Win32 window class (dialogs are `#32770`) |
 

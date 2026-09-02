@@ -268,7 +268,7 @@ pub fn resolve_session_with_env(
     (None, host_session_id)
 }
 
-fn fast_rand_id() -> String {
+pub(crate) fn fast_rand_id() -> String {
     let t = now_ms();
     let pid = std::process::id();
     format!("{:x}{:x}", pid, (t ^ (pid as i64)) & 0xffffff)

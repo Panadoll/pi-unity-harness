@@ -5,6 +5,7 @@ using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.UI;
 using UnityEngine.UIElements;
+using Pi.UnityHarness.Editor;
 
 namespace Pi.UnityHarness.Editor.Capabilities.UiTree
 {
@@ -43,9 +44,9 @@ namespace Pi.UnityHarness.Editor.Capabilities.UiTree
             foreach (var r in uguiRoots)
             {
                 if (index > 0) sb.Append(",");
-                sb.Append("{\"root\":\"").Append(UiTreeJson.Escape(r.Name));
+                sb.Append("{\"root\":\"").Append(PiUnityJsonHelper.EscapeJson(r.Name));
                 sb.Append("\",\"source\":\"ugui\"");
-                sb.Append(",\"name\":\"").Append(UiTreeJson.Escape(r.Name));
+                sb.Append(",\"name\":\"").Append(PiUnityJsonHelper.EscapeJson(r.Name));
                 sb.Append("\",\"context_type\":\"Scene\"");
                 sb.Append(",\"element_count\":").Append(r.ElementCount);
                 sb.Append(",\"active\":").Append(UiTreeJson.BoolStr(r.Active));
@@ -58,10 +59,10 @@ namespace Pi.UnityHarness.Editor.Capabilities.UiTree
             foreach (var r in toolkitRoots)
             {
                 if (index > 0) sb.Append(",");
-                sb.Append("{\"root\":\"").Append(UiTreeJson.Escape(r.Name));
+                sb.Append("{\"root\":\"").Append(PiUnityJsonHelper.EscapeJson(r.Name));
                 sb.Append("\",\"source\":\"uitoolkit\"");
-                sb.Append(",\"name\":\"").Append(UiTreeJson.Escape(r.Name));
-                sb.Append("\",\"context_type\":\"").Append(UiTreeJson.Escape(r.ContextType));
+                sb.Append(",\"name\":\"").Append(PiUnityJsonHelper.EscapeJson(r.Name));
+                sb.Append("\",\"context_type\":\"").Append(PiUnityJsonHelper.EscapeJson(r.ContextType));
                 sb.Append("\",\"element_count\":").Append(r.ElementCount);
                 sb.Append(",\"active\":").Append(UiTreeJson.BoolStr(r.Active));
                 sb.Append("}");
@@ -205,7 +206,7 @@ namespace Pi.UnityHarness.Editor.Capabilities.UiTree
             UiTreeRefManager.PruneDeadRefs();
 
             var sb = new StringBuilder();
-            sb.Append("{\"status\":\"succeeded\",\"query\":\"").Append(UiTreeJson.Escape(query));
+            sb.Append("{\"status\":\"succeeded\",\"query\":\"").Append(PiUnityJsonHelper.EscapeJson(query));
             sb.Append("\",\"matches\":[");
 
             int nodeIndex = 0;
@@ -381,10 +382,10 @@ namespace Pi.UnityHarness.Editor.Capabilities.UiTree
         {
             var sb = new StringBuilder();
             sb.Append("{\"status\":\"succeeded\"");
-            sb.Append(",\"ref\":\"").Append(UiTreeJson.Escape(refId)).Append("\"");
+            sb.Append(",\"ref\":\"").Append(PiUnityJsonHelper.EscapeJson(refId)).Append("\"");
             sb.Append(",\"source\":\"ugui\"");
-            sb.Append(",\"type\":\"").Append(UiTreeJson.Escape(go.GetType().Name)).Append("\"");
-            sb.Append(",\"name\":\"").Append(UiTreeJson.Escape(go.name)).Append("\"");
+            sb.Append(",\"type\":\"").Append(PiUnityJsonHelper.EscapeJson(go.GetType().Name)).Append("\"");
+            sb.Append(",\"name\":\"").Append(PiUnityJsonHelper.EscapeJson(go.name)).Append("\"");
             sb.Append(",\"active\":").Append(UiTreeJson.BoolStr(go.activeInHierarchy));
 
             var rt = go.GetComponent<RectTransform>();
@@ -408,8 +409,8 @@ namespace Pi.UnityHarness.Editor.Capabilities.UiTree
                     if (i > 0) sb.Append(",");
                     var child = go.transform.GetChild(i).gameObject;
                     var childRef = UiTreeRefManager.FindOrAssignRef(child);
-                    sb.Append("{\"ref\":\"").Append(UiTreeJson.Escape(childRef));
-                    sb.Append("\",\"name\":\"").Append(UiTreeJson.Escape(child.name));
+                    sb.Append("{\"ref\":\"").Append(PiUnityJsonHelper.EscapeJson(childRef));
+                    sb.Append("\",\"name\":\"").Append(PiUnityJsonHelper.EscapeJson(child.name));
                     sb.Append("\",\"active\":").Append(UiTreeJson.BoolStr(child.activeInHierarchy));
                     sb.Append("}");
                 }
@@ -423,7 +424,7 @@ namespace Pi.UnityHarness.Editor.Capabilities.UiTree
             {
                 if (components[i] == null) continue;
                 if (i > 0) sb.Append(",");
-                sb.Append("\"").Append(UiTreeJson.Escape(components[i].GetType().Name)).Append("\"");
+                sb.Append("\"").Append(PiUnityJsonHelper.EscapeJson(components[i].GetType().Name)).Append("\"");
             }
             sb.Append("]");
 
@@ -470,7 +471,7 @@ namespace Pi.UnityHarness.Editor.Capabilities.UiTree
             sb.Append("\"likely_clickable\":").Append(UiTreeJson.BoolStr(likelyClickable && blockedReason == null));
             sb.Append(",\"blocked_reason\":");
             if (blockedReason != null)
-                sb.Append("\"").Append(UiTreeJson.Escape(blockedReason)).Append("\"");
+                sb.Append("\"").Append(PiUnityJsonHelper.EscapeJson(blockedReason)).Append("\"");
             else
                 sb.Append("null");
             sb.Append(",\"event_system_present\":").Append(UiTreeJson.BoolStr(eventSystemPresent));
@@ -483,7 +484,7 @@ namespace Pi.UnityHarness.Editor.Capabilities.UiTree
             {
                 sb.Append(",\"eventsystem_hit_count\":").Append(hitCount);
                 if (topHitName != null)
-                    sb.Append(",\"eventsystem_top_hit\":\"").Append(UiTreeJson.Escape(topHitName)).Append("\"");
+                    sb.Append(",\"eventsystem_top_hit\":\"").Append(PiUnityJsonHelper.EscapeJson(topHitName)).Append("\"");
                 sb.Append(",\"eventsystem_top_hit_matches_target\":").Append(UiTreeJson.BoolStr(topHitMatchesTarget));
             }
             sb.Append("}");
@@ -546,9 +547,9 @@ namespace Pi.UnityHarness.Editor.Capabilities.UiTree
                 return UiTreeJson.Error("Element has no text content: " + refId +
                     " (" + ve.GetType().Name + ")", "no_text");
 
-            return "{\"status\":\"succeeded\",\"ref\":\"" + UiTreeJson.Escape(refId) +
-                   "\",\"type\":\"" + UiTreeJson.Escape(ve.GetType().Name) +
-                   "\",\"text\":\"" + UiTreeJson.Escape(text) + "\"}";
+            return "{\"status\":\"succeeded\",\"ref\":\"" + PiUnityJsonHelper.EscapeJson(refId) +
+                   "\",\"type\":\"" + PiUnityJsonHelper.EscapeJson(ve.GetType().Name) +
+                   "\",\"text\":\"" + PiUnityJsonHelper.EscapeJson(text) + "\"}";
         }
 
         private static string TextFromGameObject(GameObject go, string refId)
@@ -557,16 +558,16 @@ namespace Pi.UnityHarness.Editor.Capabilities.UiTree
             var textComp = go.GetComponent<Text>();
             if (textComp != null)
             {
-                return "{\"status\":\"succeeded\",\"ref\":\"" + UiTreeJson.Escape(refId) +
-                       "\",\"type\":\"Text\",\"text\":\"" + UiTreeJson.Escape(textComp.text) + "\"}";
+                return "{\"status\":\"succeeded\",\"ref\":\"" + PiUnityJsonHelper.EscapeJson(refId) +
+                       "\",\"type\":\"Text\",\"text\":\"" + PiUnityJsonHelper.EscapeJson(textComp.text) + "\"}";
             }
 
             // Try InputField
             var inputField = go.GetComponent<InputField>();
             if (inputField != null)
             {
-                return "{\"status\":\"succeeded\",\"ref\":\"" + UiTreeJson.Escape(refId) +
-                       "\",\"type\":\"InputField\",\"text\":\"" + UiTreeJson.Escape(inputField.text) + "\"}";
+                return "{\"status\":\"succeeded\",\"ref\":\"" + PiUnityJsonHelper.EscapeJson(refId) +
+                       "\",\"type\":\"InputField\",\"text\":\"" + PiUnityJsonHelper.EscapeJson(inputField.text) + "\"}";
             }
 
             // Try TMP via reflection
@@ -583,8 +584,8 @@ namespace Pi.UnityHarness.Editor.Capabilities.UiTree
                         string text = textProp.GetValue(tmpComp) as string;
                         if (text != null)
                         {
-                            return "{\"status\":\"succeeded\",\"ref\":\"" + UiTreeJson.Escape(refId) +
-                                   "\",\"type\":\"TMP_Text\",\"text\":\"" + UiTreeJson.Escape(text) + "\"}";
+                            return "{\"status\":\"succeeded\",\"ref\":\"" + PiUnityJsonHelper.EscapeJson(refId) +
+                                   "\",\"type\":\"TMP_Text\",\"text\":\"" + PiUnityJsonHelper.EscapeJson(text) + "\"}";
                         }
                     }
                 }

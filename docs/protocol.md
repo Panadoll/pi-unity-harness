@@ -118,7 +118,7 @@ pipe 名为 `pi_unity_` + 项目路径 SHA-256 前 6 字节（12 位 hex）；`s
 | `ping` | 无 | `{"pong": true}` | 保活 / 连通性探测 |
 | `status` | 无 | 状态负载（见 6.1） | broker 级状态；不依赖 managed ready |
 | `timeline` | `{limit?, requestType?, action?, success?}` | 审计查询结果（见 7） | `limit` 1–200 默认 50；`success` = `all`/`success`/`failure`；查询本身不入审计 |
-| `set_yolo` | `{mode: "off"\|"detect"\|"safe-auto"}` | `{"yoloMode": "..."}` | 设置 Win32 模态弹窗自动处理策略；`safe-auto` 只点白名单按钮（Scene 弹窗点 Don't Save/Save，Import 弹窗点 Apply，通用 OK/Yes） |
+| `set_yolo` | `{mode: "off"\|"detect"\|"safe-auto"}` | `{"yoloMode": "..."}` | 设置 Win32 模态弹窗自动处理策略，默认 `off`；`safe-auto` 只点白名单按钮（Scene 弹窗点 Don't Save/Save，Import 弹窗点 Apply，通用 OK/Yes）。模态是否存在以 `status.modalObservation` 为准 |
 | `bridge_capabilities` | 无 | `{protocolVersion, capabilities[]}` | 协议版本与能力列表 |
 
 ### 4.2 Managed 转发（需要 `managedState == ready`）
@@ -192,7 +192,7 @@ managed 处于 `initializing` / `reloading` / `quitting` 时，此类请求立�
   "inFlight": 0,
   "capabilities": ["native-broker", "state-plane-v1", "..."],
   "modalObservation": { "present": false, "detectedAtMs": 0, "windows": [] },
-  "yoloMode": "detect"
+  "yoloMode": "off"
 }
 ```
 
@@ -200,7 +200,7 @@ managed 处于 `initializing` / `reloading` / `quitting` 时，此类请求立�
 |------|------|
 | `managedState` | `initializing` / `ready` / `reloading` / `quitting` |
 | `connected` | 当前是否有客户端连接（state plane 中用作"被占用"标志） |
-| `editorStatus` | 分号分隔状态串，第一段为状态（`editing` / `playing` / `reloading` / `quitting`），后接 `key=value`：`focus=foreground|background`、`window=normal|minimized`、`modal=1`（有模态弹窗）、`mainThreadStale=1`（主线程停摆） |
+| `editorStatus` | 分号分隔状态串，第一段为状态（`editing` / `playing` / `blocked` / `reloading` / `quitting`），后接 `key=value`：`focus=foreground|background`、`window=normal|minimized`、`mainThreadStale=1`（主线程停摆）。Win32 模态弹窗以 `modalObservation.present` 为准，不再依赖 `modal=1` |
 | `capabilities` | 能力列表：`native-broker`、`direct-status`、`reload-stable-pipe`、`state-plane-v1`、`background-runner`、`focus-state`、`heartbeat-timeout`、`request-timeout`、`client-heartbeat-timeout`、`context-snapshot-v1`、`action-timeline-v1`、`modal-probe-v1` |
 | `modalObservation.windows[]` | `{hwnd, title, class, buttons[]}`；`class` 为 Win32 窗口类（弹窗为 `#32770`） |
 

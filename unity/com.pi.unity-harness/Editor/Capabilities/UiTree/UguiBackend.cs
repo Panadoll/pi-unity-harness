@@ -6,6 +6,7 @@ using Pi.UnityHarness.Editor.Capabilities.Shared;
 using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.UI;
+using Pi.UnityHarness.Editor;
 
 namespace Pi.UnityHarness.Editor.Capabilities.UiTree
 {
@@ -378,22 +379,22 @@ namespace Pi.UnityHarness.Editor.Capabilities.UiTree
 
         internal static void AppendNodeJson(StringBuilder sb, UguiNode node, bool includeExtra = true)
         {
-            sb.Append("{\"ref\":\"").Append(UiTreeJson.Escape(node.Ref));
+            sb.Append("{\"ref\":\"").Append(PiUnityJsonHelper.EscapeJson(node.Ref));
             sb.Append("\",\"source\":\"ugui\"");
-            sb.Append(",\"type\":\"").Append(UiTreeJson.Escape(node.Type));
-            sb.Append("\",\"name\":\"").Append(UiTreeJson.Escape(node.Name));
+            sb.Append(",\"type\":\"").Append(PiUnityJsonHelper.EscapeJson(node.Type));
+            sb.Append("\",\"name\":\"").Append(PiUnityJsonHelper.EscapeJson(node.Name));
             sb.Append("\",\"text\":");
             if (node.Text != null)
-                sb.Append("\"").Append(UiTreeJson.Escape(node.Text)).Append("\"");
+                sb.Append("\"").Append(PiUnityJsonHelper.EscapeJson(node.Text)).Append("\"");
             else
                 sb.Append("null");
-            sb.Append(",\"path\":\"").Append(UiTreeJson.Escape(node.Path));
+            sb.Append(",\"path\":\"").Append(PiUnityJsonHelper.EscapeJson(node.Path));
             sb.Append("\",\"enabled\":").Append(UiTreeJson.BoolStr(node.Enabled));
             sb.Append(",\"visible\":").Append(UiTreeJson.BoolStr(node.Visible));
             sb.Append(",\"interactive\":").Append(UiTreeJson.BoolStr(node.Interactive));
             sb.Append(",\"interaction\":");
             if (node.Interaction != null)
-                sb.Append("\"").Append(UiTreeJson.Escape(node.Interaction)).Append("\"");
+                sb.Append("\"").Append(PiUnityJsonHelper.EscapeJson(node.Interaction)).Append("\"");
             else
                 sb.Append("null");
             sb.Append(",\"rect\":{\"x\":").Append(UiTreeJson.FloatStr(node.RectX));

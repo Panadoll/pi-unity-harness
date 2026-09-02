@@ -9,11 +9,6 @@ namespace Pi.UnityHarness.Editor.Capabilities.UiTree
     /// </summary>
     internal static class UiTreeJson
     {
-        internal static string Escape(string s)
-        {
-            return PiUnityJsonHelper.EscapeJson(s);
-        }
-
         internal static string BoolStr(bool v) => v ? "true" : "false";
 
         internal static string FloatStr(float v)
@@ -41,7 +36,7 @@ namespace Pi.UnityHarness.Editor.Capabilities.UiTree
                 foreach (var value in values)
                 {
                     if (needsComma) sb.Append(",");
-                    sb.Append("\"").Append(Escape(value)).Append("\"");
+                    sb.Append("\"").Append(PiUnityJsonHelper.EscapeJson(value)).Append("\"");
                     needsComma = true;
                 }
             }
@@ -71,7 +66,7 @@ namespace Pi.UnityHarness.Editor.Capabilities.UiTree
             float gameViewWidth = 0f, float gameViewHeight = 0f,
             string[] handlers = null, float dragDistance = 0f)
         {
-            sb.Append(",\"input_hint\":{\"action\":\"").Append(Escape(action)).Append("\"");
+            sb.Append(",\"input_hint\":{\"action\":\"").Append(PiUnityJsonHelper.EscapeJson(action)).Append("\"");
 
             if (includeCoordinates)
             {
@@ -80,9 +75,9 @@ namespace Pi.UnityHarness.Editor.Capabilities.UiTree
             }
 
             if (!string.IsNullOrEmpty(button))
-                sb.Append(",\"button\":\"").Append(Escape(button)).Append("\"");
+                sb.Append(",\"button\":\"").Append(PiUnityJsonHelper.EscapeJson(button)).Append("\"");
 
-            sb.Append(",\"coordinate_space\":\"").Append(Escape(coordinateSpace)).Append("\"");
+            sb.Append(",\"coordinate_space\":\"").Append(PiUnityJsonHelper.EscapeJson(coordinateSpace)).Append("\"");
             if (gameViewWidth > 0f && gameViewHeight > 0f)
             {
                 sb.Append(",\"gameview_size\":{\"w\":").Append(FloatStr(gameViewWidth));
@@ -100,11 +95,11 @@ namespace Pi.UnityHarness.Editor.Capabilities.UiTree
                 AppendSafeDrag(sb, "safe_drag_left", x, y, x - dragDistance, y, button);
                 AppendSafeDrag(sb, "safe_drag_right", x, y, x + dragDistance, y, button);
             }
-            sb.Append(",\"source\":\"").Append(Escape(source)).Append("\"");
+            sb.Append(",\"source\":\"").Append(PiUnityJsonHelper.EscapeJson(source)).Append("\"");
             sb.Append(",\"requires_focus\":").Append(BoolStr(requiresFocus));
-            sb.Append(",\"target_ref\":\"").Append(Escape(targetRef)).Append("\"");
-            sb.Append(",\"target_name\":\"").Append(Escape(targetName)).Append("\"");
-            sb.Append(",\"target_type\":\"").Append(Escape(targetType)).Append("\"");
+            sb.Append(",\"target_ref\":\"").Append(PiUnityJsonHelper.EscapeJson(targetRef)).Append("\"");
+            sb.Append(",\"target_name\":\"").Append(PiUnityJsonHelper.EscapeJson(targetName)).Append("\"");
+            sb.Append(",\"target_type\":\"").Append(PiUnityJsonHelper.EscapeJson(targetType)).Append("\"");
             sb.Append("}");
         }
 
@@ -116,7 +111,7 @@ namespace Pi.UnityHarness.Editor.Capabilities.UiTree
             sb.Append(",\"from_y\":").Append(FloatStr(fromY));
             sb.Append(",\"to_x\":").Append(FloatStr(toX));
             sb.Append(",\"to_y\":").Append(FloatStr(toY));
-            sb.Append(",\"button\":\"").Append(Escape(string.IsNullOrEmpty(button) ? "left" : button)).Append("\"");
+            sb.Append(",\"button\":\"").Append(PiUnityJsonHelper.EscapeJson(string.IsNullOrEmpty(button) ? "left" : button)).Append("\"");
             sb.Append(",\"steps\":15}");
         }
 
@@ -133,7 +128,7 @@ namespace Pi.UnityHarness.Editor.Capabilities.UiTree
                 sb.Append(",\"actions\":[");
                 sb.Append("{\"type\":\"click\",\"x\":").Append(FloatStr(x));
                 sb.Append(",\"y\":").Append(FloatStr(y));
-                sb.Append(",\"button\":\"").Append(Escape(button)).Append("\"},");
+                sb.Append(",\"button\":\"").Append(PiUnityJsonHelper.EscapeJson(button)).Append("\"},");
                 sb.Append("{\"type\":\"type_text\",\"text\":\"__USER_INPUT__\"}");
                 sb.Append("]}");
                 return;
@@ -167,7 +162,7 @@ namespace Pi.UnityHarness.Editor.Capabilities.UiTree
                 {
                     sb.Append(",\"to_x\":\"__TARGET_X__\",\"to_y\":\"__TARGET_Y__\"");
                 }
-                sb.Append(",\"button\":\"").Append(Escape(button)).Append("\"}");
+                sb.Append(",\"button\":\"").Append(PiUnityJsonHelper.EscapeJson(button)).Append("\"}");
                 sb.Append("]}");
                 return;
             }
@@ -190,8 +185,8 @@ namespace Pi.UnityHarness.Editor.Capabilities.UiTree
         /// </summary>
         internal static string Error(string message, string errorType)
         {
-            return "{\"status\":\"failed\",\"error\":\"" + Escape(message) +
-                   "\",\"error_type\":\"" + Escape(errorType) + "\"}";
+            return "{\"status\":\"failed\",\"error\":\"" + PiUnityJsonHelper.EscapeJson(message) +
+                   "\",\"error_type\":\"" + PiUnityJsonHelper.EscapeJson(errorType) + "\"}";
         }
     }
 }
