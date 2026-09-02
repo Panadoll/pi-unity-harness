@@ -1,0 +1,18 @@
+using System.Runtime.CompilerServices;
+
+[assembly: InternalsVisibleTo("UnityCLILoop.CompositionRoot.Editor")]
+[assembly: InternalsVisibleTo("UnityCLILoop.Application")]
+[assembly: InternalsVisibleTo("UnityCLILoop.FirstPartyTools.Screenshot.Editor")]
+[assembly: InternalsVisibleTo("UnityCLILoop.FirstPartyTools.PausePoint.Editor")]
+[assembly: InternalsVisibleTo("UnityCLILoop.Tests.Editor")]
+[assembly: InternalsVisibleTo("UnityCLILoop.Tests.Editor.SourcePausePointCapture")]
+[assembly: InternalsVisibleTo("UnityCLILoop.Tests.PlayMode")]
+[assembly: InternalsVisibleTo("UnityCLILoop.Dev")]
+[assembly: InternalsVisibleTo("Pi.UnityHarness.Editor")]
+[assembly: InternalsVisibleTo("Pi.UnityHarness.Editor.Tests")]
+[assembly: InternalsVisibleTo("UnityCLILoop.FirstPartyTools.HotReload.Editor")]
+[assembly: InternalsVisibleTo("UnityCLILoop.FirstPartyTools.Compiler.Editor")]
+[assembly: InternalsVisibleTo("UnityCLILoop.FirstPartyTools.ReplayInput.Editor")]
+[assembly: InternalsVisibleTo("UnityCLILoop.FirstPartyTools.RecordInput.Editor")]
+[assembly: InternalsVisibleTo("UnityCLILoop.FirstPartyTools.Common.InputSystem.Editor")]
+[assembly: InternalsVisibleTo("UnityCLILoop.FirstPartyTools.Common.InputRecording.Editor")]

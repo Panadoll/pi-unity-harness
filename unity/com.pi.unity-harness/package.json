@@ -6,7 +6,8 @@
   "unity": "2021.3",
   "dependencies": {
     "com.unity.ugui": "1.0.0",
-    "com.unity.nuget.newtonsoft-json": "3.2.2"
+    "com.unity.nuget.newtonsoft-json": "3.2.2",
+    "com.unity.nuget.mono-cecil": "1.11.4"
   },
   "author": { "name": "Pi Unity Harness" },
   "keywords": ["pi", "unity", "agent", "automation", "bridge"]

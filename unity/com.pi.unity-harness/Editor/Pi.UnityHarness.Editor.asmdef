@@ -6,7 +6,16 @@
     "Unity.Pipeline",
     "Unity.Pipeline.Editor",
     "Unity.Nuget.Newtonsoft-Json",
-    "UnityEngine.UI"
+    "UnityEngine.UI",
+    "UnityCLILoop.ToolContracts",
+    "UnityCLILoop.PausePoints.Runtime",
+    "UnityCLILoop.Runtime",
+    "UnityCLILoop.FirstPartyTools.HotReload.Editor",
+    "UnityCLILoop.FirstPartyTools.PausePoint.Editor",
+    "UnityCLILoop.FirstPartyTools.ReplayInput.Editor",
+    "UnityCLILoop.FirstPartyTools.RecordInput.Editor",
+    "UnityCLILoop.FirstPartyTools.Screenshot.Editor",
+    "UnityCLILoop.FirstPartyTools.Common.InputRecording.Editor"
   ],
   "includePlatforms": [
     "Editor"

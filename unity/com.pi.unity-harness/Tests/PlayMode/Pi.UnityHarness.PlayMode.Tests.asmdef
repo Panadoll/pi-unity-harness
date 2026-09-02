@@ -9,13 +9,13 @@
     "UnityEngine.UI",
     "Unity.InputSystem"
   ],
-  "includePlatforms": [],
+  "includePlatforms": ["Editor"],
   "excludePlatforms": [],
   "allowUnsafeCode": false,
-  "overrideReferences": false,
+  "overrideReferences": true,
   "precompiledReferences": ["nunit.framework.dll"],
   "autoReferenced": false,
-  "defineConstraints": ["UNITY_INCLUDE_TESTS", "PI_UNITY_INPUT_SYSTEM"],
+  "defineConstraints": ["UNITY_INCLUDE_TESTS", "PI_UNITY_INPUT_SYSTEM", "PI_UNITY_PLAYMODE_TESTS"],
   "versionDefines": [
     {
       "name": "com.unity.inputsystem",

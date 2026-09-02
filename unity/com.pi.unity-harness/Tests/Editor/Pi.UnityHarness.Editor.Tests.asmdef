@@ -8,7 +8,13 @@
     "Unity.Pipeline",
     "Unity.Pipeline.Editor",
     "Unity.Nuget.Newtonsoft-Json",
-    "Unity.InputSystem"
+    "Unity.InputSystem",
+    "UnityEngine.UI",
+    "UnityCLILoop.ToolContracts",
+    "UnityCLILoop.FirstPartyTools.HotReload.Editor",
+    "UnityCLILoop.FirstPartyTools.PausePoint.Editor",
+    "UnityCLILoop.FirstPartyTools.Screenshot.Editor",
+    "UnityCLILoop.FirstPartyTools.Common.GameView.Editor"
   ],
   "includePlatforms": ["Editor"],
   "excludePlatforms": [],
