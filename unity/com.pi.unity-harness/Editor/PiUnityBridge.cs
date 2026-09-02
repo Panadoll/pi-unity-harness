@@ -326,6 +326,36 @@ namespace Pi.UnityHarness.Editor
                     return;
             }
         }
+
+        private static void ContextSnapshot(NativeRequest request)
+        {
+            ExecutePayload payload = request.payload;
+            int maxDepth = payload != null && payload.maxDepth >= 0
+                ? payload.maxDepth
+                : PiUnityContextSnapshot.DefaultMaxDepth;
+            int maxNodes = payload != null && payload.maxNodes > 0
+                ? payload.maxNodes
+                : PiUnityContextSnapshot.DefaultMaxNodes;
+            int logLimit = payload != null && payload.logLimit >= 0
+                ? payload.logLimit
+                : PiUnityContextSnapshot.DefaultLogLimit;
+
+            try
+            {
+                string snapshot = PiUnityContextSnapshot.BuildJson(
+                    maxDepth,
+                    maxNodes,
+                    logLimit,
+                    payload != null ? payload.logLevel : null,
+                    payload != null && payload.includeComponents);
+                CompleteJson(request.id, PiUnityJsonHelper.SuccessJson(request.id, snapshot));
+            }
+            catch (Exception ex)
+            {
+                CompleteError(request.id, "context_snapshot_failed: " + ex.Message, "snapshot_error");
+            }
+        }
+
         private static void Recompile(NativeRequest request)
         {
             UnityEngine.Debug.Log("[PiUnityHarness] recompile request id=" + request.id);
