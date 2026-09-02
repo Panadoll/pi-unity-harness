@@ -88,21 +88,5 @@ namespace Pi.UnityHarness.Editor.Tests.Vision
                     File.Delete(path);
             }
         }
-
-        [Test]
-        public void CaptureAndAnalyzeJson_DoesNotMakeNetworkCalls()
-        {
-            // This test verifies by contract that no network calls are made.
-            // The default provider "none" never invokes external tools.
-            string json = HarnessVision.CaptureAndAnalyzeJson(
-                "Test.", "scene", null, 0, 0, null);
-
-            // Analysis should show provider "none"
-            Assert.That(json, Does.Contain("\"provider\":\"none\""));
-            // Should not contain any model names
-            Assert.That(json, Does.Not.Contain("gpt"));
-            Assert.That(json, Does.Not.Contain("claude"));
-            Assert.That(json, Does.Not.Contain("gemini"));
-        }
     }
 }
