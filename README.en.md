@@ -121,8 +121,15 @@ pi-unity session end
 
 ---
 
-## License
+## License & Third-Party Notices
 
+Core repository code is licensed under the **MIT License** — see [LICENSE](LICENSE).
 
-Core repository code is licensed under the MIT License — see [LICENSE](LICENSE).
-`unity/com.pi.pipeline.compat/` is released under the Unity Package Distribution License — see `unity/com.pi.pipeline.compat/LICENSE.md`.
+### Third-Party Acknowledgements
+
+This project integrates the following open-source projects and libraries:
+
+- **[UnityCliLoop (Uloop)](https://github.com/hatayama)** (MIT License) - Provides method-level hot reloading (Hot Reload V3) and runtime pause points (Pause Point), located under `unity/com.pi.unity-harness/Vendor/Uloop/`.
+- **[Lib.Harmony](https://github.com/pardeike/Harmony)** by Andreas Pardeike (MIT License) - Provides runtime IL method patching and JIT hooks (vendored as `UnityCliLoop.0Harmony.dll`, see `unity/com.pi.unity-harness/Vendor/Uloop/Editor/PausePoint/Plugins/LICENSE.md`).
+- **[.NET Roslyn Libraries](https://github.com/dotnet/roslyn)** by .NET Foundation (MIT License) - Provides in-memory C# dynamic code analysis and compilation metadata, see `unity/com.pi.unity-harness/Vendor/Uloop/Editor/Compiler/Plugins/CodeAnalysis/LICENSE.md`.
+- **Unity.Pipeline** by Unity Technologies - `unity/com.pi.pipeline.compat/` is released under the Unity Package Distribution License — see `unity/com.pi.pipeline.compat/LICENSE.md`.
