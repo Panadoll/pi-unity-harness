@@ -198,23 +198,24 @@ export default function (pi: ExtensionAPI) {
   });
 
   // ---- /unity-harness-settings command ----
-  pi.registerCommand({
-    name: "unity-harness-settings",
+  pi.registerCommand("unity-harness-settings", {
     description: "Inspect or toggle pi-unity-harness settings (enabled/disabled)",
-    async execute(args) {
+    handler: async (args, ctx) => {
       const trimmed = args.trim().toLowerCase();
       if (trimmed === "enable" || trimmed === "on" || trimmed === "1") {
         persistEnabled(true);
         settings = loadUnityHarnessSettings();
         void refreshDynamicPipelineTools();
-        return "pi-unity-harness enabled.";
+        ctx.ui.notify("pi-unity-harness enabled.", "info");
+        return;
       }
       if (trimmed === "disable" || trimmed === "off" || trimmed === "0") {
         persistEnabled(false);
         settings = loadUnityHarnessSettings();
-        return "pi-unity-harness disabled.";
+        ctx.ui.notify("pi-unity-harness disabled.", "info");
+        return;
       }
-      return inspectUnityHarnessSettings();
+      ctx.ui.notify(inspectUnityHarnessSettings(), "info");
     },
   });
 
