@@ -23,6 +23,7 @@
 
 ### Changed
 
+- Skill 安装器（`skills install`）引入基于 `.pi-unity-manifest.json` 的文件同步机制：重装时自动收敛清理源端已删除/改名的废弃文件，同时严格保留用户自行添加的文件与自定义目录。
 - `skills/` 收成一份 `pi-unity`：子命令细节在 `skills/pi-unity/references/`。`pi-unity skills install` 递归拷整个 skill 目录。已安装的九份细粒度 skill（目录里只有匹配的 `SKILL.md`）会在下次 install 时删掉。pipeline 示例改为 `gameobject_find` / `gameobject_create` / `uitree_find -p query=`。skill 不再要求先跑 `pi-unity mark`。
 - 结构收口：`PiUnityBridge` 拆成 Native/Pump/Status/Eval/Session partial；CLI 拆成 args/client/discovery/output/commands；native broker 拆出 `imp.rs`/`ffi.rs`。ping/status 只由 native 回答；C# 不再扫 `#32770`。YOLO 默认 `off`，模态以 `modalObservation` 为准。编译入口统一为 `PiUnityCompileCoordinator.RequestRecompile`。
 - `.pi/extensions/pi-unity-harness` 由直连 named pipe 的完整实现改为 typed tools
