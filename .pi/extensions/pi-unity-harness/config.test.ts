@@ -43,9 +43,11 @@ test("coerceEnabled accepts string/number forms", () => {
   assert.equal(coerceEnabled(false), false);
   assert.equal(coerceEnabled("false"), false);
   assert.equal(coerceEnabled("off"), false);
+  assert.equal(coerceEnabled("disable"), false);
   assert.equal(coerceEnabled(0), false);
   assert.equal(coerceEnabled(true), true);
   assert.equal(coerceEnabled("true"), true);
+  assert.equal(coerceEnabled("enable"), true);
   assert.equal(coerceEnabled(1), true);
   assert.equal(coerceEnabled("maybe"), undefined);
 });

@@ -8,21 +8,17 @@ import { promisify } from "node:util";
 const execFileAsync = promisify(execFile);
 
 import {
+  coerceEnabled,
   describeSettingsPaths,
-  extensionDirPath,
   inspectUnityHarnessSettings,
   loadUnityHarnessSettings,
   persistEnabled,
-  SETTINGS_KEY,
 } from "./config.ts";
 
 import {
   filterPipelineCommands,
   normalizePipelineToolName,
-  parameterToTypeBox,
-  pipelineCommandSummary,
   schemaToTypeBox,
-  type PipelineCommandInfo,
   type PipelineCommandList,
   type TypeBoxLike,
 } from "./helpers.ts";
@@ -146,6 +142,24 @@ function formatResult(cliRes: CliExecutionResult): { content: Array<{ type: "tex
   };
 }
 
+/** Push `--flag <value>` when the value is present (empty string is skipped). */
+function pushArg(args: string[], flag: string, value: string | number | undefined) {
+  if (value === undefined || value === "") return;
+  args.push(flag, String(value));
+}
+
+/** Tool parameter schema. Names in `required` stay required; the rest are optional. */
+function toolSchema(fields: Record<string, any>, required: string[] = []): any {
+  return Type.Object(
+    Object.fromEntries(
+      Object.entries(fields).map(([name, def]) => [
+        name,
+        required.includes(name) ? def : Type.Optional(def),
+      ]),
+    ),
+  );
+}
+
 export default function (pi: ExtensionAPI) {
   let settings = loadUnityHarnessSettings();
   const dynamicallyRegisteredTools = new Set<string>();
@@ -159,7 +173,14 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
-  // Register dynamic pipeline commands
+  async function runTool(
+    args: string[],
+    options?: { projectPath?: string; timeoutMs?: number; signal?: AbortSignal },
+  ) {
+    assertEnabled();
+    return formatResult(await runPiUnityCli(args, options));
+  }
+
   async function refreshDynamicPipelineTools() {
     try {
       const res = await runPiUnityCli(["list-commands"], { timeoutMs: 15000 });
@@ -180,10 +201,7 @@ export default function (pi: ExtensionAPI) {
             promptSnippet: `Use ${toolName} to execute the ${cmd.name} pipeline command.`,
             parameters: schema,
             async execute(_toolCallId, params) {
-              assertEnabled();
-              const args = ["pipeline", cmd.name, "--params-json", JSON.stringify(params ?? {})];
-              const execRes = await runPiUnityCli(args);
-              return formatResult(execRes);
+              return runTool(["pipeline", cmd.name, "--params-json", JSON.stringify(params ?? {})]);
             },
           });
           dynamicallyRegisteredTools.add(toolName);
@@ -203,23 +221,18 @@ export default function (pi: ExtensionAPI) {
   });
 
   // ---- /unity-harness-settings command ----
-  pi.registerCommand({
-    name: "unity-harness-settings",
+  pi.registerCommand("unity-harness-settings", {
     description: "Inspect or toggle pi-unity-harness settings (enabled/disabled)",
-    async execute(args) {
-      const trimmed = args.trim().toLowerCase();
-      if (trimmed === "enable" || trimmed === "on" || trimmed === "1") {
-        persistEnabled(true);
-        settings = loadUnityHarnessSettings();
-        void refreshDynamicPipelineTools();
-        return "pi-unity-harness enabled.";
+    handler: (args, ctx) => {
+      const enable = coerceEnabled(args.trim());
+      if (enable === undefined) {
+        ctx.ui.notify(inspectUnityHarnessSettings(), "info");
+        return;
       }
-      if (trimmed === "disable" || trimmed === "off" || trimmed === "0") {
-        persistEnabled(false);
-        settings = loadUnityHarnessSettings();
-        return "pi-unity-harness disabled.";
-      }
-      return inspectUnityHarnessSettings();
+      persistEnabled(enable);
+      settings = loadUnityHarnessSettings();
+      if (enable) void refreshDynamicPipelineTools();
+      ctx.ui.notify(`pi-unity-harness ${enable ? "enabled" : "disabled"}.`, "info");
     },
   });
 
@@ -229,13 +242,11 @@ export default function (pi: ExtensionAPI) {
     label: "Unity Ping",
     description: "Ping the Unity native broker via pi-unity CLI to verify connection responsiveness.",
     promptSnippet: "Use unity_ping to probe whether the Unity Editor is running and responding.",
-    parameters: Type.Object({
-      timeoutMs: Type.Optional(Type.Number({ description: "Timeout in milliseconds, default 5000" })),
+    parameters: toolSchema({
+      timeoutMs: Type.Number({ description: "Timeout in milliseconds, default 5000" }),
     }),
     async execute(_toolCallId, params) {
-      assertEnabled();
-      const res = await runPiUnityCli(["ping", "--timeout", String(params.timeoutMs ?? 5000)]);
-      return formatResult(res);
+      return runTool(["ping", "--timeout", String(params.timeoutMs ?? 5000)]);
     },
   });
 
@@ -245,13 +256,11 @@ export default function (pi: ExtensionAPI) {
     label: "Unity Status",
     description: "Get Unity Editor and broker status, domain reload state, and modal window probe via pi-unity status.",
     promptSnippet: "Use unity_status to check Editor state, domain reload generation, and modal dialogs.",
-    parameters: Type.Object({
-      timeoutMs: Type.Optional(Type.Number({ description: "Timeout in milliseconds, default 5000" })),
+    parameters: toolSchema({
+      timeoutMs: Type.Number({ description: "Timeout in milliseconds, default 5000" }),
     }),
     async execute(_toolCallId, params) {
-      assertEnabled();
-      const res = await runPiUnityCli(["status", "--timeout", String(params.timeoutMs ?? 5000)]);
-      return formatResult(res);
+      return runTool(["status", "--timeout", String(params.timeoutMs ?? 5000)]);
     },
   });
 
@@ -261,25 +270,23 @@ export default function (pi: ExtensionAPI) {
     label: "Unity Snapshot",
     description: "Get context snapshot of active scene hierarchy, selection, components, and console logs via pi-unity snapshot.",
     promptSnippet: "Use unity_snapshot to observe scene hierarchy, selection, and error logs before and after changes.",
-    parameters: Type.Object({
-      depth: Type.Optional(Type.Integer({ description: "Max hierarchy depth to traverse (default: 3)" })),
-      maxNodes: Type.Optional(Type.Integer({ description: "Max GameObjects to include (default: 500)" })),
-      logLimit: Type.Optional(Type.Integer({ description: "Max recent logs to include (default: 50)" })),
-      logLevel: Type.Optional(Type.String({ description: "Log level filter: error, warning, or all (default: error)" })),
-      noComponents: Type.Optional(Type.Boolean({ description: "Omit component details for smaller output" })),
-      timeoutMs: Type.Optional(Type.Number({ description: "Timeout in milliseconds, default 20000" })),
+    parameters: toolSchema({
+      depth: Type.Integer({ description: "Max hierarchy depth to traverse (default: 3)" }),
+      maxNodes: Type.Integer({ description: "Max GameObjects to include (default: 500)" }),
+      logLimit: Type.Integer({ description: "Max recent logs to include (default: 50)" }),
+      logLevel: Type.String({ description: "Log level filter: error, warning, or all (default: error)" }),
+      noComponents: Type.Boolean({ description: "Omit component details for smaller output" }),
+      timeoutMs: Type.Number({ description: "Timeout in milliseconds, default 20000" }),
     }),
     async execute(_toolCallId, params) {
-      assertEnabled();
       const args = ["snapshot"];
-      if (params.depth !== undefined) args.push("--depth", String(params.depth));
-      if (params.maxNodes !== undefined) args.push("--max-nodes", String(params.maxNodes));
-      if (params.logLimit !== undefined) args.push("--log-limit", String(params.logLimit));
-      if (params.logLevel !== undefined) args.push("--log-level", params.logLevel);
+      pushArg(args, "--depth", params.depth);
+      pushArg(args, "--max-nodes", params.maxNodes);
+      pushArg(args, "--log-limit", params.logLimit);
+      pushArg(args, "--log-level", params.logLevel);
       if (params.noComponents) args.push("--no-components");
-      if (params.timeoutMs !== undefined) args.push("--timeout", String(params.timeoutMs));
-      const res = await runPiUnityCli(args);
-      return formatResult(res);
+      pushArg(args, "--timeout", params.timeoutMs);
+      return runTool(args);
     },
   });
 
@@ -289,16 +296,14 @@ export default function (pi: ExtensionAPI) {
     label: "Unity Eval",
     description: "Execute C# code or expression in the Unity Editor main thread via pi-unity eval.",
     promptSnippet: "Use unity_eval for short C# probes on the Unity main thread; prefer unity_eval_file for multi-line scripts.",
-    parameters: Type.Object({
+    parameters: toolSchema({
       code: Type.String({ description: "C# code or expression to execute in Unity Editor." }),
-      timeoutMs: Type.Optional(Type.Number({ description: "Timeout in milliseconds, default 30000" })),
-    }),
+      timeoutMs: Type.Number({ description: "Timeout in milliseconds, default 30000" }),
+    }, ["code"]),
     async execute(_toolCallId, params) {
-      assertEnabled();
       const args = ["eval", params.code];
-      if (params.timeoutMs !== undefined) args.push("--timeout", String(params.timeoutMs));
-      const res = await runPiUnityCli(args);
-      return formatResult(res);
+      pushArg(args, "--timeout", params.timeoutMs);
+      return runTool(args);
     },
   });
 
@@ -308,16 +313,14 @@ export default function (pi: ExtensionAPI) {
     label: "Unity Eval File",
     description: "Execute a C# script file or .repl file in the Unity Editor main thread via pi-unity eval -f.",
     promptSnippet: "Use unity_eval_file to run multi-line C# from a file (e.g. Temp/PiUnityHarness/AgentScratch/*.repl).",
-    parameters: Type.Object({
+    parameters: toolSchema({
       filePath: Type.String({ description: "Path to .cs or .repl file (relative to project root or absolute)." }),
-      timeoutMs: Type.Optional(Type.Number({ description: "Timeout in milliseconds, default 30000" })),
-    }),
+      timeoutMs: Type.Number({ description: "Timeout in milliseconds, default 30000" }),
+    }, ["filePath"]),
     async execute(_toolCallId, params) {
-      assertEnabled();
       const args = ["eval", "-f", params.filePath];
-      if (params.timeoutMs !== undefined) args.push("--timeout", String(params.timeoutMs));
-      const res = await runPiUnityCli(args);
-      return formatResult(res);
+      pushArg(args, "--timeout", params.timeoutMs);
+      return runTool(args);
     },
   });
 
@@ -327,15 +330,13 @@ export default function (pi: ExtensionAPI) {
     label: "Unity Recompile",
     description: "Trigger Unity script compilation and wait for domain reload to complete via pi-unity compile.",
     promptSnippet: "Use unity_recompile after C# edits to trigger compilation and await domain reload.",
-    parameters: Type.Object({
-      timeoutMs: Type.Optional(Type.Number({ description: "Timeout in milliseconds, default 120000" })),
+    parameters: toolSchema({
+      timeoutMs: Type.Number({ description: "Timeout in milliseconds, default 120000" }),
     }),
     async execute(_toolCallId, params) {
-      assertEnabled();
       const args = ["compile"];
-      if (params.timeoutMs !== undefined) args.push("--timeout", String(params.timeoutMs));
-      const res = await runPiUnityCli(args, { timeoutMs: (params.timeoutMs ?? 120000) + 10000 });
-      return formatResult(res);
+      pushArg(args, "--timeout", params.timeoutMs);
+      return runTool(args, { timeoutMs: (params.timeoutMs ?? 120000) + 10000 });
     },
   });
 
@@ -345,16 +346,15 @@ export default function (pi: ExtensionAPI) {
     label: "Unity List Commands",
     description: "List all registered Unity Pipeline [CliCommand] handlers via pi-unity list-commands.",
     promptSnippet: "Use unity_list_commands to discover available pipeline commands and parameter schemas.",
-    parameters: Type.Object({
-      timeoutMs: Type.Optional(Type.Number({ description: "Timeout in milliseconds, default 15000" })),
+    parameters: toolSchema({
+      timeoutMs: Type.Number({ description: "Timeout in milliseconds, default 15000" }),
     }),
     async execute(_toolCallId, params) {
       assertEnabled();
       const args = ["list-commands"];
-      if (params.timeoutMs !== undefined) args.push("--timeout", String(params.timeoutMs));
-      const res = await runPiUnityCli(args);
+      pushArg(args, "--timeout", params.timeoutMs);
       void refreshDynamicPipelineTools();
-      return formatResult(res);
+      return runTool(args);
     },
   });
 
@@ -364,39 +364,31 @@ export default function (pi: ExtensionAPI) {
     label: "Unity Pipeline",
     description: "Execute a registered Unity Pipeline [CliCommand] via pi-unity pipeline. Omit command/name to list available commands.",
     promptSnippet: "Use unity_pipeline to run pipeline commands like uitree_*, assets_*, input_*, etc.",
-    parameters: Type.Object({
-      command: Type.Optional(Type.String({ description: "Name of the pipeline command to execute (alias for name)." })),
-      name: Type.Optional(Type.String({ description: "Name of the pipeline command to execute." })),
-      params: Type.Optional(Type.Unsafe({
+    parameters: toolSchema({
+      command: Type.String({ description: "Name of the pipeline command to execute (alias for name)." }),
+      name: Type.String({ description: "Name of the pipeline command to execute." }),
+      params: Type.Unsafe({
         type: "object",
         description: "Parameters object passed to the pipeline command (alias for parameters).",
         additionalProperties: true,
-      })),
-      parameters: Type.Optional(Type.Unsafe({
+      }),
+      parameters: Type.Unsafe({
         type: "object",
         description: "Parameters object passed to the pipeline command.",
         additionalProperties: true,
-      })),
-      timeoutMs: Type.Optional(Type.Number({ description: "Timeout in milliseconds, default 30000" })),
+      }),
+      timeoutMs: Type.Number({ description: "Timeout in milliseconds, default 30000" }),
     }),
     async execute(_toolCallId, params) {
-      assertEnabled();
       const cmdName = (params.name || params.command || "").trim();
-      if (!cmdName) {
-        const listRes = await runPiUnityCli(["list-commands"]);
-        return formatResult(listRes);
-      }
+      if (!cmdName) return runTool(["list-commands"]);
       const args = ["pipeline", cmdName];
       const paramObj = params.parameters || params.params;
-      if (paramObj) {
-        args.push("--params-json", JSON.stringify(paramObj));
-      }
-      if (params.timeoutMs !== undefined) args.push("--timeout", String(params.timeoutMs));
-      const res = await runPiUnityCli(args);
-      return formatResult(res);
+      if (paramObj) args.push("--params-json", JSON.stringify(paramObj));
+      pushArg(args, "--timeout", params.timeoutMs);
+      return runTool(args);
     },
   });
-
 
   // ---- unity_run_tests ----
   pi.registerTool({
@@ -404,19 +396,17 @@ export default function (pi: ExtensionAPI) {
     label: "Unity Run Tests",
     description: "Run Unity UTF test suite (EditMode or PlayMode) via pi-unity run-tests.",
     promptSnippet: "Use unity_run_tests to execute EditMode or PlayMode tests and verify code changes.",
-    parameters: Type.Object({
-      mode: Type.Optional(Type.String({ description: "Test mode: edit or play (default: edit)" })),
-      filter: Type.Optional(Type.String({ description: "Optional test name or namespace filter pattern" })),
-      timeoutMs: Type.Optional(Type.Number({ description: "Timeout in milliseconds, default 330000" })),
+    parameters: toolSchema({
+      mode: Type.String({ description: "Test mode: edit or play (default: edit)" }),
+      filter: Type.String({ description: "Optional test name or namespace filter pattern" }),
+      timeoutMs: Type.Number({ description: "Timeout in milliseconds, default 330000" }),
     }),
     async execute(_toolCallId, params) {
-      assertEnabled();
       const args = ["run-tests"];
-      if (params.mode) args.push("--mode", params.mode);
-      if (params.filter) args.push("--filter", params.filter);
-      if (params.timeoutMs !== undefined) args.push("--timeout", String(params.timeoutMs));
-      const res = await runPiUnityCli(args, { timeoutMs: (params.timeoutMs ?? 330000) + 10000 });
-      return formatResult(res);
+      pushArg(args, "--mode", params.mode);
+      pushArg(args, "--filter", params.filter);
+      pushArg(args, "--timeout", params.timeoutMs);
+      return runTool(args, { timeoutMs: (params.timeoutMs ?? 330000) + 10000 });
     },
   });
 
@@ -426,21 +416,19 @@ export default function (pi: ExtensionAPI) {
     label: "Unity Observe",
     description: "Multi-frame visual observation in PlayMode via pi-unity observe.",
     promptSnippet: "Use unity_observe for multi-frame perceptual verification and change detection in PlayMode.",
-    parameters: Type.Object({
-      frames: Type.Optional(Type.Integer({ description: "Number of frames to capture (default: 3)" })),
-      intervalMs: Type.Optional(Type.Number({ description: "Interval between frames in ms (default: 160)" })),
-      overlay: Type.Optional(Type.String({ description: "Overlay mode: grid, annotations, both, or none (default: both)" })),
-      timeoutMs: Type.Optional(Type.Number({ description: "Timeout in milliseconds, default 30000" })),
+    parameters: toolSchema({
+      frames: Type.Integer({ description: "Number of frames to capture (default: 3)" }),
+      intervalMs: Type.Number({ description: "Interval between frames in ms (default: 160)" }),
+      overlay: Type.String({ description: "Overlay mode: grid, annotations, both, or none (default: both)" }),
+      timeoutMs: Type.Number({ description: "Timeout in milliseconds, default 30000" }),
     }),
     async execute(_toolCallId, params) {
-      assertEnabled();
       const args = ["observe"];
-      if (params.frames !== undefined) args.push("--frames", String(params.frames));
-      if (params.intervalMs !== undefined) args.push("--interval", String(params.intervalMs));
-      if (params.overlay) args.push("--overlay", params.overlay);
-      if (params.timeoutMs !== undefined) args.push("--timeout", String(params.timeoutMs));
-      const res = await runPiUnityCli(args);
-      return formatResult(res);
+      pushArg(args, "--frames", params.frames);
+      pushArg(args, "--interval", params.intervalMs);
+      pushArg(args, "--overlay", params.overlay);
+      pushArg(args, "--timeout", params.timeoutMs);
+      return runTool(args);
     },
   });
 
@@ -450,19 +438,17 @@ export default function (pi: ExtensionAPI) {
     label: "Unity Capture",
     description: "Capture a single GameView or SceneView screenshot via pi-unity capture.",
     promptSnippet: "Use unity_capture for fast single-frame viewport screenshot capture.",
-    parameters: Type.Object({
-      mode: Type.Optional(Type.String({ description: "Viewport mode: game or scene (default: game)" })),
-      outPath: Type.Optional(Type.String({ description: "Output path for the saved image file" })),
-      timeoutMs: Type.Optional(Type.Number({ description: "Timeout in milliseconds, default 30000" })),
+    parameters: toolSchema({
+      mode: Type.String({ description: "Viewport mode: game or scene (default: game)" }),
+      outPath: Type.String({ description: "Output path for the saved image file" }),
+      timeoutMs: Type.Number({ description: "Timeout in milliseconds, default 30000" }),
     }),
     async execute(_toolCallId, params) {
-      assertEnabled();
       const args = ["capture"];
-      if (params.mode) args.push("--mode", params.mode);
-      if (params.outPath) args.push("--out", params.outPath);
-      if (params.timeoutMs !== undefined) args.push("--timeout", String(params.timeoutMs));
-      const res = await runPiUnityCli(args);
-      return formatResult(res);
+      pushArg(args, "--mode", params.mode);
+      pushArg(args, "--out", params.outPath);
+      pushArg(args, "--timeout", params.timeoutMs);
+      return runTool(args);
     },
   });
 
@@ -472,19 +458,17 @@ export default function (pi: ExtensionAPI) {
     label: "Unity Timeline",
     description: "Query recent operations timeline and audit history from the broker via pi-unity timeline.",
     promptSnippet: "Use unity_timeline to review recent command audit history and execution times.",
-    parameters: Type.Object({
-      limit: Type.Optional(Type.Integer({ description: "Number of timeline entries to return (default: 20)" })),
-      success: Type.Optional(Type.String({ description: "Filter status: all, success, or failure (default: all)" })),
-      timeoutMs: Type.Optional(Type.Number({ description: "Timeout in milliseconds, default 15000" })),
+    parameters: toolSchema({
+      limit: Type.Integer({ description: "Number of timeline entries to return (default: 20)" }),
+      success: Type.String({ description: "Filter status: all, success, or failure (default: all)" }),
+      timeoutMs: Type.Number({ description: "Timeout in milliseconds, default 15000" }),
     }),
     async execute(_toolCallId, params) {
-      assertEnabled();
       const args = ["timeline"];
-      if (params.limit !== undefined) args.push("--limit", String(params.limit));
-      if (params.success) args.push("--success", params.success);
-      if (params.timeoutMs !== undefined) args.push("--timeout", String(params.timeoutMs));
-      const res = await runPiUnityCli(args);
-      return formatResult(res);
+      pushArg(args, "--limit", params.limit);
+      pushArg(args, "--success", params.success);
+      pushArg(args, "--timeout", params.timeoutMs);
+      return runTool(args);
     },
   });
 }
