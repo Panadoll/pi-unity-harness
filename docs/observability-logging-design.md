@@ -1,7 +1,7 @@
 # 观测与日志系统设计（Observability & Logging）
 
 > **文档性质**：已落地的 L0/L1 规格（随 CLI 实现维护）
-> **实现位置**：`native/src/bin/logging.rs` + `native/src/bin/pi_unity.rs`（不进入 Unity `cdylib`）
+> **实现位置**：`native/src/bin/pi_unity/logging.rs` + `native/src/bin/pi_unity/main.rs`（不进入 Unity `cdylib`）
 > **目标**：为「分析运行时日志 → 优化工具 → 持续进化」建立数据基础
 > **范围**：本阶段只做 L0（采集）+ L1（存储）；L2 聚合分析、L3 进化闭环另行立项
 > **硬约束**：纯客户端改动，零协议变更，不动 broker / Unity 包
@@ -89,8 +89,8 @@
 
 ## 七、实现对照
 
-- `native/src/bin/logging.rs`：路径、轮转、session、mark、call 事件、trace recorder。
-- `native/src/bin/pi_unity.rs`：`main` / `handle_exit` 统一落行（含发现失败）；`--trace` 全局参数。
+- `native/src/bin/pi_unity/logging.rs`：路径、轮转、session、mark、call 事件、trace recorder。
+- `native/src/bin/pi_unity/main.rs`：`main` / `handle_exit` 统一落行（含发现失败）；`--trace` 全局参数。
 - `.pi/extensions/pi-unity-harness/index.ts`：`runPiUnityCli` 的 env 加 `PI_UNITY_CLIENT=pi-ext`。
 - `skills/pi-unity-*/SKILL.md`：每条末尾有 mark 约定（软信号）。
 - `README.md` / `README.en.md`：可观测性小节。
