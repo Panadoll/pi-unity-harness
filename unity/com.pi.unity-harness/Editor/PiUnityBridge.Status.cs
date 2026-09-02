@@ -86,21 +86,5 @@ namespace Pi.UnityHarness.Editor
             string window = IsMainWindowMinimized() ? "minimized" : "normal";
             return mode + ";focus=" + focus + ";window=" + window;
         }
-        private static bool IsEditorProcessForeground()
-        {
-            try
-            {
-                IntPtr foreground = GetForegroundWindow();
-                if (foreground == IntPtr.Zero)
-                    return Application.isFocused;
-                uint processId;
-                GetWindowThreadProcessId(foreground, out processId);
-                return processId == (uint)Process.GetCurrentProcess().Id;
-            }
-            catch
-            {
-                return Application.isFocused;
-            }
-        }
     }
 }

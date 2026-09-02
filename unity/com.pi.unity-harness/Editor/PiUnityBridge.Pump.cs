@@ -100,10 +100,6 @@ namespace Pi.UnityHarness.Editor
             }
         }
 
-        /// <summary>
-        /// Thread-safe heartbeat for when the Unity main thread is blocked (modal dialogs, sync stalls).
-        /// Does not touch UnityEditor APIs except via cached main-thread status.
-        /// Native broker owns Win32 #32770 probing.
         private static bool IsMainWindowMinimized()
         {
             try
