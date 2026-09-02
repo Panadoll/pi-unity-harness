@@ -219,11 +219,11 @@ namespace Pi.UnityHarness.Editor.Tests
         {
             string startedId = null;
             SetPlayProviders(false, false);
+            SetField("IsCompilingProvider", (Func<bool>)(() => false));
+            SetField("IsUpdatingProvider", (Func<bool>)(() => false));
             InstallDeferredState("req-continue", "9999999999999999999",
                 (id, success, resultText, error) => { });
             SetField("CompileStarter", (Action<string, Action<string, bool, string, string>>)((id, cb) => startedId = id));
-            // 测试运行场景下 isCompiling 为 false，可直接进入编译路径
-            Assume.That(EditorApplication.isCompiling, Is.False, "测试应在非编译期间运行");
 
             InvokePrivate("ContinueCompileIfSafe");
 

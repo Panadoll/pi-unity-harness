@@ -210,6 +210,7 @@ namespace Unity.Pipeline.Editor.Commands
         {
             var api = ScriptableObject.CreateInstance<TestRunnerApi>();
             var tcs = new TaskCompletionSource<List<TestListItem>>();
+            PipelineTestRunner.TryLoadEditorTestAssemblies();
 
             api.RetrieveTestList(testMode, root =>
             {

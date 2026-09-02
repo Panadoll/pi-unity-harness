@@ -2,9 +2,11 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using UnityEditor;
+using UnityEditor.Compilation;
 using UnityEditor.TestTools.TestRunner.Api;
 using UnityEngine;
 using Newtonsoft.Json;
@@ -301,6 +303,7 @@ namespace Unity.Pipeline.Editor.Testing
             bool includeExplicit)
         {
             var tcs = new TaskCompletionSource<ITestResultAdaptor>();
+            TryLoadEditorTestAssemblies();
 
             // Retrieve test list and filter
             api.RetrieveTestList(testMode, (ITestAdaptor rootTest) =>
@@ -789,6 +792,48 @@ namespace Unity.Pipeline.Editor.Testing
         }
 
         #endregion
+
+        internal static void TryLoadEditorTestAssemblies()
+        {
+            UnityEditor.Compilation.Assembly[] assemblies;
+            try
+            {
+                assemblies = CompilationPipeline.GetAssemblies(AssembliesType.Editor);
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning("[PipelineTestRunner] CompilationPipeline.GetAssemblies failed: " + ex.Message);
+                return;
+            }
+
+            foreach (UnityEditor.Compilation.Assembly assembly in assemblies)
+            {
+                if (assembly == null || string.IsNullOrEmpty(assembly.outputPath) || !IsEditorTestAssembly(assembly))
+                    continue;
+                try
+                {
+                    if (AppDomain.CurrentDomain.GetAssemblies().Any(a => a.GetName().Name == assembly.name))
+                        continue;
+                    string path = Path.GetFullPath(assembly.outputPath);
+                    if (!File.Exists(path))
+                        continue;
+                    System.Reflection.Assembly.LoadFrom(path);
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogWarning("[PipelineTestRunner] Failed to load test assembly " + assembly.name + ": " + ex.Message);
+                }
+            }
+        }
+
+        private static bool IsEditorTestAssembly(UnityEditor.Compilation.Assembly assembly)
+        {
+            if (!string.IsNullOrEmpty(assembly.name) &&
+                assembly.name.IndexOf("Tests", StringComparison.OrdinalIgnoreCase) >= 0)
+                return true;
+            string[] defines = assembly.defines;
+            return defines != null && defines.Contains("UNITY_INCLUDE_TESTS");
+        }
 
         [Serializable]
         private class TestRequest

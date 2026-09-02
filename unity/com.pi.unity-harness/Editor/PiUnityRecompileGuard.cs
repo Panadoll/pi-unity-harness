@@ -40,6 +40,12 @@ namespace Pi.UnityHarness.Editor
         /// <summary>可注入的编译启动器（默认 PiUnityCompileCoordinator.StartCompile），测试替身可断言调用。</summary>
         internal static Action<string, Action<string, bool, string, string>> CompileStarter = PiUnityCompileCoordinator.StartCompile;
 
+        /// <summary>可注入的 isCompiling 委托，测试可在套件运行期间避开真实编译态。</summary>
+        internal static Func<bool> IsCompilingProvider = () => EditorApplication.isCompiling;
+
+        /// <summary>可注入的 isUpdating 委托，测试可在资源刷新期间避开真实更新态。</summary>
+        internal static Func<bool> IsUpdatingProvider = () => EditorApplication.isUpdating;
+
         private static bool s_handlerRegistered;
         private static bool s_waitingPlayModeExit;
         private static Action<string, bool, string, string> s_onComplete;
@@ -161,7 +167,7 @@ namespace Pi.UnityHarness.Editor
             }
 
             // Unity 仍在编译/刷新（退出 PlayMode 时可能自动触发）：等稳定再发起
-            if (EditorApplication.isCompiling || EditorApplication.isUpdating)
+            if (IsCompilingProvider() || IsUpdatingProvider())
             {
                 EditorApplication.delayCall += ContinueCompileIfSafe;
                 return;

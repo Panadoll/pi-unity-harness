@@ -1,9 +1,10 @@
 #if PI_UNITY_PIPELINE
-using System.Threading.Tasks;
+using System.Collections;
 using Newtonsoft.Json.Linq;
 using NUnit.Framework;
 using Pi.UnityHarness.Editor.Capabilities.PipelineCommands;
 using UnityEditor;
+using UnityEngine.TestTools;
 
 namespace Pi.UnityHarness.Editor.Tests.PipelineDiscovery
 {
@@ -30,11 +31,14 @@ namespace Pi.UnityHarness.Editor.Tests.PipelineDiscovery
             Assert.AreEqual(SkillsFolder + "/generated-tools.md", generated.Value<string>("path"));
         }
 
-        [Test]
-        public async Task PackageSearch_ReturnsStructuredSearchResult()
+        [UnityTest]
+        public IEnumerator PackageSearch_ReturnsStructuredSearchResult()
         {
-            string json = await PiMcpPipelineCommands.PackageSearch("com.unity");
-            var result = JObject.Parse(json);
+            var task = PiMcpPipelineCommands.PackageSearch("com.unity");
+            while (!task.IsCompleted)
+                yield return null;
+            Assert.IsNull(task.Exception);
+            var result = JObject.Parse(task.Result);
             Assert.GreaterOrEqual(result.Value<int>("Count"), 0);
             Assert.IsNotNull(result["Packages"]);
         }

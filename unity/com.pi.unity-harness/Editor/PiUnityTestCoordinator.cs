@@ -197,6 +197,7 @@ namespace Pi.UnityHarness.Editor
 
         private static void StartSegment(string segmentMode)
         {
+            PiUnityEditorTestAssemblyLoader.TryLoadEditorTestAssemblies();
             JObject parameters = CurrentParameters();
             string filter = ReadString(parameters, "filter", string.Empty);
             string filterType = ReadString(parameters, "filter_type", "testName");
