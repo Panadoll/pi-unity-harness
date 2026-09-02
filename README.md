@@ -140,8 +140,15 @@ pi-unity session end
 
 ---
 
-## License
+## License & Third-Party Notices
 
+本仓库核心代码以 **MIT License** 发布，详见 [LICENSE](LICENSE)。
 
-本仓库核心代码以 MIT 协议发布，见 [LICENSE](LICENSE)。
-`unity/com.pi.pipeline.compat/` 按 Unity Package Distribution License 发布，见 `unity/com.pi.pipeline.compat/LICENSE.md`。
+### 第三方开源组件与致谢
+
+本项目集成了以下优秀的开源项目与组件，特此致谢：
+
+- **[UnityCliLoop (Uloop)](https://github.com/hatayama)** (MIT License) - 提供方法级热重载（Hot Reload V3）与暂停点（Pause Point）核心实现，位于 `unity/com.pi.unity-harness/Vendor/Uloop/`。
+- **[Lib.Harmony](https://github.com/pardeike/Harmony)** by Andreas Pardeike (MIT License) - 提供运行时 C# 方法体 IL 注入与 JIT Hook 支持（作为 `UnityCliLoop.0Harmony.dll` 引入，详见 `unity/com.pi.unity-harness/Vendor/Uloop/Editor/PausePoint/Plugins/LICENSE.md`）。
+- **[.NET Roslyn Libraries](https://github.com/dotnet/roslyn)** by .NET Foundation (MIT License) - 提供内存中 C# 动态代码分析与编译元数据支持，详见 `unity/com.pi.unity-harness/Vendor/Uloop/Editor/Compiler/Plugins/CodeAnalysis/LICENSE.md`。
+- **Unity.Pipeline** by Unity Technologies - `unity/com.pi.pipeline.compat/` 按 Unity Package Distribution License 协议发布，详见其子目录下的 [LICENSE.md](unity/com.pi.pipeline.compat/LICENSE.md)。
