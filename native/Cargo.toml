@@ -9,7 +9,7 @@ crate-type = ["cdylib", "rlib"]
 
 [[bin]]
 name = "pi-unity"
-path = "src/bin/pi_unity.rs"
+path = "src/bin/pi_unity/main.rs"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -18,7 +18,7 @@ tokio = { version = "1", features = ["rt", "rt-multi-thread", "io-util", "net", 
 clap = { version = "4.5", features = ["derive"] }
 base64 = "0.22"
 regex = "1"
-# Used only by the pi-unity CLI binary (src/bin/logging.rs), not the Unity cdylib.
+# Used only by the pi-unity CLI binary (src/bin/pi_unity/logging.rs), not the Unity cdylib.
 sha2 = "0.10"
 
 
