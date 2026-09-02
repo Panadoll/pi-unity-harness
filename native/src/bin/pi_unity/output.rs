@@ -3,7 +3,7 @@ use std::path::Path;
 
 use serde_json::{json, Value};
 
-use super::logging::{now_ms, TraceRecorder};
+use super::logging::{fast_rand_id, now_ms, TraceRecorder};
 
 pub const MAX_SAFE_RESPONSE_CHARS: usize = 32_768;
 const MIN_BASE64_DETECT_LENGTH: usize = 256;
