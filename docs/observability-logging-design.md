@@ -1,6 +1,7 @@
 # 观测与日志系统设计（Observability & Logging）
 
-> **文档性质**：设计规格（待实施）
+> **文档性质**：已落地的 L0/L1 规格（随 CLI 实现维护）
+> **实现位置**：`native/src/bin/logging.rs` + `native/src/bin/pi_unity.rs`（不进入 Unity `cdylib`）
 > **目标**：为「分析运行时日志 → 优化工具 → 持续进化」建立数据基础
 > **范围**：本阶段只做 L0（采集）+ L1（存储）；L2 聚合分析、L3 进化闭环另行立项
 > **硬约束**：纯客户端改动，零协议变更，不动 broker / Unity 包
@@ -64,8 +65,10 @@
 ### 4.4 skill 事件与归因
 
 - 新增轻命令：`pi-unity mark --skill <name> --event used`，只写一条 `{"kind":"skill.used",…}` 事件。
-- 每条 `skills/pi-unity-*/SKILL.md` 末尾加约定一句：「使用本 skill 时先运行 `pi-unity mark --skill <name> --event used`」。
-- client 归因：pi 扩展 `execFileSync` 时注入 env `PI_UNITY_CLIENT=pi-ext`；herdr 启动 agent 时可注入 `PI_UNITY_AGENT` / `PI_UNITY_SESSION_ID`。
+- 每条 `skills/pi-unity-*/SKILL.md` 末尾有约定一句：「使用本 skill 时先运行 `pi-unity mark --skill <name> --event used`」。这是软信号，agent 不会每次都跑，**不能当真实用量**。
+- client 归因：pi 扩展 `runPiUnityCli` 注入 env `PI_UNITY_CLIENT=pi-ext`；herdr 启动 agent 时可注入 `PI_UNITY_AGENT` / `PI_UNITY_SESSION_ID`。
+- 粘性 session 是用户级单文件 `sessions/current.json`：多 agent 并行会互相覆盖，只适合单任务分组，不是多 agent 锁。
+- `session start` 必须把注册表写成功才算成功；events 行仍是 best-effort。
 - 说明：skill 的「加载」（agent 读文件）无法从外部硬观测，靠 mark 软约定 + 命令序列行为推断（分析期做）。
 
 ## 五、明确不做（本阶段）
@@ -84,10 +87,10 @@
 6. `mark` 命令落 `skill.used` 事件；经 pi 扩展发起的调用行 `client = "pi-ext"`。
 7. `cargo test` 通过；logging 模块有纯单元测试（轮转命名、脱敏、行格式、session 解析优先级）。
 
-## 七、实现指引
+## 七、实现对照
 
-- `native/src/bin/pi_unity.rs`：新增 logging 模块（可拆 `src/bin/pi_unity/log.rs`）；`main` 出口统一落行（**含错误路径**）；关键步骤埋点写 ring buffer。
-- `.pi/extensions/pi-unity-harness/index.ts`：`execFileSync` 的 env 加 `PI_UNITY_CLIENT=pi-ext`（一行）。
-- `skills/pi-unity-*/SKILL.md`：每条末尾加 mark 约定。
-- `README.md` / `README.en.md`：补「可观测性」小节。
-- **编排注意**：本功能与进行中的 review 修复改同一文件 `pi_unity.rs`，必须在其完成并验证后开始。
+- `native/src/bin/logging.rs`：路径、轮转、session、mark、call 事件、trace recorder。
+- `native/src/bin/pi_unity.rs`：`main` / `handle_exit` 统一落行（含发现失败）；`--trace` 全局参数。
+- `.pi/extensions/pi-unity-harness/index.ts`：`runPiUnityCli` 的 env 加 `PI_UNITY_CLIENT=pi-ext`。
+- `skills/pi-unity-*/SKILL.md`：每条末尾有 mark 约定（软信号）。
+- `README.md` / `README.en.md`：可观测性小节。

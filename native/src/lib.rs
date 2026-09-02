@@ -6,9 +6,6 @@ pub const MANAGED_STATE_RELOADING: i32 = 2;
 pub const MANAGED_STATE_QUITTING: i32 = 3;
 pub const NATIVE_PROTOCOL_VERSION: i32 = 1;
 
-pub mod logging;
-
-
 unsafe fn slice_from_raw<'a>(ptr: *const u8, len: i32) -> &'a [u8] {
     if ptr.is_null() || len <= 0 {
         &[]

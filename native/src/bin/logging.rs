@@ -208,24 +208,48 @@ pub struct SessionRegistryData {
     pub started_at_ms: i64,
 }
 
+fn nonempty_env(name: &str) -> Option<String> {
+    std::env::var(name).ok().and_then(|s| {
+        let trimmed = s.trim().to_string();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    })
+}
+
+fn nonempty_override(value: Option<&str>) -> Option<String> {
+    value.and_then(|s| {
+        let trimmed = s.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
+}
+
+/// Resolve session from env then the sticky registry. Process env is read here;
+/// tests should call [`resolve_session_with_env`] so they do not mutate globals.
 pub fn resolve_session(log_root: &Path) -> (Option<String>, Option<String>) {
-    let host_session_id = std::env::var("PI_UNITY_HOST_SESSION_ID")
-        .ok()
-        .and_then(|s| {
-            let t = s.trim().to_string();
-            if t.is_empty() {
-                None
-            } else {
-                Some(t)
-            }
-        });
+    resolve_session_with_env(
+        log_root,
+        nonempty_env("PI_UNITY_SESSION_ID").as_deref(),
+        nonempty_env("PI_UNITY_HOST_SESSION_ID").as_deref(),
+    )
+}
+
+pub fn resolve_session_with_env(
+    log_root: &Path,
+    session_id_env: Option<&str>,
+    host_session_id_env: Option<&str>,
+) -> (Option<String>, Option<String>) {
+    let host_session_id = nonempty_override(host_session_id_env);
 
     // 1. Env override has highest priority
-    if let Ok(env_sess) = std::env::var("PI_UNITY_SESSION_ID") {
-        let trimmed = env_sess.trim().to_string();
-        if !trimmed.is_empty() {
-            return (Some(trimmed), host_session_id);
-        }
+    if let Some(env_sess) = nonempty_override(session_id_env) {
+        return (Some(env_sess), host_session_id);
     }
 
     // 2. Sticky registry file
@@ -281,9 +305,11 @@ pub fn start_session(
     }
 
     let json_bytes = serde_json::to_vec_pretty(&reg_data).map_err(|e| e.to_string())?;
-    let _ = fs::write(&reg_path, json_bytes);
+    fs::write(&reg_path, json_bytes).map_err(|e| {
+        format!("failed to write session registry {}: {e}", reg_path.display())
+    })?;
 
-    // Emit session.start event
+    // Emit session.start event (best-effort; registry write already succeeded)
     let event = json!({
         "v": LOG_FORMAT_VERSION,
         "kind": "session.start",
@@ -703,11 +729,9 @@ mod tests {
         let (sess2, _) = resolve_session(&root);
         assert_eq!(sess2.as_deref(), Some(reg.session_id.as_str()));
 
-        // Env override takes precedence
-        std::env::set_var("PI_UNITY_SESSION_ID", "env-session-123");
-        let (sess3, _) = resolve_session(&root);
+        // Env override takes precedence without mutating process env
+        let (sess3, _) = resolve_session_with_env(&root, Some("env-session-123"), None);
         assert_eq!(sess3.as_deref(), Some("env-session-123"));
-        std::env::remove_var("PI_UNITY_SESSION_ID");
 
         // End session
         let ended = end_session(&root).unwrap();
@@ -734,6 +758,18 @@ mod tests {
 
         let (sess, _) = resolve_session(&root);
         assert!(sess.is_none(), "Expired session must resolve to None");
+    }
+
+    #[test]
+    fn test_start_session_fails_when_registry_cannot_be_written() {
+        let root = test_dir("sess_write_fail");
+        let sessions_path = root.join("sessions");
+        fs::write(&sessions_path, b"not-a-directory").unwrap();
+        let err = start_session(&root, None, None).unwrap_err();
+        assert!(
+            err.contains("failed to write session registry"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

@@ -119,7 +119,7 @@ pi-unity skills install --agents
 ### 1. 存储结构（`~/.pi-unity/`，可通过 `PI_UNITY_LOG_DIR` 覆盖）
 - `logs/events-YYYY-MM.jsonl`：统一事件流（单次调用记录一行，包含耗时、阶段耗时、退出码与 `errorType`，按月轮转）。
 - `logs/traces/YYYY-MM-DD/`：详细过程日志（命令失败或开启 `--trace` / `PI_UNITY_TRACE=1` 时落盘，保留 7 天）。
-- `sessions/current.json`：粘性会话注册表（TTL 12 小时）。
+- `sessions/current.json`：粘性会话注册表（TTL 12 小时；全用户一份，多 agent 并行会互相覆盖）。
 
 ### 2. 会话与打点命令
 ```bash
@@ -135,7 +135,8 @@ pi-unity session end
 
 ### 3. 隐私红线与 Best-effort 保障
 - **隐私保护**：绝不落盘 C# 代码、参数值、Token 或错误原文（仅记 `errorType`）；项目路径仅记 SHA256 前 6 字节哈希（`projectHash`）。
-- **Best-effort**：日志与 trace 写入失败绝不影响 CLI 主流程执行与退出码。
+- **Best-effort**：调用日志与 trace 写入失败不影响 CLI 主流程和退出码。`session start` 例外：注册表没写上就失败。
+- **skill mark**：`pi-unity mark` 是约定打点，不是自动用量统计。
 
 ---
 
