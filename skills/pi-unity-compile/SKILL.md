@@ -33,3 +33,8 @@ pi-unity compile --json
 ## 验证闭环准则
 
 修改任意 `.cs` 脚本后，**必须**执行 `pi-unity compile`，并且只有在返回 `ExitCode 0` 且无编译错误时，方可宣称改动有效并进入后续测试验证环节。
+
+## 可观测性打点约定
+
+使用本 skill 时先运行 `pi-unity mark --skill pi-unity-compile --event used`。
+

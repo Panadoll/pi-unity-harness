@@ -31,3 +31,8 @@ pi-unity eval "UnityEngine.Application.unityVersion" --json
 1. **复杂代码写文件**：多行或包含临时变量的逻辑，优先写入 `Temp/PiUnityHarness/AgentScratch/*.repl` 或 `*.cs` 文件，然后使用 `-f, --file` 执行，避免 shell 转义与多行引号问题。
 2. **严禁在 eval 中触发域重载**：禁止调用 `AssetDatabase.Refresh()` 或其它触发编译/域重载的代码。触发编译请使用 `pi-unity compile`。
 3. **主线程安全**：eval 代码在 Editor 主线程执行，避免长时间阻塞（如 `Thread.Sleep` 或同步死锁）。
+
+## 可观测性打点约定
+
+使用本 skill 时先运行 `pi-unity mark --skill pi-unity-eval --event used`。
+

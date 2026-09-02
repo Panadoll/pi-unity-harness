@@ -31,3 +31,8 @@ pi-unity observe --overlay grid
 - **仅在 GUI 模式下使用**：日常重构请保持在速度模式（`snapshot` + `eval` + `uitree_*`）；仅当需要验证肉眼可见效果或 UI 树无法体现的视觉反馈时才触发 `observe`。
 - **前置要求**：GameView 必须处于 PlayMode。
 - **大图落地**：所有捕获生成的图片自动保存至 `Temp/PiUnityHarness/Captures/`，CLI 输出仅返回文件路径与摘要，防止 Agent 上下文被 Base64 淹没。
+
+## 可观测性打点约定
+
+使用本 skill 时先运行 `pi-unity mark --skill pi-unity-observe --event used`。
+

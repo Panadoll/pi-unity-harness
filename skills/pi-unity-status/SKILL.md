@@ -37,3 +37,8 @@ pi-unity status --json
 
 - **确认就绪**：在执行其它重度命令前，执行 `pi-unity status` 确保 `managedState == "ready"`。
 - **弹窗阻塞排查**：如果命令响应缓慢或超时，检查 `modalObservation.present` 是否存在弹窗。
+
+## 可观测性打点约定
+
+使用本 skill 时先运行 `pi-unity mark --skill pi-unity-status --event used`。
+

@@ -30,3 +30,8 @@ pi-unity run-tests --mode edit --json
 
 - **超时配置**：大型测试套件默认超时为 330 秒（5.5 分钟），可通过 `--timeout <ms>` 延长。
 - **PlayMode 注意点**：PlayMode 测试依赖 Editor 当前会话状态，若返回 0 个测试且日志提示 `Run started: 0 test(s)`，可先执行一次 `pi-unity compile` 或重启 Editor 恢复。
+
+## 可观测性打点约定
+
+使用本 skill 时先运行 `pi-unity mark --skill pi-unity-run-tests --event used`。
+

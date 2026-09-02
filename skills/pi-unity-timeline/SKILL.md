@@ -35,3 +35,8 @@ pi-unity timeline --success success
 - `durationMs`：耗时毫秒数
 - `success`：执行成功/失败标识
 - `input` / `result`：输入参数与输出响应摘要
+
+## 可观测性打点约定
+
+使用本 skill 时先运行 `pi-unity mark --skill pi-unity-timeline --event used`。
+

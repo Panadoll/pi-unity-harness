@@ -33,3 +33,8 @@ pi-unity capture --json
 - `width` / `height`：分辨率尺寸
 - `bytes`：文件大小字节数
 - 严禁向终端输出 Base64。
+
+## 可观测性打点约定
+
+使用本 skill 时先运行 `pi-unity mark --skill pi-unity-capture --event used`。
+

@@ -93,7 +93,35 @@ pi-unity skills install --agents
 
 ---
 
+## Observability & Logging
+
+`pi-unity-harness` features built-in lightweight observability (L0 collection and L1 storage), recording all agent interactions and CLI calls for diagnostics, metrics, and continuous tool improvement.
+
+### 1. Storage Layout (`~/.pi-unity/`, overridable via `PI_UNITY_LOG_DIR`)
+- `logs/events-YYYY-MM.jsonl`: Unified event stream (one line per CLI invocation, recording execution time, phases, exit code, and `errorType`, rotated monthly).
+- `logs/traces/YYYY-MM-DD/`: Detailed execution traces (written on failures or when `--trace` / `PI_UNITY_TRACE=1` is active, retained for 7 days).
+- `sessions/current.json`: Sticky session registry (12-hour TTL).
+
+### 2. Session and Skill Tracking Commands
+```bash
+# Start sticky session
+pi-unity session start --task "Refactor battle flow"
+
+# Mark skill usage
+pi-unity mark --skill pi-unity-compile --event used
+
+# End active session
+pi-unity session end
+```
+
+### 3. Privacy Redlines & Best-Effort Delivery
+- **Privacy Redlines**: Never writes C# code, parameter values, auth tokens, or raw error messages (only normalized `errorType`). Project paths are recorded only as a 6-byte SHA256 hex hash (`projectHash`).
+- **Best-Effort**: Logging failures never affect the primary CLI execution or exit codes.
+
+---
+
 ## License
+
 
 Core repository code is licensed under the MIT License — see [LICENSE](LICENSE).
 `unity/com.pi.pipeline.compat/` is released under the Unity Package Distribution License — see `unity/com.pi.pipeline.compat/LICENSE.md`.

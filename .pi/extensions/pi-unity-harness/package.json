@@ -4,6 +4,10 @@
   "private": true,
 
   "license": "MIT",
+  "scripts": {
+    "test": "npx tsx --test helpers.test.ts config.test.ts cli.test.ts"
+  },
+
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"
   },

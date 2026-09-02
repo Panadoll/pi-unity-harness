@@ -34,3 +34,8 @@ pi-unity snapshot --no-components
 - `selection`：当前在 Editor 中选中的对象实例。
 - `logs`：符合等级过滤的近期 Console 日志条目及堆栈摘要。
 - `editor`：`isPlaying`, `isCompiling`, `isPaused`, `timeSinceStartup` 等状态标志。
+
+## 可观测性打点约定
+
+使用本 skill 时先运行 `pi-unity mark --skill pi-unity-snapshot --event used`。
+
