@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Text;
-using Pi.UnityHarness.Editor.Capabilities.Shared;
+using Pi.UnityHarness.Editor;
 
 namespace Pi.UnityHarness.Editor.Capabilities.Vision
 {
@@ -10,7 +10,7 @@ namespace Pi.UnityHarness.Editor.Capabilities.Vision
     /// Unified JSON builder for vision capture and analysis responses.
     ///
     /// Replaces raw string concatenation in HarnessVision with structured JSON generation.
-    /// All methods return valid JSON strings using proper escaping via <see cref="PiAbilityJson.Escape"/>.
+    /// All methods return valid JSON strings using proper escaping via <see cref="PiUnityJsonHelper.EscapeJson"/>.
     ///
     /// Schemas:
     ///   - capture status:       harness.vision.capture.v1
@@ -843,7 +843,7 @@ namespace Pi.UnityHarness.Editor.Capabilities.Vision
 
         private static string EscapeJson(string value)
         {
-            return PiAbilityJson.Escape(value);
+            return PiUnityJsonHelper.EscapeJson(value);
         }
 
         private static string FloatStr(float value)

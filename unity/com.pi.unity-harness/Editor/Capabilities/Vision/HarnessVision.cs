@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.IO;
+using Pi.UnityHarness.Editor;
 using Pi.UnityHarness.Editor.Capabilities.Shared;
 using Pi.UnityHarness.Runtime.Capabilities.Vision;
 using UnityEditor;
@@ -205,9 +206,9 @@ namespace Pi.UnityHarness.Editor.Capabilities.Vision
             var set = PiVisionAnnotator.Collect(gridColumns, gridRows, PiGameViewPhysicsRaycast.DefaultMaxDistance, includeUi, includePhysics);
             return "{\"status\":\"succeeded\",\"schema\":\"harness.vision.annotations.v1\",\"annotations\":" +
                    PiVisionAnnotator.ToJsonObject(set) +
-                   ",\"input_coordinate_system\":\"" + PiAbilityJson.Escape(set.InputCoordinateSystem) + "\"" +
-                   ",\"unity_coordinate_system\":\"" + PiAbilityJson.Escape(set.UnityCoordinateSystem) + "\"" +
-                   ",\"coordinate_conversion_formula\":\"" + PiAbilityJson.Escape(set.ConversionFormula) + "\"}";
+                   ",\"input_coordinate_system\":\"" + PiUnityJsonHelper.EscapeJson(set.InputCoordinateSystem) + "\"" +
+                   ",\"unity_coordinate_system\":\"" + PiUnityJsonHelper.EscapeJson(set.UnityCoordinateSystem) + "\"" +
+                   ",\"coordinate_conversion_formula\":\"" + PiUnityJsonHelper.EscapeJson(set.ConversionFormula) + "\"}";
         }
 
         private static string AttachAnnotations(string captureJson, bool drawOnImage)

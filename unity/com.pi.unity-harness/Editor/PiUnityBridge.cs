@@ -577,8 +577,7 @@ namespace Pi.UnityHarness.Editor
                     Recompile(request);
                     return;
                 case "ping":
-                    CompleteJson(request.id,
-                        "{\"reply_to\":" + PiUnityJsonHelper.JsonString(request.id) + ",\"ok\":true,\"result\":{\"output\":\"pong\",\"typeName\":\"string\"}}");
+                    CompleteJson(request.id, PiUnityJsonHelper.EvalResultJson(request.id, "pong", "string"));
                     return;
                 case "status":
                     Status(request);
@@ -716,25 +715,12 @@ namespace Pi.UnityHarness.Editor
                     (success, text, typeName) =>
                     {
                         if (success)
-                        {
-                            string timingFragment = timing != null ? ",\"timing\":" + timing.ToJsonFragment() : string.Empty;
-                            string payload =
-                                "{\"reply_to\":" + PiUnityJsonHelper.JsonString(id) +
-                                ",\"ok\":true,\"result\":{\"output\":" + PiUnityJsonHelper.JsonString(text ?? string.Empty) +
-                                ",\"typeName\":" + PiUnityJsonHelper.JsonString(typeName ?? "void") + timingFragment + "}}";
-                            CompleteJson(id, payload);
-                        }
+                            CompleteJson(id, PiUnityJsonHelper.EvalResultJson(id, text ?? string.Empty, typeName ?? "void", TimingFragment(timing)));
                         else
-                        {
-                            CompleteJson(id,
-                                "{\"reply_to\":" + PiUnityJsonHelper.JsonString(id) + ",\"ok\":false,\"error_type\":" + PiUnityJsonHelper.JsonString(typeName ?? "runtime_error") + ",\"error\":" + PiUnityJsonHelper.JsonString(text ?? "coroutine_failed") + "}");
-                        }
+                            CompleteError(id, text ?? "coroutine_failed", typeName ?? "runtime_error");
                     }, coroutineTimeoutMs);
                 if (!queued)
-                {
-                    CompleteJson(id,
-                        "{\"reply_to\":" + PiUnityJsonHelper.JsonString(id) + ",\"ok\":false,\"error_type\":\"busy\",\"error\":\"coroutine queue full\"}");
-                }
+                    CompleteError(id, "coroutine queue full", "busy");
                 return;
             }
 
@@ -809,19 +795,11 @@ namespace Pi.UnityHarness.Editor
 
             if (!success)
             {
-                CompleteJson(id,
-                    "{\"reply_to\":" + PiUnityJsonHelper.JsonString(id) +
-                    ",\"ok\":false,\"error_type\":" + PiUnityJsonHelper.JsonString(typeName ?? "runtime_error") +
-                    ",\"error\":" + PiUnityJsonHelper.JsonString(text ?? "async_eval_failed") + "}");
+                CompleteError(id, text ?? "async_eval_failed", typeName ?? "runtime_error");
                 return;
             }
 
-            string timingFragment = timing != null ? ",\"timing\":" + timing.ToJsonFragment() : string.Empty;
-            string payload =
-                "{\"reply_to\":" + PiUnityJsonHelper.JsonString(id) +
-                ",\"ok\":true,\"result\":{\"output\":" + PiUnityJsonHelper.JsonString(text ?? string.Empty) +
-                ",\"typeName\":" + PiUnityJsonHelper.JsonString(typeName ?? "void") + timingFragment + "}}";
-            CompleteJson(id, payload);
+            CompleteJson(id, PiUnityJsonHelper.EvalResultJson(id, text ?? string.Empty, typeName ?? "void", TimingFragment(timing)));
         }
 
         private static void CancelAllPendingAsyncEvals(string reason)
@@ -831,10 +809,7 @@ namespace Pi.UnityHarness.Editor
 
             s_asyncEvalPump.CancelAll((id, success, text, typeName, state) =>
             {
-                CompleteJson(id,
-                    "{\"reply_to\":" + PiUnityJsonHelper.JsonString(id) +
-                    ",\"ok\":false,\"error_type\":" + PiUnityJsonHelper.JsonString(typeName ?? "cancelled") +
-                    ",\"error\":" + PiUnityJsonHelper.JsonString(text ?? reason) + "}");
+                CompleteError(id, text ?? reason, typeName ?? "cancelled");
             }, reason);
         }
 
@@ -853,23 +828,15 @@ namespace Pi.UnityHarness.Editor
         {
             if (success)
             {
-                string successPayload =
-                    "{\"reply_to\":" + PiUnityJsonHelper.JsonString(compileId) +
-                    ",\"ok\":true,\"result\":{\"output\":" + PiUnityJsonHelper.JsonString(resultText ?? "compilation_succeeded") +
-                    ",\"typeName\":\"compile_status\"}}";
-                CompleteJson(compileId, successPayload);
+                CompleteJson(compileId, PiUnityJsonHelper.EvalResultJson(
+                    compileId, resultText ?? "compilation_succeeded", "compile_status"));
+                return;
             }
-            else
-            {
-                string errorType = string.Equals(resultText, "busy", StringComparison.Ordinal) ? "busy"
-                    : string.Equals(resultText, "playmode_exit_timeout", StringComparison.Ordinal) ? "playmode_exit_timeout"
-                    : "compile_error";
-                string errorPayload =
-                    "{\"reply_to\":" + PiUnityJsonHelper.JsonString(compileId) +
-                    ",\"ok\":false,\"error_type\":" + PiUnityJsonHelper.JsonString(errorType) + ",\"error\":" +
-                    PiUnityJsonHelper.JsonString(errorSummary ?? "Compilation failed") + "}";
-                CompleteJson(compileId, errorPayload);
-            }
+
+            string errorType = string.Equals(resultText, "busy", StringComparison.Ordinal) ? "busy"
+                : string.Equals(resultText, "playmode_exit_timeout", StringComparison.Ordinal) ? "playmode_exit_timeout"
+                : "compile_error";
+            CompleteError(compileId, errorSummary ?? "Compilation failed", errorType);
         }
 
         // --- Pipeline command bridge ---
@@ -970,21 +937,21 @@ namespace Pi.UnityHarness.Editor
             return sb.ToString();
         }
 
+        private static string TimingFragment(RequestTiming timing)
+        {
+            return timing != null ? ",\"timing\":" + timing.ToJsonFragment() : string.Empty;
+        }
+
         private static void CompleteEvalResult(string id, PiUnityEvaluator.EvalResult result, RequestTiming timing)
         {
             if (!result.Ok)
             {
-                CompleteJson(id,
-                    "{\"reply_to\":" + PiUnityJsonHelper.JsonString(id) + ",\"ok\":false,\"error_type\":\"runtime_error\",\"error\":" + PiUnityJsonHelper.JsonString(result.Error ?? "execute_failed") + "}");
+                CompleteError(id, result.Error ?? "execute_failed", "runtime_error");
                 return;
             }
 
-            string timingFragment = timing != null ? ",\"timing\":" + timing.ToJsonFragment() : string.Empty;
-            string payload =
-                "{\"reply_to\":" + PiUnityJsonHelper.JsonString(id) +
-                ",\"ok\":true,\"result\":{\"output\":" + PiUnityJsonHelper.JsonString(result.Output ?? string.Empty) +
-                ",\"typeName\":" + PiUnityJsonHelper.JsonString(result.TypeName ?? string.Empty) + timingFragment + "}}";
-            CompleteJson(id, payload);
+            CompleteJson(id, PiUnityJsonHelper.EvalResultJson(
+                id, result.Output ?? string.Empty, result.TypeName ?? string.Empty, TimingFragment(timing)));
         }
 
         private static void CompleteValidateThenEvalResult(string id, string code, RequestTiming timing, int timeoutMs)
@@ -994,8 +961,7 @@ namespace Pi.UnityHarness.Editor
             timing.ValidateMs = RequestTiming.TicksToMs(Stopwatch.GetTimestamp() - validateStart);
             if (!IsValidationOk(validation))
             {
-                CompleteJson(id,
-                    "{\"reply_to\":" + PiUnityJsonHelper.JsonString(id) + ",\"ok\":false,\"error_type\":\"compile_error\",\"error\":" + PiUnityJsonHelper.JsonString(validation ?? "validate_failed") + "}");
+                CompleteError(id, validation ?? "validate_failed", "compile_error");
                 return;
             }
 
@@ -1014,11 +980,7 @@ namespace Pi.UnityHarness.Editor
                 return;
             }
 
-            string payload =
-                "{\"reply_to\":" + PiUnityJsonHelper.JsonString(id) +
-                ",\"ok\":true,\"result\":{\"output\":" + PiUnityJsonHelper.JsonString(validation) +
-                ",\"typeName\":\"validation\"}}";
-            CompleteJson(id, payload);
+            CompleteJson(id, PiUnityJsonHelper.EvalResultJson(id, validation, "validation"));
         }
 
         private static bool IsValidationOk(string validation)

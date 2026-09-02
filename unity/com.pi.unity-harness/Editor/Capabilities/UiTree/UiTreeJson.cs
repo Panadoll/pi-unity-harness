@@ -1,5 +1,5 @@
 using System.Text;
-using Pi.UnityHarness.Editor.Capabilities.Shared;
+using Pi.UnityHarness.Editor;
 
 namespace Pi.UnityHarness.Editor.Capabilities.UiTree
 {
@@ -11,7 +11,7 @@ namespace Pi.UnityHarness.Editor.Capabilities.UiTree
     {
         internal static string Escape(string s)
         {
-            return PiAbilityJson.Escape(s);
+            return PiUnityJsonHelper.EscapeJson(s);
         }
 
         internal static string BoolStr(bool v) => v ? "true" : "false";

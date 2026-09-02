@@ -1,7 +1,7 @@
 using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Text;
-using Pi.UnityHarness.Editor.Capabilities.Shared;
+using Pi.UnityHarness.Editor;
 
 [assembly: InternalsVisibleTo("Pi.UnityHarness.Editor.Tests")]
 
@@ -91,7 +91,7 @@ namespace Pi.UnityHarness.Editor.Capabilities.Input
 
         internal static string Escape(string value)
         {
-            return PiAbilityJson.Escape(value);
+            return PiUnityJsonHelper.EscapeJson(value);
         }
 
         internal static string Float(float value)

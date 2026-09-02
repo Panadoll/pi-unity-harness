@@ -1,4 +1,5 @@
 using System.Text;
+using Pi.UnityHarness.Editor;
 using UnityEngine;
 
 namespace Pi.UnityHarness.Editor.Capabilities.Shared
@@ -123,7 +124,7 @@ namespace Pi.UnityHarness.Editor.Capabilities.Shared
             if (value == null)
                 sb.Append("null");
             else
-                sb.Append('"').Append(PiAbilityJson.Escape(value)).Append('"');
+                sb.Append('"').Append(PiUnityJsonHelper.EscapeJson(value)).Append('"');
         }
 
         private static void AppendBool(StringBuilder sb, string name, bool value)

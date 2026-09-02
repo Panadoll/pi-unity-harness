@@ -25,6 +25,17 @@ namespace Pi.UnityHarness.Editor
         }
 
         /// <summary>
+        /// Builds an ok=true eval-style result with output, typeName, and optional timing fragment.
+        /// <paramref name="timingFragment"/> must already include the leading comma, or be empty.
+        /// </summary>
+        public static string EvalResultJson(string replyTo, string output, string typeName, string timingFragment = "")
+        {
+            return "{\"reply_to\":" + JsonString(replyTo) +
+                   ",\"ok\":true,\"result\":{\"output\":" + JsonString(output) +
+                   ",\"typeName\":" + JsonString(typeName) + timingFragment + "}}";
+        }
+
+        /// <summary>
         /// Escapes a JSON string and wraps it in double quotes. null returns the literal null.
         /// </summary>
         public static string JsonString(string value)

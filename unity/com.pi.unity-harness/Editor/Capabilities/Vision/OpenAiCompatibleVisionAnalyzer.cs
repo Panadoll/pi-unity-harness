@@ -6,7 +6,7 @@ using System.Net.Http;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using Pi.UnityHarness.Editor.Capabilities.Shared;
+using Pi.UnityHarness.Editor;
 
 namespace Pi.UnityHarness.Editor.Capabilities.Vision
 {
@@ -144,14 +144,14 @@ namespace Pi.UnityHarness.Editor.Capabilities.Vision
             AppendStringField(sb, "model", model, true);
             sb.Append(",\"messages\":[");
             sb.Append("{\"role\":\"system\",\"content\":\"");
-            sb.Append(PiAbilityJson.Escape(SystemPrompt));
+            sb.Append(PiUnityJsonHelper.EscapeJson(SystemPrompt));
             sb.Append("\"},");
             sb.Append("{\"role\":\"user\",\"content\":[");
             sb.Append("{\"type\":\"image_url\",\"image_url\":{\"url\":\"");
-            sb.Append(PiAbilityJson.Escape(dataUrl));
+            sb.Append(PiUnityJsonHelper.EscapeJson(dataUrl));
             sb.Append("\"}},");
             sb.Append("{\"type\":\"text\",\"text\":\"");
-            sb.Append(PiAbilityJson.Escape(prompt));
+            sb.Append(PiUnityJsonHelper.EscapeJson(prompt));
             sb.Append("\"}");
             sb.Append("]}");
             sb.Append("],");
@@ -556,8 +556,8 @@ namespace Pi.UnityHarness.Editor.Capabilities.Vision
         private static void AppendStringField(StringBuilder sb, string name, string value, bool isFirst = false)
         {
             if (!isFirst) sb.Append(",");
-            sb.Append("\"").Append(PiAbilityJson.Escape(name)).Append("\":\"");
-            sb.Append(PiAbilityJson.Escape(value)).Append("\"");
+            sb.Append("\"").Append(PiUnityJsonHelper.EscapeJson(name)).Append("\":\"");
+            sb.Append(PiUnityJsonHelper.EscapeJson(value)).Append("\"");
         }
 
         private const string SystemPrompt =

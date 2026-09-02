@@ -1454,6 +1454,50 @@ fn find_skills_source_root(project_root: &Path) -> PathBuf {
     project_root.to_path_buf()
 }
 
+async fn send_and_format(
+    client: &mut HarnessClient,
+    req_type: &str,
+    payload: Value,
+    timeout_ms: u64,
+    project_root: &Path,
+    json_mode: bool,
+    recorder: &TraceRecorder,
+) -> Result<String, CliError> {
+    let res = client.send_request(req_type, payload, timeout_ms).await?;
+    Ok(format_safe_output(
+        &res,
+        project_root,
+        json_mode,
+        Some(recorder),
+    ))
+}
+
+async fn send_pipeline_command(
+    client: &mut HarnessClient,
+    name: &str,
+    params: Value,
+    timeout_ms: u64,
+    project_root: &Path,
+    json_mode: bool,
+    recorder: &TraceRecorder,
+) -> Result<String, CliError> {
+    let params_json_str =
+        serde_json::to_string(&params).unwrap_or_else(|_| "{}".to_string());
+    send_and_format(
+        client,
+        "command",
+        json!({
+            "name": name,
+            "parametersJson": params_json_str,
+        }),
+        timeout_ms,
+        project_root,
+        json_mode,
+        recorder,
+    )
+    .await
+}
+
 async fn execute_harness_command(
     command: Commands,
     client: &mut HarnessClient,
@@ -1463,25 +1507,29 @@ async fn execute_harness_command(
 ) -> Result<String, CliError> {
     match command {
         Commands::Ping(args) => {
-            let res = client.send_request("ping", json!({}), args.timeout).await?;
-            Ok(format_safe_output(
-                &res,
+            send_and_format(
+                client,
+                "ping",
+                json!({}),
+                args.timeout,
                 project_root,
                 json_mode,
-                Some(recorder),
-            ))
+                recorder,
+            )
+            .await
         }
 
         Commands::Status(args) => {
-            let res = client
-                .send_request("status", json!({}), args.timeout)
-                .await?;
-            Ok(format_safe_output(
-                &res,
+            send_and_format(
+                client,
+                "status",
+                json!({}),
+                args.timeout,
                 project_root,
                 json_mode,
-                Some(recorder),
-            ))
+                recorder,
+            )
+            .await
         }
 
         Commands::Eval(args) => {
@@ -1523,15 +1571,16 @@ async fn execute_harness_command(
                 ));
             };
 
-            let res = client
-                .send_request(req_type, payload, args.timeout)
-                .await?;
-            Ok(format_safe_output(
-                &res,
+            send_and_format(
+                client,
+                req_type,
+                payload,
+                args.timeout,
                 project_root,
                 json_mode,
-                Some(recorder),
-            ))
+                recorder,
+            )
+            .await
         }
 
         Commands::Compile(args) => {
@@ -1651,38 +1700,31 @@ async fn execute_harness_command(
         }
 
         Commands::ListCommands(args) => {
-            let res = client
-                .send_request("list_commands", json!({}), args.timeout)
-                .await?;
-            Ok(format_safe_output(
-                &res,
+            send_and_format(
+                client,
+                "list_commands",
+                json!({}),
+                args.timeout,
                 project_root,
                 json_mode,
-                Some(recorder),
-            ))
+                recorder,
+            )
+            .await
         }
 
         Commands::Pipeline(args) => {
             let param_obj = parse_param_pairs(&args.params, args.params_json.as_deref())?;
-            let params_json_str =
-                serde_json::to_string(&param_obj).unwrap_or_else(|_| "{}".to_string());
-
             recorder.record("pipeline", &format!("Executing pipeline command {}", args.name));
-
-            let payload = json!({
-                "name": args.name,
-                "parametersJson": params_json_str,
-            });
-
-            let res = client
-                .send_request("command", payload, args.timeout)
-                .await?;
-            Ok(format_safe_output(
-                &res,
+            send_pipeline_command(
+                client,
+                &args.name,
+                param_obj,
+                args.timeout,
                 project_root,
                 json_mode,
-                Some(recorder),
-            ))
+                recorder,
+            )
+            .await
         }
 
         Commands::RunTests(args) => {
@@ -1698,22 +1740,16 @@ async fn execute_harness_command(
                 param_map.insert("filter".to_string(), Value::String(f));
             }
 
-            let params_json_str = serde_json::to_string(&Value::Object(param_map)).unwrap();
-
-            let payload = json!({
-                "name": "run_tests",
-                "parametersJson": params_json_str,
-            });
-
-            let res = client
-                .send_request("command", payload, args.timeout)
-                .await?;
-            Ok(format_safe_output(
-                &res,
+            send_pipeline_command(
+                client,
+                "run_tests",
+                Value::Object(param_map),
+                args.timeout,
                 project_root,
                 json_mode,
-                Some(recorder),
-            ))
+                recorder,
+            )
+            .await
         }
 
         Commands::Observe(args) => {
@@ -1724,28 +1760,21 @@ async fn execute_harness_command(
                 OverlayMode::None => "none",
             };
 
-            let mut param_map = serde_json::Map::new();
-            param_map.insert("mode".to_string(), Value::String("game".to_string()));
-            param_map.insert("frames".to_string(), json!(args.frames));
-            param_map.insert("intervalMs".to_string(), json!(args.interval));
-            param_map.insert("overlay".to_string(), Value::String(overlay_str.to_string()));
-
-            let params_json_str = serde_json::to_string(&Value::Object(param_map)).unwrap();
-
-            let payload = json!({
-                "name": "vision_observe",
-                "parametersJson": params_json_str,
-            });
-
-            let res = client
-                .send_request("command", payload, args.timeout)
-                .await?;
-            Ok(format_safe_output(
-                &res,
+            send_pipeline_command(
+                client,
+                "vision_observe",
+                json!({
+                    "mode": "game",
+                    "frames": args.frames,
+                    "intervalMs": args.interval,
+                    "overlay": overlay_str,
+                }),
+                args.timeout,
                 project_root,
                 json_mode,
-                Some(recorder),
-            ))
+                recorder,
+            )
+            .await
         }
 
         Commands::Capture(args) => {
@@ -1760,22 +1789,16 @@ async fn execute_harness_command(
                 param_map.insert("outPath".to_string(), Value::String(out_p));
             }
 
-            let params_json_str = serde_json::to_string(&Value::Object(param_map)).unwrap();
-
-            let payload = json!({
-                "name": "vision_capture",
-                "parametersJson": params_json_str,
-            });
-
-            let res = client
-                .send_request("command", payload, args.timeout)
-                .await?;
-            Ok(format_safe_output(
-                &res,
+            send_pipeline_command(
+                client,
+                "vision_capture",
+                Value::Object(param_map),
+                args.timeout,
                 project_root,
                 json_mode,
-                Some(recorder),
-            ))
+                recorder,
+            )
+            .await
         }
 
         Commands::Timeline(args) => {
@@ -1785,20 +1808,19 @@ async fn execute_harness_command(
                 TimelineSuccessFilter::Failure => "failure",
             };
 
-            let payload = json!({
-                "limit": args.limit,
-                "success": success_filter,
-            });
-
-            let res = client
-                .send_request("timeline", payload, args.timeout)
-                .await?;
-            Ok(format_safe_output(
-                &res,
+            send_and_format(
+                client,
+                "timeline",
+                json!({
+                    "limit": args.limit,
+                    "success": success_filter,
+                }),
+                args.timeout,
                 project_root,
                 json_mode,
-                Some(recorder),
-            ))
+                recorder,
+            )
+            .await
         }
 
         Commands::Skills(_) | Commands::Session(_) | Commands::Mark(_) => unreachable!(),
