@@ -118,7 +118,7 @@ pub(crate) fn handle_skills_command(
             if skill_file.exists() {
                 for target_dir in &target_dirs {
                     let dest_skill_dir = target_dir.join(&skill_name);
-                    installed_count += copy_skill_dir(&path, &dest_skill_dir);
+                    installed_count += sync_skill_dir(&path, &dest_skill_dir);
                 }
                 installed_skills.push(skill_name);
             }
@@ -150,13 +150,21 @@ fn should_skip_skill_entry(name: &str) -> bool {
     name.starts_with('.') || name.eq_ignore_ascii_case("Thumbs.db")
 }
 
-fn copy_skill_dir(src: &Path, dest: &Path) -> usize {
-    let mut copied = 0;
-    if fs::create_dir_all(dest).is_err() {
-        return 0;
-    }
-    let Ok(entries) = fs::read_dir(src) else {
-        return 0;
+const SKILL_MANIFEST_FILENAME: &str = ".pi-unity-manifest.json";
+
+#[derive(serde::Serialize, serde::Deserialize, Default, Debug, PartialEq, Eq)]
+struct SkillManifest {
+    version: u32,
+    files: Vec<String>,
+}
+
+fn normalize_rel_path(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+fn collect_managed_files_recursive(base: &Path, current: &Path, files: &mut Vec<String>) {
+    let Ok(entries) = fs::read_dir(current) else {
+        return;
     };
     for entry in entries.flatten() {
         let name = entry.file_name();
@@ -164,15 +172,90 @@ fn copy_skill_dir(src: &Path, dest: &Path) -> usize {
         if should_skip_skill_entry(&name_str) {
             continue;
         }
-        let from = entry.path();
-        let to = dest.join(&name);
-        if from.is_dir() {
-            copied += copy_skill_dir(&from, &to);
-        } else if fs::copy(&from, &to).is_ok() {
-            copied += 1;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_managed_files_recursive(base, &path, files);
+        } else if path.is_file() {
+            if let Ok(rel) = path.strip_prefix(base) {
+                files.push(normalize_rel_path(rel));
+            }
         }
     }
-    copied
+}
+
+fn read_skill_manifest(dest: &Path) -> Option<SkillManifest> {
+    let manifest_path = dest.join(SKILL_MANIFEST_FILENAME);
+    let content = fs::read_to_string(manifest_path).ok()?;
+    serde_json::from_str(&content).ok()
+}
+
+fn write_skill_manifest(dest: &Path, files: &[String]) {
+    let manifest_path = dest.join(SKILL_MANIFEST_FILENAME);
+    let manifest = SkillManifest {
+        version: 1,
+        files: files.to_vec(),
+    };
+    if let Ok(json_str) = serde_json::to_string_pretty(&manifest) {
+        let _ = fs::write(manifest_path, json_str);
+    }
+}
+
+fn remove_empty_dirs_recursive(dir: &Path) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            remove_empty_dirs_recursive(&path);
+            let _ = fs::remove_dir(&path);
+        }
+    }
+}
+
+fn sync_skill_dir(src: &Path, dest: &Path) -> usize {
+    if fs::create_dir_all(dest).is_err() {
+        return 0;
+    }
+
+    let mut src_files = Vec::new();
+    collect_managed_files_recursive(src, src, &mut src_files);
+    src_files.sort();
+    let src_file_set: std::collections::HashSet<&str> = src_files.iter().map(|s| s.as_str()).collect();
+
+    let mut current_dest_files = Vec::new();
+    collect_managed_files_recursive(dest, dest, &mut current_dest_files);
+    current_dest_files.sort();
+    let current_dest_set: std::collections::HashSet<&str> = current_dest_files.iter().map(|s| s.as_str()).collect();
+
+    let old_manifest = read_skill_manifest(dest);
+
+    if let Some(old) = old_manifest {
+        let old_manifest_set: std::collections::HashSet<&str> = old.files.iter().map(|s| s.as_str()).collect();
+        for file in current_dest_set {
+            if old_manifest_set.contains(file) && !src_file_set.contains(file) {
+                let to_remove = dest.join(file);
+                let _ = fs::remove_file(to_remove);
+            }
+        }
+    }
+
+    let mut copied_count = 0;
+    for rel in &src_files {
+        let from = src.join(rel);
+        let to = dest.join(rel);
+        if let Some(parent) = to.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        if fs::copy(&from, &to).is_ok() {
+            copied_count += 1;
+        }
+    }
+
+    remove_empty_dirs_recursive(dest);
+    write_skill_manifest(dest, &src_files);
+
+    copied_count
 }
 
 fn is_tool_managed_legacy_skill(dir: &Path, expected_name: &str) -> bool {
@@ -634,18 +717,85 @@ mod tests {
     }
 
     #[test]
-    fn copy_skill_dir_includes_references() {
-        let root = std::env::temp_dir().join(format!("pi-unity-skill-copy-{}", std::process::id()));
+    fn sync_skill_dir_installs_and_creates_manifest() {
+        let root = std::env::temp_dir().join(format!("pi-unity-skill-sync-{}", std::process::id()));
         let src = root.join("src");
         let dest = root.join("dest");
         write_file(&src.join("SKILL.md"), "---\nname: foo\n---\n");
         write_file(&src.join("references/bar.md"), "# bar\n");
         write_file(&src.join(".hidden"), "nope");
-        let copied = copy_skill_dir(&src, &dest);
+        let copied = sync_skill_dir(&src, &dest);
         assert_eq!(copied, 2);
         assert!(dest.join("SKILL.md").is_file());
         assert!(dest.join("references/bar.md").is_file());
         assert!(!dest.join(".hidden").exists());
+
+        let manifest = read_skill_manifest(&dest).expect("Manifest must be written");
+        assert_eq!(manifest.files, vec!["SKILL.md", "references/bar.md"]);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn sync_skill_dir_removes_stale_files_on_reinstall() {
+        let root = std::env::temp_dir().join(format!("pi-unity-skill-stale-{}", std::process::id()));
+        let src = root.join("src");
+        let dest = root.join("dest");
+
+        // First install with bar.md and stale.md
+        write_file(&src.join("SKILL.md"), "---\nname: foo\n---\n");
+        write_file(&src.join("references/bar.md"), "# bar\n");
+        write_file(&src.join("references/stale.md"), "# stale\n");
+        let copied = sync_skill_dir(&src, &dest);
+        assert_eq!(copied, 3);
+        assert!(dest.join("references/stale.md").is_file());
+
+        // Remove stale.md from source and add new.md
+        let _ = fs::remove_file(src.join("references/stale.md"));
+        write_file(&src.join("references/new.md"), "# new\n");
+
+        let copied2 = sync_skill_dir(&src, &dest);
+        assert_eq!(copied2, 3);
+        assert!(dest.join("SKILL.md").is_file());
+        assert!(dest.join("references/bar.md").is_file());
+        assert!(dest.join("references/new.md").is_file());
+        assert!(!dest.join("references/stale.md").exists(), "Stale file must be removed");
+
+        let manifest = read_skill_manifest(&dest).expect("Manifest must be updated");
+        assert_eq!(manifest.files, vec!["SKILL.md", "references/bar.md", "references/new.md"]);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn sync_skill_dir_preserves_user_files_and_custom_dirs() {
+        let root = std::env::temp_dir().join(format!("pi-unity-skill-user-{}", std::process::id()));
+        let src = root.join("src");
+        let dest = root.join("dest");
+
+        write_file(&src.join("SKILL.md"), "---\nname: foo\n---\n");
+        write_file(&src.join("references/bar.md"), "# bar\n");
+        write_file(&src.join("references/stale.md"), "# stale\n");
+        sync_skill_dir(&src, &dest);
+
+        // User adds custom files into dest
+        write_file(&dest.join("user_notes.md"), "# my notes\n");
+        write_file(&dest.join("custom/guide.md"), "# my guide\n");
+
+        // Source updates (stale.md removed, bar.md updated)
+        let _ = fs::remove_file(src.join("references/stale.md"));
+        write_file(&src.join("references/bar.md"), "# bar updated\n");
+
+        sync_skill_dir(&src, &dest);
+
+        // Stale tool file removed
+        assert!(!dest.join("references/stale.md").exists());
+        // Updated tool file updated
+        assert_eq!(fs::read_to_string(dest.join("references/bar.md")).unwrap(), "# bar updated\n");
+        // User files preserved
+        assert_eq!(fs::read_to_string(dest.join("user_notes.md")).unwrap(), "# my notes\n");
+        assert_eq!(fs::read_to_string(dest.join("custom/guide.md")).unwrap(), "# my guide\n");
+
         let _ = fs::remove_dir_all(root);
     }
 
