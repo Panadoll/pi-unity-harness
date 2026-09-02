@@ -43,3 +43,8 @@ pi-unity pipeline input_click -p x=640 -p y=360
 - 数字：整数 / 浮点数自动转为 JSON number。
 - 嵌套 JSON：`{...}` 或 `[...]` 自动解析为对应 JSON 结构。
 - 其它内容作为字符串处理。
+
+## 可观测性打点约定
+
+使用本 skill 时先运行 `pi-unity mark --skill pi-unity-pipeline --event used`。
+

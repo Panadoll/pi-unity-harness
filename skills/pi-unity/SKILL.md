@@ -54,3 +54,8 @@ description: >
 - `1`：运行时错误 / 执行失败。
 - `2`：未能连接 Unity（Unity 未运行或未加载 `com.pi.unity-harness`）。
 - `3`：操作超时或主线程卡死。
+
+## 可观测性打点约定
+
+使用本 skill 时先运行 `pi-unity mark --skill pi-unity --event used`。
+

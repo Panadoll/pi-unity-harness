@@ -1,3 +1,8 @@
+/**
+ * Pipeline command schema helpers and TypeBox converter for pi-unity-harness extension.
+ * Used by index.ts during session startup to dynamically register 280+ unity_* pipeline tools.
+ */
+
 export interface PipelineParameterInfo {
   name: string;
   description?: string;

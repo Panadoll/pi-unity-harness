@@ -108,7 +108,12 @@ export async function runPiUnityCli(
       maxBuffer: 32 * 1024 * 1024,
       windowsHide: true,
       signal: options.signal,
+      env: {
+        ...process.env,
+        PI_UNITY_CLIENT: "pi-ext",
+      },
     });
+
 
     const trimmed = stdout.trim();
     if (!trimmed) {

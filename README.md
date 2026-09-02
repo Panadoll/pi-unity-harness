@@ -112,7 +112,35 @@ pi-unity skills install --agents
 
 ---
 
+## 可观测性与日志系统（Observability & Logging）
+
+`pi-unity-harness` 内置轻量级可观测性系统（L0 采集与 L1 存储），记录所有 Agent 与 Unity 的交互调用过程，用于排障和持续进化。
+
+### 1. 存储结构（`~/.pi-unity/`，可通过 `PI_UNITY_LOG_DIR` 覆盖）
+- `logs/events-YYYY-MM.jsonl`：统一事件流（单次调用记录一行，包含耗时、阶段耗时、退出码与 `errorType`，按月轮转）。
+- `logs/traces/YYYY-MM-DD/`：详细过程日志（命令失败或开启 `--trace` / `PI_UNITY_TRACE=1` 时落盘，保留 7 天）。
+- `sessions/current.json`：粘性会话注册表（TTL 12 小时）。
+
+### 2. 会话与打点命令
+```bash
+# 开启粘性会话
+pi-unity session start --task "重构战斗系统"
+
+# 标记 Skill 使用
+pi-unity mark --skill pi-unity-compile --event used
+
+# 结束会话
+pi-unity session end
+```
+
+### 3. 隐私红线与 Best-effort 保障
+- **隐私保护**：绝不落盘 C# 代码、参数值、Token 或错误原文（仅记 `errorType`）；项目路径仅记 SHA256 前 6 字节哈希（`projectHash`）。
+- **Best-effort**：日志与 trace 写入失败绝不影响 CLI 主流程执行与退出码。
+
+---
+
 ## License
+
 
 本仓库核心代码以 MIT 协议发布，见 [LICENSE](LICENSE)。
 `unity/com.pi.pipeline.compat/` 按 Unity Package Distribution License 发布，见 `unity/com.pi.pipeline.compat/LICENSE.md`。
