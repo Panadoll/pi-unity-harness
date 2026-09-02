@@ -100,7 +100,7 @@ pi-unity skills install --agents
 ### 1. Storage Layout (`~/.pi-unity/`, overridable via `PI_UNITY_LOG_DIR`)
 - `logs/events-YYYY-MM.jsonl`: Unified event stream (one line per CLI invocation, recording execution time, phases, exit code, and `errorType`, rotated monthly).
 - `logs/traces/YYYY-MM-DD/`: Detailed execution traces (written on failures or when `--trace` / `PI_UNITY_TRACE=1` is active, retained for 7 days).
-- `sessions/current.json`: Sticky session registry (12-hour TTL).
+- `sessions/current.json`: Sticky session registry (12-hour TTL; one file per user, so parallel agents overwrite each other).
 
 ### 2. Session and Skill Tracking Commands
 ```bash
@@ -116,7 +116,8 @@ pi-unity session end
 
 ### 3. Privacy Redlines & Best-Effort Delivery
 - **Privacy Redlines**: Never writes C# code, parameter values, auth tokens, or raw error messages (only normalized `errorType`). Project paths are recorded only as a 6-byte SHA256 hex hash (`projectHash`).
-- **Best-Effort**: Logging failures never affect the primary CLI execution or exit codes.
+- **Best-Effort**: Call-log and trace write failures never change CLI behavior or exit codes. `session start` is the exception: it fails if the registry file cannot be written.
+- **Skill marks**: `pi-unity mark` is a voluntary signal, not automatic usage counting.
 
 ---
 

@@ -13,7 +13,9 @@ use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::windows::named_pipe::ClientOptions;
 
-use pi_unity_harness_native::logging::{
+mod logging;
+
+use logging::{
     append_event_line, compute_project_hash, end_session, lazy_cleanup_old_traces, log_root_dir,
     now_ms, record_mark, resolve_client_name, resolve_session, start_session, timestamp_utc,
     CallEvent, CallEventFlags, CallEventPhases, TraceRecorder, DEFAULT_VERSION, LOG_FORMAT_VERSION,
@@ -1290,7 +1292,9 @@ fn handle_exit(
         trace_id,
     };
 
-    let _ = append_event_line(log_root, &serde_json::to_value(&call_event).unwrap());
+    if let Ok(value) = serde_json::to_value(&call_event) {
+        let _ = append_event_line(log_root, &value);
+    }
 
     match result {
         Ok(output) => {
