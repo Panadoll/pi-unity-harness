@@ -3,7 +3,7 @@ import { EventEmitter } from "node:events";
 import { spawn } from "node:child_process";
 import { PassThrough } from "node:stream";
 import { test } from "node:test";
-import { MuxClient, runPiUnityCli, setActiveMux } from "./index.ts";
+import { MuxClient, pushViewArgs, runPiUnityCli, setActiveMux } from "./index.ts";
 
 function fakeMuxScript(extraFields = ""): string {
   return [
@@ -203,6 +203,31 @@ test("runPiUnityCli rejects mismatched projectPath without exec", async () => {
     setActiveMux(null);
     await client.shutdown();
   }
+});
+
+test("runPiUnityCli rejects projectPath when mux project is unknown", async () => {
+  const spawnImpl = (() => {
+    throw new Error("should not spawn");
+  }) as typeof spawn;
+  const client = new MuxClient(process.execPath, undefined, spawnImpl);
+  setActiveMux(client);
+  try {
+    const res = await runPiUnityCli(["status"], { projectPath: "D:/proj-b" });
+    assert.equal(res.ok, false);
+    assert.equal(res.exitCode, 2);
+    assert.equal(res.error_type, "usage");
+    assert.match(res.error ?? "", /mux 工程未固定/);
+  } finally {
+    setActiveMux(null);
+    await client.shutdown();
+  }
+});
+
+test("pushViewArgs writes fields/full and never no-components", () => {
+  const args: string[] = ["snapshot"];
+  pushViewArgs(args, { fields: "components,tag", full: true });
+  assert.deepEqual(args, ["snapshot", "--fields", "components,tag", "--full"]);
+  assert.equal(args.includes("--no-components"), false);
 });
 
 test("mux text is returned as-is", async () => {

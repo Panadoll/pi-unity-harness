@@ -96,10 +96,7 @@ fn pick_i64(obj: &Value, keys: &[&str], default: i64) -> i64 {
 }
 
 pub fn help_items(commands: &[&str]) -> Value {
-    let arr: Vec<Value> = commands
-        .iter()
-        .map(|c| json!({"run": *c}))
-        .collect();
+    let arr: Vec<Value> = commands.iter().map(|c| json!({"run": *c})).collect();
     Value::Array(arr)
 }
 
@@ -127,6 +124,7 @@ pub fn shape_status(raw: &Value) -> Value {
     };
     json!({
         "editor": if editor.is_empty() { "unknown" } else { &editor },
+        "state": if editor.is_empty() { "unknown" } else { &editor },
         "generation": generation,
         "play": play,
         "modal": modal_text,
@@ -142,7 +140,10 @@ fn flatten_hierarchy(nodes: &[Value], out: &mut Vec<Value>, opts: &ViewOptions) 
         row.insert("name".into(), json!(pick_str(node, &["name"])));
         row.insert(
             "active".into(),
-            json!(pick_bool(node, &["activeInHierarchy", "activeSelf", "active"])),
+            json!(pick_bool(
+                node,
+                &["activeInHierarchy", "activeSelf", "active"]
+            )),
         );
         if opts.wants("childCount") {
             row.insert(
@@ -183,11 +184,7 @@ pub fn shape_snapshot(raw: &Value, opts: &ViewOptions) -> Value {
         .pointer("/hierarchy/truncated")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let selected = pick_i64(
-        raw.get("selection").unwrap_or(&Value::Null),
-        &["count"],
-        0,
-    );
+    let selected = pick_i64(raw.get("selection").unwrap_or(&Value::Null), &["count"], 0);
     let selection_name = raw
         .pointer("/selection/activeGameObject/name")
         .or_else(|| raw.pointer("/selection/activeObject/name"))
@@ -233,10 +230,7 @@ pub fn shape_snapshot(raw: &Value, opts: &ViewOptions) -> Value {
     );
     out.insert("selected".into(), json!(selected));
     out.insert("errors".into(), json!(error_count));
-    out.insert(
-        "nodes".into(),
-        json!(format!("{shown} of {total} total")),
-    );
+    out.insert("nodes".into(), json!(format!("{shown} of {total} total")));
     if nodes.is_empty() {
         out.insert("hierarchy".into(), json!("0 个节点 found"));
     } else {
@@ -381,9 +375,7 @@ pub fn shape_observe(raw: &Value) -> Value {
     let changed = if raw.get("changed").and_then(Value::as_bool) == Some(true) {
         paths.len()
     } else {
-        raw.get("unique_count")
-            .and_then(Value::as_u64)
-            .unwrap_or(0) as usize
+        raw.get("unique_count").and_then(Value::as_u64).unwrap_or(0) as usize
     };
     json!({
         "changedFrames": changed,
@@ -467,7 +459,10 @@ mod tests {
 
     #[test]
     fn empty_commands_are_explicit() {
-        let out = shape_list_commands(&json!({"commands": [], "count": 0}), &ViewOptions::default());
+        let out = shape_list_commands(
+            &json!({"commands": [], "count": 0}),
+            &ViewOptions::default(),
+        );
         let text = out["commands"].as_str().unwrap();
         assert!(text.starts_with("0 "));
         assert!(text.contains("found"));
