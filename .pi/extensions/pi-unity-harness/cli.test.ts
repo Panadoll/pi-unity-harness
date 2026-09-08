@@ -34,8 +34,8 @@ test("runPiUnityCli status uses shaped state, not managedState", async (t) => {
   }
   const res = await runPiUnityCli(["status"]);
   if (res.ok) {
-    const result = res.result as { state?: string; editor?: string } | undefined;
-    assert.ok(result?.state || result?.editor);
+    const result = res.result as { editor?: string } | undefined;
+    assert.ok(result?.editor);
     return;
   }
   assert.equal(res.exitCode, 1);

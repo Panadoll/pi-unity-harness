@@ -468,7 +468,7 @@ pub(crate) async fn execute_harness_command(
                 args.timeout,
                 &ctx,
                 "pi-unity status --full",
-                schema::shape_status,
+                |raw| schema::shape_status_view(raw, opts),
             )
             .await
         }

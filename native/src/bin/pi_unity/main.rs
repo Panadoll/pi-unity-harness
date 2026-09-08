@@ -375,20 +375,15 @@ async fn write_mux_stdout(
 }
 
 fn mux_error_value(id: &str, err: &CliError) -> Value {
-    let payload = json!({
-        "error": err.message(),
-        "error_type": err.error_type(),
-        "exitCode": err.exit_code(),
-        "help": err.help(),
-    });
+    let payload = usage::error_payload(err);
     json!({
         "id": id,
         "ok": false,
-        "exitCode": err.exit_code(),
-        "error": err.message(),
-        "error_type": err.error_type(),
-        "help": err.help(),
-        "text": emit_value(&payload, false),
+        "exitCode": payload["exitCode"],
+        "error": payload["error"],
+        "error_type": payload["error_type"],
+        "help": payload["help"],
+        "text": usage::format_error(err, false),
     })
 }
 
@@ -705,7 +700,6 @@ fn handle_exit(
 
 fn handle_error(err: &CliError, json_mode: bool, project_root: Option<&Path>) {
     let mut msg = err.message().to_string();
-    let help = err.help();
 
     if msg.len() > MAX_SAFE_RESPONSE_CHARS {
         if let Some(root) = project_root {
@@ -727,7 +721,23 @@ fn handle_error(err: &CliError, json_mode: bool, project_root: Option<&Path>) {
         }
     }
 
-    let out = usage::format_usage(&msg, &help, json_mode);
+    let out = if msg == err.message() {
+        usage::format_error(err, json_mode)
+    } else {
+        usage::format_error(
+            &match err {
+                CliError::Usage { help, .. } => CliError::Usage {
+                    error: msg,
+                    help: help.clone(),
+                },
+                CliError::ExecutionFailed(_) => CliError::ExecutionFailed(msg),
+                CliError::BridgeNotFound(_) => CliError::BridgeNotFound(msg),
+                CliError::Timeout(_) => CliError::Timeout(msg),
+                CliError::Other(_) => CliError::Other(msg),
+            },
+            json_mode,
+        )
+    };
     println!("{}", out);
 }
 

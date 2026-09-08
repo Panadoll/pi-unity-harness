@@ -24,21 +24,32 @@ pub fn usage_error(error: impl Into<String>, help: &[&str]) -> CliError {
     }
 }
 
-pub fn format_usage(error: &str, help: &[String], json_mode: bool) -> String {
+pub fn error_payload(err: &CliError) -> serde_json::Value {
+    json!({
+        "ok": false,
+        "error": err.message(),
+        "error_type": err.error_type(),
+        "exitCode": err.exit_code(),
+        "help": err.help(),
+    })
+}
+
+pub fn format_error(err: &CliError, json_mode: bool) -> String {
+    let payload = error_payload(err);
     if json_mode {
-        return serde_json::to_string_pretty(&json!({
-            "ok": false,
-            "error": error,
-            "exitCode": 2,
-            "help": help,
-        }))
-        .unwrap();
+        return serde_json::to_string_pretty(&payload).unwrap();
     }
-    let help_items: Vec<serde_json::Value> = help.iter().map(|h| json!({"run": h})).collect();
-    toon::encode(&json!({
-        "error": error,
-        "help": help_items,
-    }))
+    toon::encode(&payload)
+}
+
+pub fn format_usage(error: &str, help: &[String], json_mode: bool) -> String {
+    format_error(
+        &CliError::Usage {
+            error: error.to_string(),
+            help: help.to_vec(),
+        },
+        json_mode,
+    )
 }
 
 pub fn valid_flags(subcommand: &str) -> &'static str {
