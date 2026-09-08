@@ -22,6 +22,13 @@
 
 ---
 
+## pi 扩展 mux
+
+pi-coding-agent 扩展在 `session_start` 拉起隐藏子命令 `pi-unity mux`，工具调用走 stdin/stdout JSONL，不再每次 spawn CLI。每条回复带 `result`（精简 JSON）和 `text`（同一份 result 的 Rust TOON）。JSONL 只是 IPC，模型看到的是 `text`。
+
+mux 持有一条 Unity Named Pipe，已连接时每 5 秒 ping，broker 15 秒空闲会断。断线后下一条业务再连，已发出的请求不重放。当前 broker 同一时刻只服务一个客户端，mux 存活期间其它短 CLI 可能 `Pipe busy`。不要当成多 Agent 同时可用。本通道不恢复 slash UI。
+
+
 ## CLI 命令速查
 
 | CLI 子命令 | 参数选项 | 行为描述 |

@@ -498,10 +498,12 @@ export async function runPiUnityCli(
   const mux = activeMux;
   if (mux) {
     const muxProject = mux.fixedProjectPath;
-    if (options.projectPath && muxProject && !sameProjectPath(options.projectPath, muxProject)) {
+    if (options.projectPath && (!muxProject || !sameProjectPath(options.projectPath, muxProject))) {
       return {
         ok: false,
-        error: `mux 已绑定工程 ${muxProject}，不能改用 ${options.projectPath}`,
+        error: muxProject
+          ? `mux 已绑定工程 ${muxProject}，不能改用 ${options.projectPath}`
+          : `mux 工程未固定，不能传 --project-path ${options.projectPath}`,
         error_type: "usage",
         help: ["不要在 mux 会话中传不同的 --project-path"],
         exitCode: 2,
@@ -547,6 +549,18 @@ function pushArg(args: string[], flag: string, value: string | number | undefine
   if (value === undefined || value === "") return;
   args.push(flag, String(value));
 }
+
+export function pushViewArgs(args: string[], params: { fields?: unknown; full?: unknown }) {
+  if (typeof params.fields === "string" && params.fields.trim()) {
+    args.push("--fields", params.fields.trim());
+  }
+  if (params.full === true) args.push("--full");
+}
+
+const VIEW_FIELDS = {
+  fields: Type.String({ description: "追加字段，逗号分隔" }),
+  full: Type.Boolean({ description: "输出完整 schema" }),
+};
 
 /** Tool parameter schema. Names in `required` stay required; the rest are optional. */
 function toolSchema(fields: Record<string, any>, required: string[] = []): any {
@@ -676,9 +690,12 @@ export default function (pi: ExtensionAPI) {
     promptSnippet: "Use unity_status to check Editor state, domain reload generation, and modal dialogs.",
     parameters: toolSchema({
       timeoutMs: Type.Number({ description: "Timeout in milliseconds, default 5000" }),
+      ...VIEW_FIELDS,
     }),
     async execute(_toolCallId, params, signal) {
-      return runTool(["status", "--timeout", String(params.timeoutMs ?? 5000)], { signal });
+      const args = ["status", "--timeout", String(params.timeoutMs ?? 5000)];
+      pushViewArgs(args, params);
+      return runTool(args, { signal });
     },
   });
 
@@ -693,8 +710,8 @@ export default function (pi: ExtensionAPI) {
       maxNodes: Type.Integer({ description: "Max GameObjects to include (default: 500)" }),
       logLimit: Type.Integer({ description: "Max recent logs to include (default: 50)" }),
       logLevel: Type.String({ description: "Log level filter: error, warning, or all (default: error)" }),
-      noComponents: Type.Boolean({ description: "Omit component details for smaller output" }),
       timeoutMs: Type.Number({ description: "Timeout in milliseconds, default 20000" }),
+      ...VIEW_FIELDS,
     }),
     async execute(_toolCallId, params, signal) {
       const args = ["snapshot"];
@@ -702,8 +719,8 @@ export default function (pi: ExtensionAPI) {
       pushArg(args, "--max-nodes", params.maxNodes);
       pushArg(args, "--log-limit", params.logLimit);
       pushArg(args, "--log-level", params.logLevel);
-      if (params.noComponents) args.push("--no-components");
       pushArg(args, "--timeout", params.timeoutMs);
+      pushViewArgs(args, params);
       return runTool(args, { signal });
     },
   });
@@ -717,10 +734,12 @@ export default function (pi: ExtensionAPI) {
     parameters: toolSchema({
       code: Type.String({ description: "C# code or expression to execute in Unity Editor." }),
       timeoutMs: Type.Number({ description: "Timeout in milliseconds, default 30000" }),
+      ...VIEW_FIELDS,
     }, ["code"]),
     async execute(_toolCallId, params, signal) {
       const args = ["eval", params.code];
       pushArg(args, "--timeout", params.timeoutMs);
+      pushViewArgs(args, params);
       return runTool(args, { signal });
     },
   });
@@ -766,11 +785,13 @@ export default function (pi: ExtensionAPI) {
     promptSnippet: "Use unity_list_commands to discover available pipeline commands and parameter schemas.",
     parameters: toolSchema({
       timeoutMs: Type.Number({ description: "Timeout in milliseconds, default 15000" }),
+      ...VIEW_FIELDS,
     }),
     async execute(_toolCallId, params, signal) {
       assertEnabled();
       const args = ["list-commands"];
       pushArg(args, "--timeout", params.timeoutMs);
+      pushViewArgs(args, params);
       void refreshDynamicPipelineTools(signal);
       return runTool(args, { signal });
     },
@@ -880,12 +901,14 @@ export default function (pi: ExtensionAPI) {
       limit: Type.Integer({ description: "Number of timeline entries to return (default: 20)" }),
       success: Type.String({ description: "Filter status: all, success, or failure (default: all)" }),
       timeoutMs: Type.Number({ description: "Timeout in milliseconds, default 15000" }),
+      ...VIEW_FIELDS,
     }),
     async execute(_toolCallId, params, signal) {
       const args = ["timeline"];
       pushArg(args, "--limit", params.limit);
       pushArg(args, "--success", params.success);
       pushArg(args, "--timeout", params.timeoutMs);
+      pushViewArgs(args, params);
       return runTool(args, { signal });
     },
   });

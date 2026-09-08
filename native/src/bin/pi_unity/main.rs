@@ -314,17 +314,8 @@ struct MuxLine {
 }
 
 async fn run_mux(project_path: Option<&str>) -> ExitCode {
-    let mut project_root = match resolve_project_root(project_path) {
-        Ok(root) => Some(root),
-        Err(_) => None,
-    };
-    let mut client = match project_root.as_ref() {
-        Some(root) => {
-            let recorder = Arc::new(TraceRecorder::new("mux"));
-            HarnessClient::new_persistent(root.clone(), recorder).ok()
-        }
-        None => None,
-    };
+    let mut project_root: Option<PathBuf> = None;
+    let mut client: Option<HarnessClient> = None;
 
     let stdin = tokio::io::stdin();
     let mut lines = BufReader::new(stdin).lines();
@@ -418,6 +409,7 @@ fn mux_ok_value(id: &str, output: &str) -> Value {
     })
 }
 
+#[derive(Debug)]
 enum MuxParsed {
     Command(Commands, ViewOptions),
     Help(String),
@@ -428,24 +420,51 @@ fn parse_mux_command(argv: &[String]) -> Result<MuxParsed, CliError> {
     args.push("pi-unity".to_string());
     args.extend(argv.iter().cloned());
     match Cli::try_parse_from(args) {
-        Ok(parsed) => match parsed.command {
-            Some(Commands::Mux) => Err(usage::usage_error("mux 不能嵌套", &["pi-unity status"])),
-            Some(Commands::Skills(_))
-            | Some(Commands::Session(_))
-            | Some(Commands::Mark(_))
-            | Some(Commands::Setup(_)) => Err(usage::usage_error(
-                "mux 不支持该子命令",
-                &["pi-unity status", "pi-unity ping"],
-            )),
-            Some(cmd) => Ok(MuxParsed::Command(
-                cmd,
-                ViewOptions::from_parts(&parsed.fields, parsed.full),
-            )),
-            None => Err(usage::usage_error(
-                "mux 请求需要子命令",
-                &["pi-unity status"],
-            )),
-        },
+        Ok(parsed) => {
+            if parsed.project_path.is_some() {
+                return Err(usage::usage_error(
+                    "mux 请求不能带 --project-path",
+                    &["工程在 mux 启动时固定"],
+                ));
+            }
+            if parsed.trace {
+                return Err(usage::usage_error(
+                    "mux 不支持 --trace",
+                    &["pi-unity status"],
+                ));
+            }
+            match parsed.command {
+                Some(Commands::Mux) => {
+                    Err(usage::usage_error("mux 不能嵌套", &["pi-unity status"]))
+                }
+                Some(Commands::Skills(_))
+                | Some(Commands::Session(_))
+                | Some(Commands::Mark(_))
+                | Some(Commands::Setup(_)) => Err(usage::usage_error(
+                    "mux 不支持该子命令",
+                    &["pi-unity status", "pi-unity ping"],
+                )),
+                Some(Commands::Eval(eval_args))
+                    if eval_args.code.is_none() && eval_args.file.is_none() =>
+                {
+                    Err(usage::usage_error(
+                        "eval 需要 CODE 或 --file",
+                        &[
+                            "pi-unity eval \"<code>\"",
+                            "pi-unity eval -f Temp/PiUnityHarness/AgentScratch/probe.repl",
+                        ],
+                    ))
+                }
+                Some(cmd) => Ok(MuxParsed::Command(
+                    cmd,
+                    ViewOptions::from_parts(&parsed.fields, parsed.full),
+                )),
+                None => Err(usage::usage_error(
+                    "mux 请求需要子命令",
+                    &["pi-unity status"],
+                )),
+            }
+        }
         Err(err) => match usage::clap_to_cli_error(err) {
             Ok(help_text) => Ok(MuxParsed::Help(help_text)),
             Err(cli_err) => Err(cli_err),
@@ -530,11 +549,16 @@ async fn handle_mux_line(
     };
 
     if project_root.is_none() {
-        *project_root = resolve_project_root(project_path).ok();
+        match resolve_project_root(project_path) {
+            Ok(root) => *project_root = Some(root),
+            Err(err) => return (mux_error_value(&id, &err), false),
+        }
     }
     let Some(root) = project_root.clone() else {
-        let err = resolve_project_root(project_path).unwrap_err();
-        return (mux_error_value(&id, &err), false);
+        return (
+            mux_error_value(&id, &CliError::BridgeNotFound("找不到 Unity 工程".into())),
+            false,
+        );
     };
 
     if client.is_none() {
@@ -839,5 +863,23 @@ mod tests {
             "execution_failed"
         );
         assert_eq!(CliError::Other("err".into()).error_type(), "other");
+    }
+
+    #[test]
+    fn mux_eval_missing_code_is_usage_without_unity() {
+        let err = parse_mux_command(&["eval".into()]).unwrap_err();
+        assert_eq!(err.exit_code(), 2);
+        assert!(err.message().contains("eval 需要 CODE"));
+    }
+
+    #[test]
+    fn mux_rejects_project_path_and_trace() {
+        let err = parse_mux_command(&["--project-path".into(), "D:/other".into(), "status".into()])
+            .unwrap_err();
+        assert_eq!(err.exit_code(), 2);
+        assert!(err.message().contains("--project-path"));
+        let err = parse_mux_command(&["--trace".into(), "status".into()]).unwrap_err();
+        assert_eq!(err.exit_code(), 2);
+        assert!(err.message().contains("--trace"));
     }
 }
