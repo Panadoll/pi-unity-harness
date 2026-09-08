@@ -91,9 +91,24 @@ export interface CliExecutionResult {
 const DEFAULT_MUX_TIMEOUT_MS = 120000;
 const MAX_MUX_STDOUT_CHARS = 32 * 1024 * 1024;
 
-interface MuxPending {
-  resolve: (value: CliExecutionResult) => void;
-  sent: boolean;
+/** mux 调用结果。只有从未拉起成功时才允许 exec 回退。 */
+export type MuxCallResult =
+  | { status: "completed"; written: true; retryAllowed: false; result: CliExecutionResult }
+  | { status: "unavailable-before-start"; written: false; retryAllowed: true; result: CliExecutionResult }
+  | { status: "aborted"; written: false; retryAllowed: false; result: CliExecutionResult }
+  | { status: "in-flight-lost"; written: true; retryAllowed: false; result: CliExecutionResult }
+  | { status: "queue-dropped"; written: false; retryAllowed: false; result: CliExecutionResult };
+
+interface MuxJob {
+  argv: string[];
+  timeoutMs: number;
+  signal?: AbortSignal;
+  resolve: (value: MuxCallResult) => void;
+  dispatched: boolean;
+  settled: boolean;
+  id?: string;
+  timer?: ReturnType<typeof setTimeout>;
+  onAbort?: () => void;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -174,9 +189,11 @@ export class MuxClient {
   private child: ChildProcess | null = null;
   private buffer = "";
   private nextId = 1;
-  private readonly pending = new Map<string, MuxPending>();
   private starting: Promise<boolean> | null = null;
   private closed = false;
+  private startedOnce = false;
+  private readonly queue: MuxJob[] = [];
+  private inflight: MuxJob | null = null;
 
   constructor(
     private readonly bin: string,
@@ -232,6 +249,7 @@ export class MuxClient {
       }
       this.child = child;
       this.closed = false;
+      this.startedOnce = true;
       child.stdout?.setEncoding("utf8");
       child.stdout?.on("data", (chunk: string) => {
         if (this.child !== child) return;
@@ -240,17 +258,17 @@ export class MuxClient {
       child.stderr?.resume();
       child.once("error", () => {
         if (this.child !== child) return;
-        this.failAll();
+        this.failTransport("mux 进程错误");
         finish(false);
       });
       child.once("exit", () => {
         if (this.child !== child) return;
-        this.failAll();
+        this.failTransport("mux 进程退出");
         finish(false);
       });
       child.stdin?.once("error", () => {
         if (this.child !== child) return;
-        this.failAll();
+        this.failTransport("mux stdin 错误");
         finish(false);
       });
       if (child.pid) {
@@ -262,7 +280,7 @@ export class MuxClient {
   private onStdout(chunk: string): void {
     this.buffer += chunk;
     if (this.buffer.length > MAX_MUX_STDOUT_CHARS) {
-      this.failAll();
+      this.failTransport("mux stdout 过大");
       return;
     }
     let nl = this.buffer.indexOf("\n");
@@ -279,148 +297,260 @@ export class MuxClient {
     try {
       parsed = JSON.parse(line);
     } catch {
-      this.failAll();
+      this.failTransport("协议损坏");
       return;
     }
     const result = parseMuxReply(parsed);
     if (!result) {
-      this.failAll();
+      this.failTransport("协议损坏");
       return;
     }
     const obj = asRecord(parsed);
     const id = obj && typeof obj.id === "string" ? obj.id : "";
-    const waiter = this.pending.get(id);
-    if (!waiter) return;
-    this.pending.delete(id);
-    waiter.resolve(result);
+    const job = this.inflight;
+    if (!job || job.id !== id) return;
+    this.finishJob(job, { status: "completed", written: true, retryAllowed: false, result });
+    this.inflight = null;
+    this.pump();
   }
 
-  private failAll(): void {
-    const waiters = [...this.pending.values()];
-    this.pending.clear();
-    this.buffer = "";
+  private finishJob(job: MuxJob, value: MuxCallResult): void {
+    if (job.settled) return;
+    job.settled = true;
+    if (job.timer) {
+      clearTimeout(job.timer);
+      job.timer = undefined;
+    }
+    if (job.onAbort) {
+      job.signal?.removeEventListener("abort", job.onAbort);
+      job.onAbort = undefined;
+    }
+    job.resolve(value);
+  }
+
+  private dropQueued(reason: string): void {
+    const queued = this.queue.splice(0);
+    for (const job of queued) {
+      this.finishJob(job, {
+        status: "queue-dropped",
+        written: false,
+        retryAllowed: false,
+        result: { ok: false, error: reason, error_type: "other", exitCode: 1 },
+      });
+    }
+  }
+
+  private killChild(): void {
     const child = this.child;
     this.child = null;
+    this.buffer = "";
     if (child && child.exitCode === null) {
       try {
         child.kill();
       } catch {}
     }
-    for (const waiter of waiters) {
-      waiter.resolve({
-        ok: false,
-        error: waiter.sent ? "mux 响应丢失" : "mux 不可用",
-        error_type: "other",
-        exitCode: 1,
+  }
+
+  private failTransport(reason: string): void {
+    const current = this.inflight;
+    this.inflight = null;
+    this.killChild();
+    if (current?.dispatched) {
+      this.finishJob(current, {
+        status: "in-flight-lost",
+        written: true,
+        retryAllowed: false,
+        result: {
+          ok: false,
+          error: reason,
+          error_type: reason.startsWith("mux 超时") ? "timeout" : "other",
+          exitCode: 1,
+        },
       });
+    } else if (current) {
+      this.finishJob(current, {
+        status: "queue-dropped",
+        written: false,
+        retryAllowed: false,
+        result: { ok: false, error: "mux 未发送已终止", error_type: "other", exitCode: 1 },
+      });
+    }
+    this.dropQueued("mux 未发送已终止");
+  }
+
+  private pump(): void {
+    if (this.closed || this.inflight) return;
+    const job = this.queue.shift();
+    if (!job) return;
+    this.inflight = job;
+    void this.dispatch(job);
+  }
+
+  private async dispatch(job: MuxJob): Promise<void> {
+    if (job.signal?.aborted) {
+      this.finishJob(job, {
+        status: "aborted",
+        written: false,
+        retryAllowed: false,
+        result: { ok: false, error: "aborted", error_type: "other", exitCode: 1 },
+      });
+      if (this.inflight === job) this.inflight = null;
+      this.pump();
+      return;
+    }
+    if (this.closed) {
+      this.finishJob(job, {
+        status: "queue-dropped",
+        written: false,
+        retryAllowed: false,
+        result: { ok: false, error: "mux 未发送已终止", error_type: "other", exitCode: 1 },
+      });
+      if (this.inflight === job) this.inflight = null;
+      return;
+    }
+    const started = await this.start();
+    if (job.settled || this.closed || this.inflight !== job) {
+      if (this.inflight === job) this.inflight = null;
+      this.pump();
+      return;
+    }
+    if (!started || !this.alive || !this.child?.stdin) {
+      this.finishJob(job, {
+        status: this.startedOnce ? "queue-dropped" : "unavailable-before-start",
+        written: false,
+        retryAllowed: !this.startedOnce,
+        result: {
+          ok: false,
+          error: this.startedOnce ? "mux 未发送已终止" : "mux 不可用",
+          error_type: "other",
+          exitCode: 1,
+        },
+      });
+      if (this.inflight === job) this.inflight = null;
+      if (this.startedOnce) this.dropQueued("mux 未发送已终止");
+      else this.pump();
+      return;
+    }
+    if (job.settled || job.signal?.aborted) {
+      if (!job.settled) {
+        this.finishJob(job, {
+          status: "aborted",
+          written: false,
+          retryAllowed: false,
+          result: { ok: false, error: "aborted", error_type: "other", exitCode: 1 },
+        });
+      }
+      if (this.inflight === job) this.inflight = null;
+      this.pump();
+      return;
+    }
+    const id = String(this.nextId++);
+    job.id = id;
+    job.dispatched = true;
+    this.inflight = job;
+    job.timer = setTimeout(() => {
+      this.failTransport(`mux 超时 ${job.timeoutMs}ms`);
+    }, job.timeoutMs);
+    const payload = `${JSON.stringify({ id, argv: job.argv })}\n`;
+    try {
+      this.child.stdin.write(payload, (err) => {
+        if (err) this.failTransport("mux stdin 写入失败");
+      });
+    } catch {
+      this.failTransport("mux stdin 写入失败");
     }
   }
 
   async request(
     argv: string[],
     options: { timeoutMs?: number; signal?: AbortSignal } = {},
-  ): Promise<{ written: boolean; result: CliExecutionResult }> {
+  ): Promise<MuxCallResult> {
     if (options.signal?.aborted) {
       return {
+        status: "aborted",
         written: false,
+        retryAllowed: false,
         result: { ok: false, error: "aborted", error_type: "other", exitCode: 1 },
       };
     }
-    if (this.starting) {
-      const started = await this.starting;
-      if (!started) {
-        return {
-          written: false,
-          result: { ok: false, error: "mux 不可用", error_type: "other", exitCode: 1 },
-        };
-      }
-    }
-    if (!(await this.start()) || !this.alive || !this.child?.stdin) {
+    if (this.closed) {
       return {
+        status: "queue-dropped",
         written: false,
-        result: { ok: false, error: "mux 不可用", error_type: "other", exitCode: 1 },
+        retryAllowed: false,
+        result: { ok: false, error: "mux 未发送已终止", error_type: "other", exitCode: 1 },
       };
     }
-    if (options.signal?.aborted) {
-      return {
-        written: false,
-        result: { ok: false, error: "aborted", error_type: "other", exitCode: 1 },
-      };
-    }
-    const id = String(this.nextId++);
-    const payload = `${JSON.stringify({ id, argv })}\n`;
-    const stdin = this.child.stdin;
-    let written = false;
     const timeoutMs = options.timeoutMs && options.timeoutMs > 0 ? options.timeoutMs : DEFAULT_MUX_TIMEOUT_MS;
-    const result = await new Promise<CliExecutionResult>((resolve) => {
-      let settled = false;
-      const waiter: MuxPending = { resolve, sent: false };
-      this.pending.set(id, waiter);
-      const onAbort = () => {
-        this.pending.delete(id);
-        finish({ ok: false, error: "aborted", error_type: "other", exitCode: 1 });
-        this.failAll();
+    return new Promise<MuxCallResult>((resolve) => {
+      const job: MuxJob = {
+        argv,
+        timeoutMs,
+        signal: options.signal,
+        resolve,
+        dispatched: false,
+        settled: false,
       };
-      options.signal?.addEventListener("abort", onAbort);
-      const timer = setTimeout(() => {
-        this.pending.delete(id);
-        finish({
-          ok: false,
-          error: `mux 超时 ${timeoutMs}ms`,
-          error_type: "timeout",
-          exitCode: 1,
+      job.onAbort = () => {
+        if (job.dispatched) {
+          this.failTransport("aborted");
+          return;
+        }
+        const idx = this.queue.indexOf(job);
+        if (idx >= 0) this.queue.splice(idx, 1);
+        const wasInflight = this.inflight === job;
+        this.finishJob(job, {
+          status: "aborted",
+          written: false,
+          retryAllowed: false,
+          result: { ok: false, error: "aborted", error_type: "other", exitCode: 1 },
         });
-        this.failAll();
-      }, timeoutMs);
-      const finish = (value: CliExecutionResult) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        options.signal?.removeEventListener("abort", onAbort);
-        resolve(value);
+        if (wasInflight) {
+          this.inflight = null;
+          this.pump();
+        }
       };
-      waiter.resolve = finish;
-      try {
-        stdin.write(payload, (err) => {
-          if (err) {
-            this.pending.delete(id);
-            finish({
-              ok: false,
-              error: "mux stdin 写入失败",
-              error_type: "other",
-              exitCode: 1,
-            });
-            this.failAll();
-          }
-        });
-        waiter.sent = true;
-        written = true;
-      } catch {
-        this.pending.delete(id);
-        finish({
-          ok: false,
-          error: "mux stdin 写入失败",
-          error_type: "other",
-          exitCode: 1,
-        });
-      }
+      options.signal?.addEventListener("abort", job.onAbort);
+      this.queue.push(job);
+      this.pump();
     });
-    return { written, result };
   }
 
   async shutdown(): Promise<void> {
-    const child = this.child;
     this.closed = true;
+    this.dropQueued("mux 未发送已终止");
+    const current = this.inflight;
+    if (current && !current.dispatched) {
+      this.inflight = null;
+      this.finishJob(current, {
+        status: "queue-dropped",
+        written: false,
+        retryAllowed: false,
+        result: { ok: false, error: "mux 未发送已终止", error_type: "other", exitCode: 1 },
+      });
+    }
+    const child = this.child;
     if (!child) {
-      this.failAll();
+      if (this.inflight) {
+        this.finishJob(this.inflight, {
+          status: "queue-dropped",
+          written: false,
+          retryAllowed: false,
+          result: { ok: false, error: "mux 未发送已终止", error_type: "other", exitCode: 1 },
+        });
+        this.inflight = null;
+      }
       return;
     }
-    try {
-      child.stdin?.write(`${JSON.stringify({ id: "quit", quit: true })}\n`);
-    } catch {}
-    try {
-      child.stdin?.end();
-    } catch {}
+    const stdin = child.stdin;
+    if (stdin && stdin.writable) {
+      try {
+        stdin.write(`${JSON.stringify({ id: "quit", quit: true })}\n`);
+      } catch {}
+      try {
+        stdin.end();
+      } catch {}
+    }
     await Promise.race([
       new Promise<void>((resolve) => child.once("exit", () => resolve())),
       new Promise<void>((resolve) => setTimeout(resolve, 500)),
@@ -430,7 +560,7 @@ export class MuxClient {
         child.kill();
       } catch {}
     }
-    this.failAll();
+    this.failTransport("mux 未发送已终止");
   }
 }
 
@@ -512,11 +642,9 @@ export async function runPiUnityCli(
         exitCode: 2,
       };
     }
-    const { written, result } = await mux.request(args, options);
-    if (written) return result;
-    if (!result.ok && (result.error === "mux 响应丢失" || result.error === "aborted")) {
-      return result;
-    }
+    const call = await mux.request(args, options);
+    if (call.retryAllowed) return execPiUnity(args, options);
+    return call.result;
   }
   return execPiUnity(args, options);
 }

@@ -28,6 +28,8 @@ pi-coding-agent 扩展在 `session_start` 拉起隐藏子命令 `pi-unity mux`�
 
 mux 持有一条 Unity Named Pipe，已连接时每 5 秒 ping，broker 15 秒空闲会断。断线后下一条业务再连，已发出的请求不重放。当前 broker 同一时刻只服务一个客户端，mux 存活期间其它短 CLI 可能 `Pipe busy`。不要当成多 Agent 同时可用。本通道不恢复 slash UI。
 
+扩展侧对 mux 请求做 FIFO：同一时刻只向 stdin 写一条业务帧，排队不扣超时。排队取消只拿掉自己；在途取消或超时会杀掉当前 mux 进程，未发出的排队请求直接失败且不 exec 重放。只有 mux 根本没拉起成功才回退 `execFile`。
+
 
 ## CLI 命令速查
 
