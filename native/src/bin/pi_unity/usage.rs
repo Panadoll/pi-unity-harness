@@ -62,21 +62,37 @@ pub fn valid_flags(subcommand: &str) -> &'static str {
 }
 
 const RENAMES: &[(&str, &str)] = &[
-    ("--no-components", "--no-components 已删除；默认不含 components，全量用 --full 或 --fields components"),
-    ("--status", "--status 已改名；请用 --success（timeline）或 pi-unity status"),
+    (
+        "--no-components",
+        "--no-components 已删除；默认不含 components，全量用 --full 或 --fields components",
+    ),
+    (
+        "--status",
+        "--status 已改名；请用 --success（timeline）或 pi-unity status",
+    ),
 ];
 
-pub fn from_clap_error(err: clap::Error, json_mode: bool) -> (String, i32) {
+pub fn clap_to_cli_error(err: clap::Error) -> Result<String, CliError> {
     match err.kind() {
         ErrorKind::DisplayHelp | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand => {
-            (err.render().to_string(), 0)
+            Ok(err.render().to_string())
         }
-        ErrorKind::DisplayVersion => (format!("{VERSION}\n"), 0),
+        ErrorKind::DisplayVersion => Ok(format!("{VERSION}\n")),
         _ => {
             let rendered = err.render().to_string();
             let (msg, help) = translate_clap(&rendered);
-            (format_usage(&msg, &help, json_mode), 2)
+            Err(CliError::Usage { error: msg, help })
         }
+    }
+}
+
+pub fn from_clap_error(err: clap::Error, json_mode: bool) -> (String, i32) {
+    match clap_to_cli_error(err) {
+        Ok(out) => (out, 0),
+        Err(cli_err) => (
+            format_usage(cli_err.message(), &cli_err.help(), json_mode),
+            2,
+        ),
     }
 }
 

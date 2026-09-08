@@ -14,7 +14,7 @@ path = "src/bin/pi_unity/main.rs"
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "io-util", "net", "sync", "time", "macros", "process"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "io-std", "io-util", "net", "sync", "time", "macros", "process"] }
 clap = { version = "4.5", features = ["derive"] }
 base64 = "0.22"
 regex = "1"

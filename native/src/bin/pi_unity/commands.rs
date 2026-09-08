@@ -5,14 +5,17 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 
 use super::args::*;
-use super::client::{HarnessClient, CliError};
+use super::client::{CliError, HarnessClient};
 use super::home;
 use super::logging::TraceRecorder;
 use super::output::format_safe_output_with_opts;
 use super::schema::{self, ViewOptions};
 use super::usage;
 
-pub(crate) fn parse_param_pairs(pairs: &[String], explicit_json: Option<&str>) -> Result<Value, CliError> {
+pub(crate) fn parse_param_pairs(
+    pairs: &[String],
+    explicit_json: Option<&str>,
+) -> Result<Value, CliError> {
     let mut map = serde_json::Map::new();
 
     if let Some(json_str) = explicit_json {
@@ -93,9 +96,8 @@ fn normalize_skill_text(s: &str) -> String {
 fn check_skill_drift(project_root: &Path) -> Result<(), CliError> {
     let repo_root = find_skills_source_root(project_root);
     let skill_path = repo_root.join("skills/pi-unity/SKILL.md");
-    let committed = fs::read_to_string(&skill_path).map_err(|e| {
-        CliError::Other(format!("无法读取 {}: {}", skill_path.display(), e))
-    })?;
+    let committed = fs::read_to_string(&skill_path)
+        .map_err(|e| CliError::Other(format!("无法读取 {}: {}", skill_path.display(), e)))?;
     if skill_is_current(&committed) {
         Ok(())
     } else {
@@ -257,17 +259,20 @@ fn sync_skill_dir(src: &Path, dest: &Path) -> usize {
     let mut src_files = Vec::new();
     collect_managed_files_recursive(src, src, &mut src_files);
     src_files.sort();
-    let src_file_set: std::collections::HashSet<&str> = src_files.iter().map(|s| s.as_str()).collect();
+    let src_file_set: std::collections::HashSet<&str> =
+        src_files.iter().map(|s| s.as_str()).collect();
 
     let mut current_dest_files = Vec::new();
     collect_managed_files_recursive(dest, dest, &mut current_dest_files);
     current_dest_files.sort();
-    let current_dest_set: std::collections::HashSet<&str> = current_dest_files.iter().map(|s| s.as_str()).collect();
+    let current_dest_set: std::collections::HashSet<&str> =
+        current_dest_files.iter().map(|s| s.as_str()).collect();
 
     let old_manifest = read_skill_manifest(dest);
 
     if let Some(old) = old_manifest {
-        let old_manifest_set: std::collections::HashSet<&str> = old.files.iter().map(|s| s.as_str()).collect();
+        let old_manifest_set: std::collections::HashSet<&str> =
+            old.files.iter().map(|s| s.as_str()).collect();
         for file in current_dest_set {
             if old_manifest_set.contains(file) && !src_file_set.contains(file) {
                 let to_remove = dest.join(file);
@@ -406,8 +411,7 @@ async fn send_pipeline_command(
     timeout_ms: u64,
     ctx: &FormatCtx<'_>,
 ) -> Result<String, CliError> {
-    let params_json_str =
-        serde_json::to_string(&params).unwrap_or_else(|_| "{}".to_string());
+    let params_json_str = serde_json::to_string(&params).unwrap_or_else(|_| "{}".to_string());
     let hint = format!("pi-unity pipeline {name} --full");
     send_and_format(
         client,
@@ -472,10 +476,7 @@ pub(crate) async fn execute_harness_command(
         Commands::Eval(args) => {
             let (req_type, payload) = if let Some(code_str) = args.code {
                 recorder.record_sensitive("eval", "Evaluating inline C# code", &code_str);
-                (
-                    "validate_execute_code",
-                    json!({ "code": code_str }),
-                )
+                ("validate_execute_code", json!({ "code": code_str }))
             } else if let Some(file_str) = args.file {
                 let path_buf = PathBuf::from(&file_str);
                 let full_path = if path_buf.is_absolute() {
@@ -498,10 +499,7 @@ pub(crate) async fn execute_harness_command(
 
                 recorder.record("eval", &format!("Evaluating script file: {}", forward_rel));
 
-                (
-                    "validate_execute_file",
-                    json!({ "filePath": forward_rel }),
-                )
+                ("validate_execute_file", json!({ "filePath": forward_rel }))
             } else {
                 return Err(usage::usage_error(
                     "eval 需要 CODE 或 --file",
@@ -547,10 +545,8 @@ pub(crate) async fn execute_harness_command(
                 recorder.record("compile_poll", "Polling status for ready state");
                 match client.send_request("status", json!({}), 3000).await {
                     Ok(status_val) => {
-                        let is_ready_now = status_val
-                            .get("managedState")
-                            .and_then(Value::as_str)
-                            == Some("ready");
+                        let is_ready_now =
+                            status_val.get("managedState").and_then(Value::as_str) == Some("ready");
                         last_status = status_val;
                         if is_ready_now {
                             is_ready = true;
@@ -646,15 +642,11 @@ pub(crate) async fn execute_harness_command(
 
         Commands::Pipeline(args) => {
             let param_obj = parse_param_pairs(&args.params, args.params_json.as_deref())?;
-            recorder.record("pipeline", &format!("Executing pipeline command {}", args.name));
-            send_pipeline_command(
-                client,
-                &args.name,
-                param_obj,
-                args.timeout,
-                &ctx,
-            )
-            .await
+            recorder.record(
+                "pipeline",
+                &format!("Executing pipeline command {}", args.name),
+            );
+            send_pipeline_command(client, &args.name, param_obj, args.timeout, &ctx).await
         }
 
         Commands::RunTests(args) => {
@@ -747,7 +739,11 @@ pub(crate) async fn execute_harness_command(
             .await
         }
 
-        Commands::Skills(_) | Commands::Session(_) | Commands::Mark(_) | Commands::Setup(_) => {
+        Commands::Skills(_)
+        | Commands::Session(_)
+        | Commands::Mark(_)
+        | Commands::Setup(_)
+        | Commands::Mux => {
             unreachable!()
         }
     }
@@ -786,7 +782,8 @@ mod tests {
 
     #[test]
     fn sync_skill_dir_removes_stale_files_on_reinstall() {
-        let root = std::env::temp_dir().join(format!("pi-unity-skill-stale-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("pi-unity-skill-stale-{}", std::process::id()));
         let src = root.join("src");
         let dest = root.join("dest");
 
@@ -807,10 +804,16 @@ mod tests {
         assert!(dest.join("SKILL.md").is_file());
         assert!(dest.join("references/bar.md").is_file());
         assert!(dest.join("references/new.md").is_file());
-        assert!(!dest.join("references/stale.md").exists(), "Stale file must be removed");
+        assert!(
+            !dest.join("references/stale.md").exists(),
+            "Stale file must be removed"
+        );
 
         let manifest = read_skill_manifest(&dest).expect("Manifest must be updated");
-        assert_eq!(manifest.files, vec!["SKILL.md", "references/bar.md", "references/new.md"]);
+        assert_eq!(
+            manifest.files,
+            vec!["SKILL.md", "references/bar.md", "references/new.md"]
+        );
 
         let _ = fs::remove_dir_all(root);
     }
@@ -839,17 +842,27 @@ mod tests {
         // Stale tool file removed
         assert!(!dest.join("references/stale.md").exists());
         // Updated tool file updated
-        assert_eq!(fs::read_to_string(dest.join("references/bar.md")).unwrap(), "# bar updated\n");
+        assert_eq!(
+            fs::read_to_string(dest.join("references/bar.md")).unwrap(),
+            "# bar updated\n"
+        );
         // User files preserved
-        assert_eq!(fs::read_to_string(dest.join("user_notes.md")).unwrap(), "# my notes\n");
-        assert_eq!(fs::read_to_string(dest.join("custom/guide.md")).unwrap(), "# my guide\n");
+        assert_eq!(
+            fs::read_to_string(dest.join("user_notes.md")).unwrap(),
+            "# my notes\n"
+        );
+        assert_eq!(
+            fs::read_to_string(dest.join("custom/guide.md")).unwrap(),
+            "# my guide\n"
+        );
 
         let _ = fs::remove_dir_all(root);
     }
 
     #[test]
     fn legacy_skill_with_only_matching_skill_md_is_removed() {
-        let root = std::env::temp_dir().join(format!("pi-unity-skill-legacy-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("pi-unity-skill-legacy-{}", std::process::id()));
         let target = root.join("skills");
         write_file(
             &target.join("pi-unity-eval/SKILL.md"),
