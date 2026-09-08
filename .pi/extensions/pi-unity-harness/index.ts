@@ -85,7 +85,11 @@ export interface CliExecutionResult {
   exitCode?: number;
   truncated?: boolean;
   savedScratchPath?: string;
+  text?: string;
 }
+
+const DEFAULT_MUX_TIMEOUT_MS = 120000;
+const MAX_MUX_STDOUT_CHARS = 32 * 1024 * 1024;
 
 interface MuxPending {
   resolve: (value: CliExecutionResult) => void;
@@ -178,16 +182,21 @@ export class MuxClient {
     private readonly bin: string,
     private readonly projectPath?: string,
     private readonly spawnImpl: typeof spawn = spawn,
+    private readonly cwd?: string,
   ) {}
 
   get alive(): boolean {
     return !this.closed && this.child !== null && this.child.exitCode === null;
   }
 
+  get fixedProjectPath(): string | undefined {
+    return this.projectPath;
+  }
+
   async start(): Promise<boolean> {
+    if (this.starting) return this.starting;
     if (this.alive) return true;
     if (this.closed) return false;
-    if (this.starting) return this.starting;
     this.starting = this.spawnMux();
     try {
       return await this.starting;
@@ -211,6 +220,7 @@ export class MuxClient {
         child = this.spawnImpl(this.bin, args, {
           stdio: ["pipe", "pipe", "pipe"],
           windowsHide: true,
+          cwd: this.cwd,
           env: {
             ...process.env,
             PI_UNITY_CLIENT: "pi-ext",
@@ -226,14 +236,17 @@ export class MuxClient {
       child.stdout?.on("data", (chunk: string) => this.onStdout(chunk));
       child.stderr?.resume();
       child.once("error", () => {
+        if (this.child !== child) return;
         this.failAll();
         finish(false);
       });
       child.once("exit", () => {
+        if (this.child !== child) return;
         this.failAll();
         finish(false);
       });
       child.stdin?.once("error", () => {
+        if (this.child !== child) return;
         this.failAll();
         finish(false);
       });
@@ -245,6 +258,10 @@ export class MuxClient {
 
   private onStdout(chunk: string): void {
     this.buffer += chunk;
+    if (this.buffer.length > MAX_MUX_STDOUT_CHARS) {
+      this.failAll();
+      return;
+    }
     let nl = this.buffer.indexOf("\n");
     while (nl >= 0) {
       const line = this.buffer.slice(0, nl).replace(/\r$/, "");
@@ -300,63 +317,90 @@ export class MuxClient {
     argv: string[],
     options: { timeoutMs?: number; signal?: AbortSignal } = {},
   ): Promise<{ written: boolean; result: CliExecutionResult }> {
+    if (options.signal?.aborted) {
+      return {
+        written: false,
+        result: { ok: false, error: "aborted", error_type: "other", exitCode: 1 },
+      };
+    }
+    if (this.starting) {
+      const started = await this.starting;
+      if (!started) {
+        return {
+          written: false,
+          result: { ok: false, error: "mux 不可用", error_type: "other", exitCode: 1 },
+        };
+      }
+    }
     if (!(await this.start()) || !this.alive || !this.child?.stdin) {
       return {
         written: false,
         result: { ok: false, error: "mux 不可用", error_type: "other", exitCode: 1 },
       };
     }
+    if (options.signal?.aborted) {
+      return {
+        written: false,
+        result: { ok: false, error: "aborted", error_type: "other", exitCode: 1 },
+      };
+    }
     const id = String(this.nextId++);
     const payload = `${JSON.stringify({ id, argv })}\n`;
     const stdin = this.child.stdin;
     let written = false;
+    const timeoutMs = options.timeoutMs && options.timeoutMs > 0 ? options.timeoutMs : DEFAULT_MUX_TIMEOUT_MS;
     const result = await new Promise<CliExecutionResult>((resolve) => {
+      let settled = false;
       const waiter: MuxPending = { resolve, sent: false };
       this.pending.set(id, waiter);
       const onAbort = () => {
-        if (this.pending.delete(id)) {
-          resolve({
-            ok: false,
-            error: "aborted",
-            error_type: "other",
-            exitCode: 1,
-          });
-        }
+        this.pending.delete(id);
+        finish({ ok: false, error: "aborted", error_type: "other", exitCode: 1 });
+        this.failAll();
       };
-      options.signal?.addEventListener("abort", onAbort, { once: true });
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      if (options.timeoutMs && options.timeoutMs > 0) {
-        timer = setTimeout(() => {
-          if (this.pending.delete(id)) {
-            resolve({
-              ok: false,
-              error: `mux 超时 ${options.timeoutMs}ms`,
-              error_type: "timeout",
-              exitCode: 1,
-            });
-          }
-        }, options.timeoutMs);
-      }
+      options.signal?.addEventListener("abort", onAbort);
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        finish({
+          ok: false,
+          error: `mux 超时 ${timeoutMs}ms`,
+          error_type: "timeout",
+          exitCode: 1,
+        });
+        this.failAll();
+      }, timeoutMs);
       const finish = (value: CliExecutionResult) => {
-        if (timer) clearTimeout(timer);
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
         options.signal?.removeEventListener("abort", onAbort);
         resolve(value);
       };
       waiter.resolve = finish;
-      waiter.sent = true;
-      written = true;
-      stdin.write(payload, (err) => {
-        if (err) {
-          this.pending.delete(id);
-          finish({
-            ok: false,
-            error: "mux stdin 写入失败",
-            error_type: "other",
-            exitCode: 1,
-          });
-          this.failAll();
-        }
-      });
+      try {
+        stdin.write(payload, (err) => {
+          if (err) {
+            this.pending.delete(id);
+            finish({
+              ok: false,
+              error: "mux stdin 写入失败",
+              error_type: "other",
+              exitCode: 1,
+            });
+            this.failAll();
+          }
+        });
+        waiter.sent = true;
+        written = true;
+      } catch {
+        this.pending.delete(id);
+        finish({
+          ok: false,
+          error: "mux stdin 写入失败",
+          error_type: "other",
+          exitCode: 1,
+        });
+      }
     });
     return { written, result };
   }
@@ -440,15 +484,34 @@ async function execPiUnity(
 }
 
 /** Execute pi-unity CLI asynchronously and return parsed JSON */
+function sameProjectPath(a: string, b: string): boolean {
+  return resolve(a) === resolve(b);
+}
+
 export async function runPiUnityCli(
   args: string[],
   options: { projectPath?: string; timeoutMs?: number; signal?: AbortSignal } = {},
 ): Promise<CliExecutionResult> {
+  if (options.signal?.aborted) {
+    return { ok: false, error: "aborted", error_type: "other", exitCode: 1 };
+  }
   const mux = activeMux;
   if (mux) {
+    const muxProject = mux.fixedProjectPath;
+    if (options.projectPath && muxProject && !sameProjectPath(options.projectPath, muxProject)) {
+      return {
+        ok: false,
+        error: `mux 已绑定工程 ${muxProject}，不能改用 ${options.projectPath}`,
+        error_type: "usage",
+        help: ["不要在 mux 会话中传不同的 --project-path"],
+        exitCode: 2,
+      };
+    }
     const { written, result } = await mux.request(args, options);
     if (written) return result;
-    if (!result.ok && result.error === "mux 响应丢失") return result;
+    if (!result.ok && (result.error === "mux 响应丢失" || result.error === "aborted")) {
+      return result;
+    }
   }
   return execPiUnity(args, options);
 }
@@ -519,9 +582,9 @@ export default function (pi: ExtensionAPI) {
     return formatResult(await runPiUnityCli(args, options));
   }
 
-  async function refreshDynamicPipelineTools() {
+  async function refreshDynamicPipelineTools(signal?: AbortSignal) {
     try {
-      const res = await runPiUnityCli(["list-commands"], { timeoutMs: 15000 });
+      const res = await runPiUnityCli(["list-commands", "--full"], { timeoutMs: 15000, signal });
       if (!res.ok || !res.result) return;
       const list = res.result as PipelineCommandList;
       const filtered = filterPipelineCommands(list);
@@ -538,8 +601,8 @@ export default function (pi: ExtensionAPI) {
             description: cmd.description || `Execute Unity Pipeline command: ${cmd.name}`,
             promptSnippet: `Use ${toolName} to execute the ${cmd.name} pipeline command.`,
             parameters: schema,
-            async execute(_toolCallId, params) {
-              return runTool(["pipeline", cmd.name, "--params-json", JSON.stringify(params ?? {})]);
+            async execute(_toolCallId, params, signal) {
+              return runTool(["pipeline", cmd.name, "--params-json", JSON.stringify(params ?? {})], { signal });
             },
           });
           dynamicallyRegisteredTools.add(toolName);
@@ -553,13 +616,19 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
     settings = loadUnityHarnessSettings();
     if (settings.enabled) {
-      ctx.systemPrompt += `\n\n${UNITY_VERIFY_WORKFLOW_PROMPT}`;
       const projectPath = process.env.UNITY_PROJECT_PATH?.trim() || undefined;
-      sessionMux = new MuxClient(findPiUnityBinary(), projectPath);
+      sessionMux = new MuxClient(findPiUnityBinary(), projectPath, spawn, ctx.cwd);
       setActiveMux(sessionMux);
       void sessionMux.start();
       void refreshDynamicPipelineTools();
     }
+  });
+
+  pi.on("before_agent_start", (event) => {
+    settings = loadUnityHarnessSettings();
+    if (!settings.enabled) return;
+    if (event.systemPrompt.includes(UNITY_VERIFY_WORKFLOW_PROMPT)) return;
+    return { systemPrompt: `${event.systemPrompt}\n\n${UNITY_VERIFY_WORKFLOW_PROMPT}` };
   });
 
   pi.on("session_shutdown", async () => {
@@ -594,8 +663,8 @@ export default function (pi: ExtensionAPI) {
     parameters: toolSchema({
       timeoutMs: Type.Number({ description: "Timeout in milliseconds, default 5000" }),
     }),
-    async execute(_toolCallId, params) {
-      return runTool(["ping", "--timeout", String(params.timeoutMs ?? 5000)]);
+    async execute(_toolCallId, params, signal) {
+      return runTool(["ping", "--timeout", String(params.timeoutMs ?? 5000)], { signal });
     },
   });
 
@@ -608,8 +677,8 @@ export default function (pi: ExtensionAPI) {
     parameters: toolSchema({
       timeoutMs: Type.Number({ description: "Timeout in milliseconds, default 5000" }),
     }),
-    async execute(_toolCallId, params) {
-      return runTool(["status", "--timeout", String(params.timeoutMs ?? 5000)]);
+    async execute(_toolCallId, params, signal) {
+      return runTool(["status", "--timeout", String(params.timeoutMs ?? 5000)], { signal });
     },
   });
 
@@ -627,7 +696,7 @@ export default function (pi: ExtensionAPI) {
       noComponents: Type.Boolean({ description: "Omit component details for smaller output" }),
       timeoutMs: Type.Number({ description: "Timeout in milliseconds, default 20000" }),
     }),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params, signal) {
       const args = ["snapshot"];
       pushArg(args, "--depth", params.depth);
       pushArg(args, "--max-nodes", params.maxNodes);
@@ -635,7 +704,7 @@ export default function (pi: ExtensionAPI) {
       pushArg(args, "--log-level", params.logLevel);
       if (params.noComponents) args.push("--no-components");
       pushArg(args, "--timeout", params.timeoutMs);
-      return runTool(args);
+      return runTool(args, { signal });
     },
   });
 
@@ -649,10 +718,10 @@ export default function (pi: ExtensionAPI) {
       code: Type.String({ description: "C# code or expression to execute in Unity Editor." }),
       timeoutMs: Type.Number({ description: "Timeout in milliseconds, default 30000" }),
     }, ["code"]),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params, signal) {
       const args = ["eval", params.code];
       pushArg(args, "--timeout", params.timeoutMs);
-      return runTool(args);
+      return runTool(args, { signal });
     },
   });
 
@@ -666,10 +735,10 @@ export default function (pi: ExtensionAPI) {
       filePath: Type.String({ description: "Path to .cs or .repl file (relative to project root or absolute)." }),
       timeoutMs: Type.Number({ description: "Timeout in milliseconds, default 30000" }),
     }, ["filePath"]),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params, signal) {
       const args = ["eval", "-f", params.filePath];
       pushArg(args, "--timeout", params.timeoutMs);
-      return runTool(args);
+      return runTool(args, { signal });
     },
   });
 
@@ -682,10 +751,10 @@ export default function (pi: ExtensionAPI) {
     parameters: toolSchema({
       timeoutMs: Type.Number({ description: "Timeout in milliseconds, default 120000" }),
     }),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params, signal) {
       const args = ["compile"];
       pushArg(args, "--timeout", params.timeoutMs);
-      return runTool(args, { timeoutMs: (params.timeoutMs ?? 120000) + 10000 });
+      return runTool(args, { timeoutMs: (params.timeoutMs ?? 120000) + 10000, signal });
     },
   });
 
@@ -698,12 +767,12 @@ export default function (pi: ExtensionAPI) {
     parameters: toolSchema({
       timeoutMs: Type.Number({ description: "Timeout in milliseconds, default 15000" }),
     }),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params, signal) {
       assertEnabled();
       const args = ["list-commands"];
       pushArg(args, "--timeout", params.timeoutMs);
-      void refreshDynamicPipelineTools();
-      return runTool(args);
+      void refreshDynamicPipelineTools(signal);
+      return runTool(args, { signal });
     },
   });
 
@@ -728,14 +797,14 @@ export default function (pi: ExtensionAPI) {
       }),
       timeoutMs: Type.Number({ description: "Timeout in milliseconds, default 30000" }),
     }),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params, signal) {
       const cmdName = (params.name || params.command || "").trim();
-      if (!cmdName) return runTool(["list-commands"]);
+      if (!cmdName) return runTool(["list-commands"], { signal });
       const args = ["pipeline", cmdName];
       const paramObj = params.parameters || params.params;
       if (paramObj) args.push("--params-json", JSON.stringify(paramObj));
       pushArg(args, "--timeout", params.timeoutMs);
-      return runTool(args);
+      return runTool(args, { signal });
     },
   });
 
@@ -750,12 +819,12 @@ export default function (pi: ExtensionAPI) {
       filter: Type.String({ description: "Optional test name or namespace filter pattern" }),
       timeoutMs: Type.Number({ description: "Timeout in milliseconds, default 330000" }),
     }),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params, signal) {
       const args = ["run-tests"];
       pushArg(args, "--mode", params.mode);
       pushArg(args, "--filter", params.filter);
       pushArg(args, "--timeout", params.timeoutMs);
-      return runTool(args, { timeoutMs: (params.timeoutMs ?? 330000) + 10000 });
+      return runTool(args, { timeoutMs: (params.timeoutMs ?? 330000) + 10000, signal });
     },
   });
 
@@ -771,13 +840,13 @@ export default function (pi: ExtensionAPI) {
       overlay: Type.String({ description: "Overlay mode: grid, annotations, both, or none (default: both)" }),
       timeoutMs: Type.Number({ description: "Timeout in milliseconds, default 30000" }),
     }),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params, signal) {
       const args = ["observe"];
       pushArg(args, "--frames", params.frames);
       pushArg(args, "--interval", params.intervalMs);
       pushArg(args, "--overlay", params.overlay);
       pushArg(args, "--timeout", params.timeoutMs);
-      return runTool(args);
+      return runTool(args, { signal });
     },
   });
 
@@ -792,12 +861,12 @@ export default function (pi: ExtensionAPI) {
       outPath: Type.String({ description: "Output path for the saved image file" }),
       timeoutMs: Type.Number({ description: "Timeout in milliseconds, default 30000" }),
     }),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params, signal) {
       const args = ["capture"];
       pushArg(args, "--mode", params.mode);
       pushArg(args, "--out", params.outPath);
       pushArg(args, "--timeout", params.timeoutMs);
-      return runTool(args);
+      return runTool(args, { signal });
     },
   });
 
@@ -812,12 +881,12 @@ export default function (pi: ExtensionAPI) {
       success: Type.String({ description: "Filter status: all, success, or failure (default: all)" }),
       timeoutMs: Type.Number({ description: "Timeout in milliseconds, default 15000" }),
     }),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params, signal) {
       const args = ["timeline"];
       pushArg(args, "--limit", params.limit);
       pushArg(args, "--success", params.success);
       pushArg(args, "--timeout", params.timeoutMs);
-      return runTool(args);
+      return runTool(args, { signal });
     },
   });
 }
