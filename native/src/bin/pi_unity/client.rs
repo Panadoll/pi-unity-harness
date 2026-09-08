@@ -158,7 +158,7 @@ impl HarnessClient {
                     Ok(client) => return Ok::<_, CliError>(client),
                     Err(e)
                         if e.raw_os_error() == Some(231)
-                            && start.elapsed() < Duration::from_millis(3000) =>
+                            && start.elapsed() < Duration::from_millis(timeout_ms.min(3000)) =>
                     {
                         recorder.add_reconnect();
                         recorder.record("pipe", "Pipe busy (231), backing off 50ms...");
@@ -175,12 +175,12 @@ impl HarnessClient {
             }
         };
 
-        let pipe_client = tokio::time::timeout(Duration::from_millis(5000), connect_fut)
+        let pipe_client = tokio::time::timeout(Duration::from_millis(timeout_ms.max(50)), connect_fut)
             .await
             .map_err(|_| {
                 CliError::BridgeNotFound(format!(
-                    "Connection to Named Pipe {} timed out after 5000ms",
-                    pipe_name
+                    "连接 Named Pipe {} 超时（{}ms）",
+                    pipe_name, timeout_ms
                 ))
             })??;
 
@@ -244,7 +244,7 @@ impl HarnessClient {
             ))
         };
 
-        let timeout_duration = Duration::from_millis(timeout_ms.max(1000));
+        let timeout_duration = Duration::from_millis(timeout_ms.max(50));
         let resp = tokio::time::timeout(timeout_duration, read_fut)
             .await
             .map_err(|_| {

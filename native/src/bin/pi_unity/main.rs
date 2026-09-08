@@ -23,7 +23,7 @@ use args::{Commands, SessionSubcommands};
 use std::fs;
 use client::{CliError, HarnessClient, normalize_pipe_name};
 use commands::{execute_harness_command, handle_skills_command, parse_param_pairs};
-use discovery::resolve_project_root;
+use discovery::{resolve_project_root, resolve_project_root_fast};
 use output::{emit_value, format_safe_output, is_base64_data, strip_large_base64_and_save, MAX_SAFE_RESPONSE_CHARS};
 use schema::ViewOptions;
 use logging::{
@@ -297,37 +297,26 @@ async fn main() -> ExitCode {
     )
 }
 
+const HOME_PROBE_MS: u64 = 200;
+
 async fn run_home(
     project_path: Option<&str>,
     json_mode: bool,
     recorder: Arc<TraceRecorder>,
 ) -> Result<String, CliError> {
     let bin = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("pi-unity"));
-    let project = resolve_project_root(project_path).ok();
+    let project = resolve_project_root_fast(project_path).ok();
     let mut status = None;
-    let mut snapshot = None;
     let mut reason = None;
     if let Some(root) = project.as_ref() {
         match HarnessClient::new(root.clone(), recorder.clone()) {
             Ok(mut client) => {
-                if client.handshake().await.is_ok() {
-                    status = client.send_request("status", json!({}), 3000).await.ok();
-                    snapshot = client
-                        .send_request(
-                            "context_snapshot",
-                            json!({
-                                "maxDepth": 1,
-                                "maxNodes": 20,
-                                "logLimit": 20,
-                                "logLevel": "error",
-                                "includeComponents": false,
-                            }),
-                            8000,
-                        )
-                        .await
-                        .ok();
-                } else {
-                    reason = Some("协议握手失败".to_string());
+                status = client
+                    .send_request("status", json!({}), HOME_PROBE_MS)
+                    .await
+                    .ok();
+                if status.is_none() {
+                    reason = Some("broker 未在 200ms 内响应".to_string());
                 }
             }
             Err(e) => reason = Some(e.message().to_string()),
@@ -350,7 +339,7 @@ async fn run_home(
     Ok(home::render_home(
         &bin,
         status.as_ref(),
-        snapshot.as_ref(),
+        None,
         project_path,
         reason.as_deref(),
     ))

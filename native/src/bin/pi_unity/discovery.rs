@@ -4,14 +4,21 @@ use std::process::Command;
 
 use super::client::{BridgeJson, CliError};
 
-pub(crate) fn resolve_project_root(project_path_arg: Option<&str>) -> Result<PathBuf, CliError> {
+fn has_bridge(path: &Path) -> bool {
+    path.join("Library/PiUnityHarness/bridge.json").exists()
+}
+
+/// 只看显式路径、环境变量和 cwd/父目录。不扫进程，供无参 home 使用。
+pub(crate) fn resolve_project_root_fast(
+    project_path_arg: Option<&str>,
+) -> Result<PathBuf, CliError> {
     if let Some(explicit) = project_path_arg {
         let p = PathBuf::from(explicit);
         if p.exists() {
             return Ok(fs::canonicalize(&p).unwrap_or(p));
         }
         return Err(CliError::BridgeNotFound(format!(
-            "Specified project path does not exist: {}",
+            "指定的项目路径不存在: {}",
             explicit
         )));
     }
@@ -19,23 +26,20 @@ pub(crate) fn resolve_project_root(project_path_arg: Option<&str>) -> Result<Pat
     if let Ok(env_path) = std::env::var("UNITY_PROJECT_PATH") {
         if !env_path.trim().is_empty() {
             let p = PathBuf::from(env_path.trim());
-            if p.join("Library/PiUnityHarness/bridge.json").exists() {
+            if has_bridge(&p) {
                 return Ok(fs::canonicalize(&p).unwrap_or(p));
             }
         }
     }
 
-    // Check CWD
     if let Ok(cwd) = std::env::current_dir() {
-        if cwd.join("Library/PiUnityHarness/bridge.json").exists() {
+        if has_bridge(&cwd) {
             return Ok(cwd);
         }
-
-        // Check up to 5 parent levels
         let mut curr = cwd.as_path();
         for _ in 0..5 {
             if let Some(parent) = curr.parent() {
-                if parent.join("Library/PiUnityHarness/bridge.json").exists() {
+                if has_bridge(parent) {
                     return Ok(parent.to_path_buf());
                 }
                 curr = parent;
@@ -45,7 +49,19 @@ pub(crate) fn resolve_project_root(project_path_arg: Option<&str>) -> Result<Pat
         }
     }
 
-    // Scan running Unity.exe processes via PowerShell
+    Err(CliError::BridgeNotFound(
+        "找不到正在运行的 Unity Editor 或未加载 com.pi.unity-harness".to_string(),
+    ))
+}
+
+pub(crate) fn resolve_project_root(project_path_arg: Option<&str>) -> Result<PathBuf, CliError> {
+    match resolve_project_root_fast(project_path_arg) {
+        Ok(root) => return Ok(root),
+        Err(err) if project_path_arg.is_some() => return Err(err),
+        Err(_) => {}
+    }
+
+    // 子命令才扫进程。无参 home 不走这里。
     if cfg!(windows) {
         if let Ok(output) = Command::new("powershell.exe")
             .args([
@@ -64,7 +80,7 @@ pub(crate) fn resolve_project_root(project_path_arg: Option<&str>) -> Result<Pat
                     let matched_str = cap.get(1).or_else(|| cap.get(2)).or_else(|| cap.get(3));
                     if let Some(m) = matched_str {
                         let candidate = PathBuf::from(m.as_str().trim());
-                        if candidate.join("Library/PiUnityHarness/bridge.json").exists() {
+                        if has_bridge(&candidate) {
                             return Ok(fs::canonicalize(&candidate).unwrap_or(candidate));
                         }
                     }
@@ -74,7 +90,7 @@ pub(crate) fn resolve_project_root(project_path_arg: Option<&str>) -> Result<Pat
     }
 
     Err(CliError::BridgeNotFound(
-        "Could not find Unity project with active bridge.json. Ensure Unity Editor is running with com.pi.unity-harness installed, or provide --project-path."
+        "找不到带 bridge.json 的 Unity 项目。请打开已加载 com.pi.unity-harness 的 Editor，或提供 --project-path。"
             .to_string(),
     ))
 }
@@ -83,13 +99,13 @@ pub(crate) fn load_bridge_json(project_root: &Path) -> Result<BridgeJson, CliErr
     let bridge_path = project_root.join("Library/PiUnityHarness/bridge.json");
     if !bridge_path.exists() {
         return Err(CliError::BridgeNotFound(format!(
-            "bridge.json not found at {}. Is Unity Editor running with com.pi.unity-harness?",
+            "找不到 bridge.json: {}。Unity Editor 是否已加载 com.pi.unity-harness？",
             bridge_path.display()
         )));
     }
 
     let mut content = fs::read_to_string(&bridge_path).map_err(|e| {
-        CliError::BridgeNotFound(format!("Failed to read {}: {}", bridge_path.display(), e))
+        CliError::BridgeNotFound(format!("无法读取 {}: {}", bridge_path.display(), e))
     })?;
 
     if content.starts_with('\u{feff}') {
@@ -97,8 +113,22 @@ pub(crate) fn load_bridge_json(project_root: &Path) -> Result<BridgeJson, CliErr
     }
 
     let bridge: BridgeJson = serde_json::from_str(&content).map_err(|e| {
-        CliError::BridgeNotFound(format!("Failed to parse {}: {}", bridge_path.display(), e))
+        CliError::BridgeNotFound(format!("无法解析 {}: {}", bridge_path.display(), e))
     })?;
 
     Ok(bridge)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fast_path_missing_explicit_path_fails_without_powershell() {
+        let err = resolve_project_root_fast(Some(
+            "Z:/definitely-not-a-unity-project-pi-unity-bench",
+        ))
+        .unwrap_err();
+        assert!(err.message().contains("不存在"));
+    }
 }
