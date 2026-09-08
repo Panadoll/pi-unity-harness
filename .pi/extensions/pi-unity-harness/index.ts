@@ -249,31 +249,52 @@ export class MuxClient {
       }
       this.child = child;
       this.closed = false;
-      this.startedOnce = true;
       child.stdout?.setEncoding("utf8");
       child.stdout?.on("data", (chunk: string) => {
         if (this.child !== child) return;
         this.onStdout(chunk);
       });
       child.stderr?.resume();
+      const failStart = () => {
+        if (this.child === child) this.child = null;
+        this.buffer = "";
+        try {
+          child.kill();
+        } catch {}
+        finish(false);
+      };
+      child.once("spawn", () => {
+        if (this.child !== child) return;
+        this.startedOnce = true;
+        finish(true);
+      });
       child.once("error", () => {
         if (this.child !== child) return;
+        if (!this.startedOnce) {
+          failStart();
+          return;
+        }
         this.failTransport("mux 进程错误");
         finish(false);
       });
       child.once("exit", () => {
         if (this.child !== child) return;
+        if (!this.startedOnce) {
+          failStart();
+          return;
+        }
         this.failTransport("mux 进程退出");
         finish(false);
       });
       child.stdin?.once("error", () => {
         if (this.child !== child) return;
+        if (!this.startedOnce) {
+          failStart();
+          return;
+        }
         this.failTransport("mux stdin 错误");
         finish(false);
       });
-      if (child.pid) {
-        queueMicrotask(() => finish(this.alive));
-      }
     });
   }
 
@@ -415,20 +436,20 @@ export class MuxClient {
       return;
     }
     if (!started || !this.alive || !this.child?.stdin) {
+      const canFallback = !this.startedOnce;
       this.finishJob(job, {
-        status: this.startedOnce ? "queue-dropped" : "unavailable-before-start",
+        status: canFallback ? "unavailable-before-start" : "queue-dropped",
         written: false,
-        retryAllowed: !this.startedOnce,
+        retryAllowed: canFallback,
         result: {
           ok: false,
-          error: this.startedOnce ? "mux 未发送已终止" : "mux 不可用",
+          error: canFallback ? "mux 不可用" : "mux 未发送已终止",
           error_type: "other",
           exitCode: 1,
         },
       });
       if (this.inflight === job) this.inflight = null;
-      if (this.startedOnce) this.dropQueued("mux 未发送已终止");
-      else this.pump();
+      this.dropQueued("mux 未发送已终止");
       return;
     }
     if (job.settled || job.signal?.aborted) {
