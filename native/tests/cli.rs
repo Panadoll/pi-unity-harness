@@ -32,12 +32,18 @@ fn version_fast_path_prints_bare_version() {
 
 #[test]
 fn no_args_home_is_not_usage() {
+    let started = std::time::Instant::now();
     let (code, stdout, _stderr) = run_cli(&[]);
+    let elapsed_ms = started.elapsed().as_millis();
     assert_eq!(code, 0);
     assert!(stdout.contains("bin:"));
     assert!(stdout.contains("description:"));
     assert!(stdout.contains("snapshot"));
     assert!(!stdout.to_lowercase().contains("usage:"));
+    assert!(
+        elapsed_ms < 2000,
+        "无参 home 必须在 2s 内返回，实际 {elapsed_ms}ms"
+    );
 }
 
 #[test]
