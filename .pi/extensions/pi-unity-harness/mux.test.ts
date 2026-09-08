@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { EventEmitter } from "node:events";
+import { EventEmitter, getEventListeners } from "node:events";
 import { spawn } from "node:child_process";
 import { PassThrough } from "node:stream";
 import { test } from "node:test";
@@ -27,6 +27,7 @@ type FakeChild = EventEmitter & {
   exitCode: number | null;
   kill: () => boolean;
   pendingWriteCbs: Array<(err?: Error | null) => void>;
+  frames: Array<{ id: string; argv?: string[]; quit?: boolean }>;
 };
 
 function makeFakeChild(opts?: { holdWriteCb?: boolean }): FakeChild {
@@ -37,6 +38,7 @@ function makeFakeChild(opts?: { holdWriteCb?: boolean }): FakeChild {
   child.pid = 4242;
   child.exitCode = null;
   child.pendingWriteCbs = [];
+  child.frames = [];
   const origWrite = child.stdin.write.bind(child.stdin);
   child.stdin.write = ((chunk: unknown, encodingOrCb?: unknown, cb?: unknown) => {
     const callback =
@@ -45,6 +47,14 @@ function makeFakeChild(opts?: { holdWriteCb?: boolean }): FakeChild {
         : typeof cb === "function"
           ? (cb as (err?: Error | null) => void)
           : undefined;
+    const text = Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk);
+    for (const line of text.split("\n")) {
+      if (!line.trim()) continue;
+      try {
+        child.frames.push(JSON.parse(line) as { id: string; argv?: string[]; quit?: boolean });
+        child.emit("frame");
+      } catch {}
+    }
     origWrite(chunk as string | Buffer);
     if (callback) {
       if (opts?.holdWriteCb) child.pendingWriteCbs.push(callback);
@@ -57,7 +67,39 @@ function makeFakeChild(opts?: { holdWriteCb?: boolean }): FakeChild {
     child.emit("exit", 1);
     return true;
   };
+  queueMicrotask(() => {
+    if (child.exitCode === null) child.emit("spawn");
+  });
   return child;
+}
+
+function waitForFrames(child: FakeChild, count: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const onFrame = () => {
+      if (child.frames.length >= count) {
+        cleanup();
+        resolve();
+      }
+    };
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new Error(`waitForFrames timed out waiting for ${count}, have ${child.frames.length}`));
+    }, 2000);
+    const cleanup = () => {
+      clearTimeout(timer);
+      child.off("frame", onFrame);
+    };
+    if (child.frames.length >= count) {
+      cleanup();
+      resolve();
+      return;
+    }
+    child.on("frame", onFrame);
+  });
+}
+
+function reply(child: FakeChild, index: number, extra: Record<string, unknown>): void {
+  child.stdout.write(`${JSON.stringify({ id: child.frames[index].id, ...extra })}\n`);
 }
 
 test("MuxClient reuses one process for two requests", async () => {
@@ -372,6 +414,110 @@ test("stale write callback does not kill restarted mux", async () => {
     const third = await client.request(["ping"], { timeoutMs: 2000 });
     assert.equal(third.result.ok, true);
     assert.equal(children.length, 2);
+  } finally {
+    await client.shutdown();
+  }
+});
+
+test("missing exe is unavailable-before-start and only head may fallback", async () => {
+  const client = new MuxClient("Z:/definitely-missing-pi-unity.exe");
+  try {
+    const [a, b] = await Promise.all([
+      client.request(["status"]),
+      client.request(["ping"]),
+    ]);
+    const statuses = [a.status, b.status].sort();
+    assert.deepEqual(statuses, ["queue-dropped", "unavailable-before-start"]);
+    const head = a.status === "unavailable-before-start" ? a : b;
+    const rest = a.status === "unavailable-before-start" ? b : a;
+    assert.equal(head.retryAllowed, true);
+    assert.equal(head.written, false);
+    assert.equal(rest.retryAllowed, false);
+    assert.equal(rest.written, false);
+  } finally {
+    await client.shutdown();
+  }
+});
+
+test("manual fake mux is FIFO, abort/timeout drop queue, broker error keeps session", { timeout: 10000 }, async () => {
+  const children: FakeChild[] = [];
+  const spawnImpl = (() => {
+    const child = makeFakeChild();
+    children.push(child);
+    return child;
+  }) as typeof spawn;
+  const client = new MuxClient(process.execPath, undefined, spawnImpl);
+  const ac = new AbortController();
+  try {
+    const firstP = client.request(["one"], { timeoutMs: 2000 });
+    const secondP = client.request(["two"], { timeoutMs: 2000 });
+    const thirdP = client.request(["three"], { signal: ac.signal, timeoutMs: 2000 });
+    await waitForFrames(children[0], 1);
+    assert.equal(children[0].frames.length, 1);
+    assert.deepEqual(children[0].frames[0].argv, ["one"]);
+
+    reply(children[0], 0, {
+      ok: false,
+      exitCode: 1,
+      error: "broker boom",
+      error_type: "execution_failed",
+    });
+    const first = await firstP;
+    assert.equal(first.status, "completed");
+    assert.equal(first.retryAllowed, false);
+    assert.equal(first.result.ok, false);
+
+    await waitForFrames(children[0], 2);
+    assert.equal(children[0].frames.length, 2);
+    assert.deepEqual(children[0].frames[1].argv, ["two"]);
+
+    const abortListenersBefore = getEventListeners(ac.signal, "abort").length;
+    ac.abort();
+    const third = await thirdP;
+    assert.equal(third.status, "aborted");
+    assert.equal(third.written, false);
+    assert.equal(third.retryAllowed, false);
+    assert.equal(children[0].frames.length, 2);
+    assert.equal(getEventListeners(ac.signal, "abort").length, abortListenersBefore - 1);
+
+    reply(children[0], 1, { ok: true, exitCode: 0, result: { n: 2 } });
+    const second = await secondP;
+    assert.equal(second.status, "completed");
+    assert.equal(second.result.ok, true);
+    assert.equal(children.length, 1);
+
+    const inflightAbort = new AbortController();
+    const inFlight = client.request(["hold"], { signal: inflightAbort.signal, timeoutMs: 2000 });
+    const queued = client.request(["later"], { timeoutMs: 2000 });
+    await waitForFrames(children[0], 3);
+    assert.equal(children[0].frames.length, 3);
+    inflightAbort.abort();
+    const lost = await inFlight;
+    const dropped = await queued;
+    assert.equal(lost.status, "in-flight-lost");
+    assert.equal(lost.retryAllowed, false);
+    assert.equal(dropped.status, "queue-dropped");
+    assert.equal(dropped.retryAllowed, false);
+    assert.equal(dropped.written, false);
+
+    const afterP = client.request(["again"], { timeoutMs: 2000 });
+    await waitForFrames(children[1], 1);
+    reply(children[1], 0, { ok: true, exitCode: 0, result: { n: 3 } });
+    const after = await afterP;
+    assert.equal(after.status, "completed");
+    assert.equal(after.retryAllowed, false);
+    assert.equal(after.result.ok, true);
+    assert.equal(children.length, 2);
+
+    const hold = client.request(["shutdown-hold"], { timeoutMs: 2000 });
+    const queuedShut = client.request(["shutdown-queued"], { timeoutMs: 2000 });
+    await waitForFrames(children[1], 2);
+    const spawnBeforeShutdown = children.length;
+    const [holdRes, queuedRes] = await Promise.all([hold, queuedShut, client.shutdown()]);
+    assert.equal(holdRes.retryAllowed, false);
+    assert.equal(queuedRes.status, "queue-dropped");
+    assert.equal(queuedRes.retryAllowed, false);
+    assert.equal(children.length, spawnBeforeShutdown);
   } finally {
     await client.shutdown();
   }
