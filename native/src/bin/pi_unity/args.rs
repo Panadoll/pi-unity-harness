@@ -33,9 +33,6 @@ pub(crate) struct Cli {
     #[arg(long, global = true)]
     pub(crate) full: bool,
 
-    #[arg(short = 'v', visible_short_alias = 'V', long = "version", action = clap::ArgAction::Version, global = true)]
-    _version: bool,
-
     #[command(subcommand)]
     pub(crate) command: Option<Commands>,
 }

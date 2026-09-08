@@ -454,7 +454,7 @@ mod tests {
         let out = encode(&v);
         assert!(out.starts_with("error: eval 需要 CODE 或 --file\n"));
         assert!(out.contains("help[2]{run}:"));
-        assert!(out.contains("pi-unity eval \"<code>\""));
+        assert!(out.contains(r#"pi-unity eval \"<code>\""#));
     }
 
     #[test]
