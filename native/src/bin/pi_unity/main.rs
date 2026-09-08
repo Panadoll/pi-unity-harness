@@ -337,8 +337,15 @@ async fn run_mux(project_path: Option<&str>) -> ExitCode {
             _ = ping.tick() => {
                 if let Some(ref mut c) = client {
                     if c.is_connected() {
-                        if c.send_request("ping", json!({}), 2000).await.is_err() {
+                        let connected_before = c.is_connected();
+                        if c.reload_bridge().is_err() {
                             c.disconnect();
+                        } else if !c.is_connected() {
+                            // token/generation 变了，等下条业务再连
+                        } else if connected_before {
+                            if c.send_request("ping", json!({}), 2000).await.is_err() {
+                                c.disconnect();
+                            }
                         }
                     }
                 }
