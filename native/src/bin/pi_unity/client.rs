@@ -408,3 +408,101 @@ impl HarnessClient {
         Ok(BufReader::new(pipe_client))
     }
 }
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::Arc as StdArc;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::net::windows::named_pipe::{PipeMode, ServerOptions};
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn persistent_client_reuses_one_pipe_for_handshake_and_two_status() {
+        let pid = std::process::id();
+        let pipe_leaf = format!("pi_unity_mux_test_{pid}");
+        let pipe_name = format!(r"\\.\pipe\{pipe_leaf}");
+        let root = std::env::temp_dir().join(format!("pi-unity-mux-client-{pid}"));
+        let bridge_dir = root.join("Library/PiUnityHarness");
+        fs::create_dir_all(&bridge_dir).unwrap();
+        fs::write(
+            bridge_dir.join("bridge.json"),
+            format!(r#"{{"pipe":"{pipe_name}","token":"test-token","generation":1}}"#),
+        )
+        .unwrap();
+
+        let accept_count = StdArc::new(AtomicU32::new(0));
+        let caps_count = StdArc::new(AtomicU32::new(0));
+        let status_count = StdArc::new(AtomicU32::new(0));
+        let server_accept = accept_count.clone();
+        let server_caps = caps_count.clone();
+        let server_status = status_count.clone();
+        let server_pipe = pipe_name.clone();
+
+        let server = tokio::spawn(async move {
+            let server = ServerOptions::new()
+                .access_inbound(true)
+                .access_outbound(true)
+                .pipe_mode(PipeMode::Byte)
+                .create(&server_pipe)
+                .unwrap();
+            server.connect().await.unwrap();
+            server_accept.fetch_add(1, Ordering::SeqCst);
+            let (reader, mut writer) = tokio::io::split(server);
+            let mut lines = BufReader::new(reader).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                let req: Value = serde_json::from_str(&line).unwrap();
+                let id = req.get("id").and_then(Value::as_str).unwrap_or("");
+                let req_type = req.get("type").and_then(Value::as_str).unwrap_or("");
+                let result = match req_type {
+                    "bridge_capabilities" => {
+                        server_caps.fetch_add(1, Ordering::SeqCst);
+                        json!({"protocolVersion": 1})
+                    }
+                    "status" => {
+                        server_status.fetch_add(1, Ordering::SeqCst);
+                        json!({"managedState": "ready"})
+                    }
+                    other => panic!("unexpected request {other}"),
+                };
+                let reply = json!({"reply_to": id, "ok": true, "result": result});
+                let mut bytes = serde_json::to_vec(&reply).unwrap();
+                bytes.push(b'\n');
+                writer.write_all(&bytes).await.unwrap();
+                writer.flush().await.unwrap();
+                if server_status.load(Ordering::SeqCst) >= 2 {
+                    break;
+                }
+            }
+        });
+
+        let recorder = Arc::new(TraceRecorder::new("mux-test"));
+        let mut client = HarnessClient::new_persistent(root.clone(), recorder).unwrap();
+        let run = async {
+            client.handshake_with_timeout(3000).await.unwrap();
+            let a = client
+                .send_request("status", json!({}), 3000)
+                .await
+                .unwrap();
+            let b = client
+                .send_request("status", json!({}), 3000)
+                .await
+                .unwrap();
+            assert_eq!(a["managedState"], "ready");
+            assert_eq!(b["managedState"], "ready");
+            client.disconnect();
+        };
+        tokio::time::timeout(Duration::from_secs(8), run)
+            .await
+            .expect("client timed out");
+        tokio::time::timeout(Duration::from_secs(8), server)
+            .await
+            .expect("server timed out")
+            .unwrap();
+        assert_eq!(accept_count.load(Ordering::SeqCst), 1);
+        assert_eq!(caps_count.load(Ordering::SeqCst), 1);
+        assert_eq!(status_count.load(Ordering::SeqCst), 2);
+        let _ = fs::remove_dir_all(root);
+    }
+}

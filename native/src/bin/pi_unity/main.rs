@@ -702,6 +702,9 @@ fn handle_error(err: &CliError, json_mode: bool, project_root: Option<&Path>) {
 
 #[cfg(test)]
 mod tests {
+    use super::client::normalize_pipe_name;
+    use super::commands::parse_param_pairs;
+    use super::output::{format_safe_output, is_base64_data, strip_large_base64_and_save};
     use super::*;
 
     #[test]
