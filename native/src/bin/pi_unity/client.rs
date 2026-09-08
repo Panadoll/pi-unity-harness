@@ -229,13 +229,17 @@ impl HarnessClient {
         payload: Value,
         timeout_ms: u64,
     ) -> Result<Value, CliError> {
+        let deadline = Instant::now() + Duration::from_millis(timeout_ms.max(50));
         if self.persistent
             && req_type != "bridge_capabilities"
             && (!self.handshake_done || self.connection.is_none())
         {
-            self.handshake_with_timeout(timeout_ms).await?;
+            self.reload_bridge()?;
+            self.handshake_with_timeout(remaining_ms(deadline).max(50))
+                .await?;
         }
-        self.exchange(req_type, payload, timeout_ms).await
+        self.exchange(req_type, payload, remaining_ms(deadline).max(50))
+            .await
     }
 
     async fn exchange(
@@ -421,14 +425,20 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn persistent_client_reuses_one_pipe_for_handshake_and_two_status() {
         let pid = std::process::id();
-        let pipe_leaf = format!("pi_unity_mux_test_{pid}");
+        let stamp = now_ms();
+        let pipe_leaf = format!("pi_unity_mux_test_{pid}_{stamp}");
         let pipe_name = format!(r"\\.\pipe\{pipe_leaf}");
-        let root = std::env::temp_dir().join(format!("pi-unity-mux-client-{pid}"));
+        let root = std::env::temp_dir().join(format!("pi-unity-mux-client-{pid}-{stamp}"));
         let bridge_dir = root.join("Library/PiUnityHarness");
         fs::create_dir_all(&bridge_dir).unwrap();
         fs::write(
             bridge_dir.join("bridge.json"),
-            format!(r#"{{"pipe":"{pipe_name}","token":"test-token","generation":1}}"#),
+            serde_json::to_vec(&json!({
+                "pipe": pipe_name,
+                "token": "test-token",
+                "generation": 1
+            }))
+            .unwrap(),
         )
         .unwrap();
 
@@ -438,18 +448,18 @@ mod tests {
         let server_accept = accept_count.clone();
         let server_caps = caps_count.clone();
         let server_status = status_count.clone();
-        let server_pipe = pipe_name.clone();
+
+        let listener = ServerOptions::new()
+            .access_inbound(true)
+            .access_outbound(true)
+            .pipe_mode(PipeMode::Byte)
+            .create(&pipe_name)
+            .unwrap();
 
         let server = tokio::spawn(async move {
-            let server = ServerOptions::new()
-                .access_inbound(true)
-                .access_outbound(true)
-                .pipe_mode(PipeMode::Byte)
-                .create(&server_pipe)
-                .unwrap();
-            server.connect().await.unwrap();
+            listener.connect().await.unwrap();
             server_accept.fetch_add(1, Ordering::SeqCst);
-            let (reader, mut writer) = tokio::io::split(server);
+            let (reader, mut writer) = tokio::io::split(listener);
             let mut lines = BufReader::new(reader).lines();
             while let Ok(Some(line)) = lines.next_line().await {
                 let req: Value = serde_json::from_str(&line).unwrap();
