@@ -1,71 +1,106 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
+use super::version::VERSION;
+
 #[derive(Parser, Debug)]
 #[command(
     name = "pi-unity",
-    about = "CLI for Unity Editor AI Agent bridge (pi-unity-harness)",
-    version = "0.1.0"
+    about = "从 shell 驱动正在运行的 Unity Editor",
+    version = VERSION,
+    disable_version_flag = true,
+    subcommand_required = false,
+    arg_required_else_help = false,
+    after_help = "示例:\n  pi-unity\n  pi-unity snapshot\n  pi-unity eval \"UnityEngine.Application.unityVersion\""
 )]
 pub(crate) struct Cli {
-    /// Path to the Unity project root (defaults to auto-discovery)
+    /// Unity 项目根目录（默认自动发现）
     #[arg(long, global = true)]
     pub(crate) project_path: Option<String>,
 
-    /// Output responses in structured JSON format on stdout
+    /// stdout 输出 JSON（默认 TOON）
     #[arg(long, global = true)]
     pub(crate) json: bool,
 
-    /// Force full trace logging to traces/ directory even on success
+    /// 成功时也写完整 trace
     #[arg(long, global = true)]
     pub(crate) trace: bool,
 
+    /// 在默认列之外追加字段，逗号分隔
+    #[arg(long, global = true, value_delimiter = ',')]
+    pub(crate) fields: Vec<String>,
+
+    /// 输出长字段 / 全量 hierarchy / 完整 schema
+    #[arg(long, global = true)]
+    pub(crate) full: bool,
+
+    #[arg(short = 'v', visible_short_alias = 'V', long = "version", action = clap::ArgAction::Version, global = true)]
+    _version: bool,
+
     #[command(subcommand)]
-    pub(crate) command: Commands,
+    pub(crate) command: Option<Commands>,
 }
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum Commands {
-    /// Probe Unity Broker responsiveness
+    /// 探测 broker
+    #[command(after_help = "示例:\n  pi-unity ping\n  pi-unity ping --timeout 3000")]
     Ping(PingArgs),
 
-    /// Get Unity Editor and Broker status
+    /// Editor / 域重载 / 模态
+    #[command(after_help = "示例:\n  pi-unity status\n  pi-unity status --json")]
     Status(StatusArgs),
 
-    /// Execute C# code or script in Unity main thread
+    /// 主线程执行 C#
+    #[command(after_help = "示例:\n  pi-unity eval \"UnityEngine.Application.unityVersion\"\n  pi-unity eval -f Temp/PiUnityHarness/AgentScratch/probe.repl")]
     Eval(EvalArgs),
 
-    /// Trigger Unity script compilation and wait for domain reload to complete
+    /// 编译并等到 ready
+    #[command(after_help = "示例:\n  pi-unity compile\n  pi-unity compile --timeout 180000")]
     Compile(CompileArgs),
 
-    /// Get context snapshot of active scene hierarchy, selection, and logs
+    /// 场景树、选中、日志
+    #[command(after_help = "示例:\n  pi-unity snapshot\n  pi-unity snapshot --fields childCount,tag\n  pi-unity snapshot --full")]
     Snapshot(SnapshotArgs),
 
-    /// List all registered Unity Pipeline [CliCommand] commands
+    /// 列出 [CliCommand]
+    #[command(after_help = "示例:\n  pi-unity list-commands\n  pi-unity list-commands --full")]
     ListCommands(ListCommandsArgs),
 
-    /// Execute a Unity Pipeline [CliCommand]
+    /// 跑一条 pipeline
+    #[command(after_help = "示例:\n  pi-unity pipeline gameobject_find -p name=\"Main Camera\"\n  pi-unity pipeline uitree_find -p query=\"Start Game\"")]
     Pipeline(PipelineArgs),
 
-    /// Run Unity test suite (shortcut for run_tests pipeline command)
+    /// EditMode / PlayMode 测试
+    #[command(after_help = "示例:\n  pi-unity run-tests --mode edit\n  pi-unity run-tests --mode play --filter FooTests")]
     RunTests(RunTestsArgs),
 
-    /// Multi-frame visual observation (shortcut for vision_observe pipeline command)
+    /// 多帧画面
+    #[command(after_help = "示例:\n  pi-unity observe\n  pi-unity observe --frames 4 --overlay none")]
     Observe(ObserveArgs),
 
-    /// Viewport screenshot capture (shortcut for vision_capture pipeline command)
+    /// 单张截图
+    #[command(after_help = "示例:\n  pi-unity capture\n  pi-unity capture --mode scene --out Temp/shot.png")]
     Capture(CaptureArgs),
 
-    /// Query recent operations timeline and audit history
+    /// 最近操作
+    #[command(after_help = "示例:\n  pi-unity timeline\n  pi-unity timeline --success failure --limit 50")]
     Timeline(TimelineArgs),
 
-    /// Install/sync agent skills to .agents/skills/ or .claude/skills/
+    /// 安装 Agent Skill
+    #[command(after_help = "示例:\n  pi-unity skills install --agents\n  pi-unity skills check")]
     Skills(SkillsArgs),
 
-    /// Manage sticky agent sessions (start / end)
+    /// 粘性会话
+    #[command(after_help = "示例:\n  pi-unity session start --task \"重构\"\n  pi-unity session end")]
     Session(SessionArgs),
 
-    /// Mark a skill usage event in the observability log
+    /// 记一条 skill 事件
+    #[command(after_help = "示例:\n  pi-unity mark --skill pi-unity --event used")]
     Mark(MarkArgs),
+
+    /// 安装 SessionStart hook
+    #[command(after_help = "示例:\n  pi-unity setup\n  pi-unity setup --project")]
+    Setup(SetupArgs),
 }
 
 impl Commands {
@@ -85,8 +120,16 @@ impl Commands {
             Commands::Skills(_) => "skills",
             Commands::Session(_) => "session",
             Commands::Mark(_) => "mark",
+            Commands::Setup(_) => "setup",
         }
     }
+}
+
+#[derive(Args, Debug)]
+pub(crate) struct SetupArgs {
+    /// 写到当前项目的 .claude / .codex / .opencode，而不是用户目录
+    #[arg(long)]
+    pub(crate) project: bool,
 }
 
 #[derive(Args, Debug)]
@@ -97,68 +140,56 @@ pub(crate) struct SessionArgs {
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum SessionSubcommands {
-    /// Start a new session and save to sticky registry
+    /// 开始会话
     Start(SessionStartArgs),
-
-    /// End the current active session
+    /// 结束会话（无会话时 no-op）
     End,
 }
 
 #[derive(Args, Debug)]
 pub(crate) struct SessionStartArgs {
-    /// Optional task description or tag
     #[arg(long)]
     pub(crate) task: Option<String>,
-
-    /// Optional agent identifier
     #[arg(long)]
     pub(crate) agent: Option<String>,
 }
 
 #[derive(Args, Debug)]
 pub(crate) struct MarkArgs {
-    /// Name of the skill (e.g. pi-unity)
     #[arg(long)]
     pub(crate) skill: String,
-
-    /// Event name (default: used)
     #[arg(long, default_value = "used")]
     pub(crate) event: String,
 }
 
-
 #[derive(Args, Debug)]
 pub(crate) struct PingArgs {
-    /// Request timeout in milliseconds
+    /// 超时毫秒
     #[arg(long, default_value_t = 5000)]
     pub(crate) timeout: u64,
 }
 
 #[derive(Args, Debug)]
 pub(crate) struct StatusArgs {
-    /// Request timeout in milliseconds
+    /// 超时毫秒
     #[arg(long, default_value_t = 5000)]
     pub(crate) timeout: u64,
 }
 
 #[derive(Args, Debug)]
 pub(crate) struct EvalArgs {
-    /// Inline C# code to execute
     #[arg(value_name = "CODE")]
     pub(crate) code: Option<String>,
-
-    /// Path to a .cs or .repl script file
     #[arg(short = 'f', long = "file", value_name = "PATH")]
     pub(crate) file: Option<String>,
-
-    /// Request timeout in milliseconds
+    /// 超时毫秒
     #[arg(long, default_value_t = 30000)]
     pub(crate) timeout: u64,
 }
 
 #[derive(Args, Debug)]
 pub(crate) struct CompileArgs {
-    /// Timeout in milliseconds to wait for compilation and domain reload
+    /// 等待编译和域重载的超时毫秒
     #[arg(long, default_value_t = 120000)]
     pub(crate) timeout: u64,
 }
@@ -172,52 +203,38 @@ pub(crate) enum LogLevel {
 
 #[derive(Args, Debug)]
 pub(crate) struct SnapshotArgs {
-    /// Max hierarchy depth to traverse
+    /// 层级深度，默认 3
     #[arg(long, default_value_t = 3)]
     pub(crate) depth: u32,
-
-    /// Max GameObjects to include in hierarchy
+    /// 最大节点数，默认 500
     #[arg(long, default_value_t = 500)]
     pub(crate) max_nodes: u32,
-
-    /// Max recent logs to include
+    /// 日志条数，默认 50
     #[arg(long, default_value_t = 50)]
     pub(crate) log_limit: u32,
-
-    /// Minimum log level
+    /// 最低日志等级，默认 error
     #[arg(long, value_enum, default_value_t = LogLevel::Error)]
     pub(crate) log_level: LogLevel,
-
-    /// Omit component details from hierarchy dump
-    #[arg(long)]
-    pub(crate) no_components: bool,
-
-    /// Request timeout in milliseconds
+    /// 超时毫秒
     #[arg(long, default_value_t = 20000)]
     pub(crate) timeout: u64,
 }
 
 #[derive(Args, Debug)]
 pub(crate) struct ListCommandsArgs {
-    /// Request timeout in milliseconds
+    /// 超时毫秒
     #[arg(long, default_value_t = 15000)]
     pub(crate) timeout: u64,
 }
 
 #[derive(Args, Debug)]
 pub(crate) struct PipelineArgs {
-    /// Name of the pipeline command to execute
     pub(crate) name: String,
-
-    /// Key=value parameter pairs (can be repeated)
     #[arg(short = 'p', long = "param", value_name = "KEY=VAL")]
     pub(crate) params: Vec<String>,
-
-    /// Raw JSON parameters object string
     #[arg(long, value_name = "JSON")]
     pub(crate) params_json: Option<String>,
-
-    /// Request timeout in milliseconds
+    /// 超时毫秒
     #[arg(long, default_value_t = 30000)]
     pub(crate) timeout: u64,
 }
@@ -234,15 +251,12 @@ pub(crate) enum TestMode {
 
 #[derive(Args, Debug)]
 pub(crate) struct RunTestsArgs {
-    /// Test mode (edit or play)
+    /// 默认 edit
     #[arg(long, value_enum, default_value_t = TestMode::Edit)]
     pub(crate) mode: TestMode,
-
-    /// Test name filter pattern
     #[arg(long)]
     pub(crate) filter: Option<String>,
-
-    /// Request timeout in milliseconds
+    /// 超时毫秒，默认 330000
     #[arg(long, default_value_t = 330000)]
     pub(crate) timeout: u64,
 }
@@ -257,19 +271,16 @@ pub(crate) enum OverlayMode {
 
 #[derive(Args, Debug)]
 pub(crate) struct ObserveArgs {
-    /// Number of frames to capture
+    /// 默认 3
     #[arg(long, default_value_t = 3)]
     pub(crate) frames: u32,
-
-    /// Interval between frames in milliseconds
+    /// 默认 160
     #[arg(long, default_value_t = 160)]
     pub(crate) interval: u64,
-
-    /// Overlay mode
+    /// 默认 both
     #[arg(long, value_enum, default_value_t = OverlayMode::Both)]
     pub(crate) overlay: OverlayMode,
-
-    /// Request timeout in milliseconds
+    /// 超时毫秒
     #[arg(long, default_value_t = 30000)]
     pub(crate) timeout: u64,
 }
@@ -282,15 +293,12 @@ pub(crate) enum CaptureMode {
 
 #[derive(Args, Debug)]
 pub(crate) struct CaptureArgs {
-    /// Viewport mode
+    /// 默认 game
     #[arg(long, value_enum, default_value_t = CaptureMode::Game)]
     pub(crate) mode: CaptureMode,
-
-    /// Output file path (optional)
     #[arg(long)]
     pub(crate) out: Option<String>,
-
-    /// Request timeout in milliseconds
+    /// 超时毫秒
     #[arg(long, default_value_t = 30000)]
     pub(crate) timeout: u64,
 }
@@ -304,35 +312,26 @@ pub(crate) enum TimelineSuccessFilter {
 
 #[derive(Args, Debug)]
 pub(crate) struct TimelineArgs {
-    /// Number of timeline events to return (1-200)
+    /// 默认 20
     #[arg(long, default_value_t = 20)]
     pub(crate) limit: u32,
-
-    /// Filter by success status
+    /// 默认 all
     #[arg(long, value_enum, default_value_t = TimelineSuccessFilter::All)]
     pub(crate) success: TimelineSuccessFilter,
-
-    /// Request timeout in milliseconds
+    /// 超时毫秒
     #[arg(long, default_value_t = 15000)]
     pub(crate) timeout: u64,
 }
 
 #[derive(Args, Debug)]
 pub(crate) struct SkillsArgs {
-    /// Subaction (default: install)
+    /// install 或 check，默认 install
     #[arg(default_value = "install")]
     pub(crate) action: String,
-
-    /// Install skills to .agents/skills/
     #[arg(long)]
     pub(crate) agents: bool,
-
-    /// Install skills to .claude/skills/
     #[arg(long)]
     pub(crate) claude: bool,
-
-    /// Custom target directory for installed skills
     #[arg(long)]
     pub(crate) target: Option<String>,
 }
-

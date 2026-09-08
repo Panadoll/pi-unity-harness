@@ -4,8 +4,10 @@ use std::path::Path;
 use serde_json::{json, Value};
 
 use super::logging::{fast_rand_id, now_ms, TraceRecorder};
+use super::schema::{self, ViewOptions};
+use super::toon;
 
-pub const MAX_SAFE_RESPONSE_CHARS: usize = 32_768;
+pub const MAX_SAFE_RESPONSE_CHARS: usize = schema::MAX_SAFE_RESPONSE_CHARS;
 const MIN_BASE64_DETECT_LENGTH: usize = 256;
 
 pub(crate) fn is_base64_data(s: &str) -> bool {
@@ -112,58 +114,17 @@ pub(crate) fn strip_large_base64_and_save(value: &mut Value, project_root: &Path
     }
 }
 
-fn create_bounded_summary(val: &Value) -> Value {
-    if let Value::Object(map) = val {
-        let mut summary_map = serde_json::Map::new();
-        let total_keys = map.len();
-        let limit = 15;
-        let mut count = 0;
-        for (k, v) in map {
-            if count >= limit {
-                break;
-            }
-            count += 1;
-            if let Value::Array(arr) = v {
-                let arr_count = arr.len();
-                if arr_count > 5 {
-                    let sample: Vec<Value> = arr.iter().take(3).cloned().collect();
-                    summary_map.insert(
-                        k.clone(),
-                        json!({
-                            "totalCount": arr_count,
-                            "omittedCount": arr_count - 3,
-                            "sample": sample,
-                        }),
-                    );
-                    continue;
-                }
-            }
-            summary_map.insert(k.clone(), v.clone());
-        }
-        if total_keys > limit {
-            summary_map.insert(
-                "_omittedKeysCount".to_string(),
-                json!(total_keys - limit),
-            );
-        }
-        Value::Object(summary_map)
-    } else if let Value::Array(arr) = val {
-        let count = arr.len();
-        if count > 10 {
-            let sample: Vec<Value> = arr.iter().take(5).cloned().collect();
-            json!({
-                "totalCount": count,
-                "omittedCount": count - 5,
-                "sample": sample,
-            })
-        } else {
-            val.clone()
-        }
+pub(crate) fn emit_value(val: &Value, json_mode: bool) -> String {
+    if json_mode {
+        serde_json::to_string_pretty(&json!({
+            "ok": true,
+            "result": val
+        }))
+        .unwrap_or_else(|_| "{\"ok\":true}".to_string())
     } else {
-        val.clone()
+        toon::encode(val)
     }
 }
-
 
 pub(crate) fn format_safe_output(
     raw_val: &Value,
@@ -171,96 +132,68 @@ pub(crate) fn format_safe_output(
     json_mode: bool,
     recorder: Option<&TraceRecorder>,
 ) -> String {
+    format_safe_output_with_opts(
+        raw_val,
+        project_root,
+        json_mode,
+        &ViewOptions::default(),
+        Some("pi-unity <command> --full"),
+        recorder,
+    )
+}
+
+pub(crate) fn format_safe_output_with_opts(
+    raw_val: &Value,
+    project_root: &Path,
+    json_mode: bool,
+    opts: &ViewOptions,
+    full_hint: Option<&str>,
+    recorder: Option<&TraceRecorder>,
+) -> String {
     let mut sanitized = raw_val.clone();
     strip_large_base64_and_save(&mut sanitized, project_root, 0);
-
-    if json_mode {
-        let full_json = serde_json::to_string_pretty(&json!({
-            "ok": true,
-            "result": sanitized
-        }))
-        .unwrap_or_else(|_| "{\"ok\":true}".to_string());
-
-        if full_json.len() <= MAX_SAFE_RESPONSE_CHARS {
-            return full_json;
+    let truncated = schema::apply_field_truncation(&mut sanitized, opts);
+    if truncated {
+        if let Some(hint) = full_hint {
+            if sanitized.is_object() {
+                sanitized = schema::with_truncation_help(sanitized, true, hint);
+            } else {
+                sanitized = serde_json::json!({
+                    "value": sanitized,
+                    "help": [{"run": hint}]
+                });
+            }
         }
-
-        if let Some(rec) = recorder {
-            rec.mark_truncated();
-            rec.record(
-                "truncation",
-                &format!("JSON output exceeded 32KB limit ({} chars)", full_json.len()),
-            );
-        }
-
-        let scratch_dir = project_root.join("Temp/PiUnityHarness/AgentScratch");
-        let _ = fs::create_dir_all(&scratch_dir);
-        let scratch_file = format!("large_tool_output_{}.json", now_ms());
-        let scratch_path = scratch_dir.join(&scratch_file);
-        let _ = fs::write(&scratch_path, &full_json);
-        let rel_path = format!("Temp/PiUnityHarness/AgentScratch/{}", scratch_file);
-
-        let truncated_obj = json!({
-            "ok": true,
-            "truncated": true,
-            "savedScratchPath": rel_path,
-            "totalChars": full_json.len(),
-            "warning": format!(
-                "Tool JSON output was truncated from {} characters to prevent Error 413 (Payload Too Large). Full output saved to: {}",
-                full_json.len(), rel_path
-            ),
-            "result": create_bounded_summary(&sanitized)
-        });
-
-        return serde_json::to_string_pretty(&truncated_obj).unwrap_or(full_json);
     }
 
-    let text = if let Value::String(s) = &sanitized {
-        s.clone()
-    } else if let Some(output_field) = sanitized.get("output").and_then(Value::as_str) {
-        output_field.to_string()
-    } else {
-        serde_json::to_string_pretty(&sanitized).unwrap_or_else(|_| format!("{:?}", sanitized))
-    };
-
-    if text.len() <= MAX_SAFE_RESPONSE_CHARS {
-        return text;
+    let rendered = emit_value(&sanitized, json_mode);
+    if rendered.len() <= MAX_SAFE_RESPONSE_CHARS {
+        return rendered;
     }
 
     if let Some(rec) = recorder {
         rec.mark_truncated();
         rec.record(
             "truncation",
-            &format!("Text output exceeded 32KB limit ({} chars)", text.len()),
+            &format!("output exceeded 32KB limit ({} chars)", rendered.len()),
         );
     }
 
     let scratch_dir = project_root.join("Temp/PiUnityHarness/AgentScratch");
     let _ = fs::create_dir_all(&scratch_dir);
-    let scratch_file = format!("large_output_{}.txt", now_ms());
+    let ext = if json_mode { "json" } else { "toon" };
+    let scratch_file = format!("large_tool_output_{}.{}", now_ms(), ext);
     let scratch_path = scratch_dir.join(&scratch_file);
-    let _ = fs::write(&scratch_path, &text);
+    let _ = fs::write(&scratch_path, &rendered);
     let rel_path = format!("Temp/PiUnityHarness/AgentScratch/{}", scratch_file);
 
-    let head_size = (MAX_SAFE_RESPONSE_CHARS * 3) / 4;
-    let tail_size = MAX_SAFE_RESPONSE_CHARS / 5;
-    let head = &text[..head_size.min(text.len())];
-    let tail = if text.len() > tail_size {
-        &text[text.len() - tail_size..]
-    } else {
-        ""
-    };
-    let omitted = text.len().saturating_sub(head_size + tail_size);
-
-    format!(
-        "[WARNING: Output truncated from {} to {} characters. Full output saved to: {}]\n\n--- Output (first {} chars) ---\n{}\n\n... [{} characters omitted] ...\n\n--- Output (last {} chars) ---\n{}",
-        text.len(),
-        MAX_SAFE_RESPONSE_CHARS,
-        rel_path,
-        head_size,
-        head,
-        omitted,
-        tail_size,
-        tail
-    )
+    let preview = schema::truncate_chars(&rendered, 1200).0;
+    let overflow = json!({
+        "truncated": true,
+        "totalChars": rendered.len(),
+        "savedScratchPath": rel_path,
+        "preview": preview,
+        "help": [{"run": full_hint.unwrap_or("pi-unity <command> --full")}]
+    });
+    emit_value(&overflow, json_mode)
 }

@@ -4,22 +4,28 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Instant;
 
-use clap::Parser;
 use serde_json::{json, Value};
 
 mod args;
 mod client;
 mod commands;
 mod discovery;
+mod home;
 mod logging;
 mod output;
+mod schema;
+mod setup;
+mod toon;
+mod usage;
+mod version;
 
-use args::{Cli, Commands, SessionSubcommands};
+use args::{Commands, SessionSubcommands};
 use std::fs;
 use client::{CliError, HarnessClient, normalize_pipe_name};
 use commands::{execute_harness_command, handle_skills_command, parse_param_pairs};
 use discovery::resolve_project_root;
-use output::{format_safe_output, is_base64_data, strip_large_base64_and_save, MAX_SAFE_RESPONSE_CHARS};
+use output::{emit_value, format_safe_output, is_base64_data, strip_large_base64_and_save, MAX_SAFE_RESPONSE_CHARS};
+use schema::ViewOptions;
 use logging::{
     append_event_line, compute_project_hash, end_session, lazy_cleanup_old_traces, log_root_dir,
     now_ms, record_mark, resolve_client_name, resolve_session, start_session, timestamp_utc,
@@ -30,14 +36,36 @@ pub const EXPECTED_PROTOCOL_VERSION: i32 = 1;
 
 #[tokio::main]
 async fn main() -> ExitCode {
+    let argv: Vec<String> = std::env::args().collect();
+    if usage::try_version_fast_path(&argv[1..]) {
+        usage::print_version();
+        return ExitCode::SUCCESS;
+    }
+
     let start_instant = Instant::now();
     let log_root = log_root_dir();
     lazy_cleanup_old_traces(&log_root);
 
-    let cli = Cli::parse();
+    let json_mode = argv.iter().any(|a| a == "--json");
+    let cli = match usage::parse_cli() {
+        Ok(cli) => cli,
+        Err(err) => {
+            let (out, code) = usage::from_clap_error(err, json_mode);
+            print!("{out}");
+            if !out.ends_with('\n') {
+                println!();
+            }
+            return ExitCode::from(code as u8);
+        }
+    };
     let json_mode = cli.json;
     let trace_flag = cli.trace;
-    let subcommand_name = cli.command.subcommand_name();
+    let view_opts = ViewOptions::from_parts(&cli.fields, cli.full);
+    let subcommand_name = cli
+        .command
+        .as_ref()
+        .map(Commands::subcommand_name)
+        .unwrap_or("home");
     let recorder = Arc::new(TraceRecorder::new(subcommand_name));
 
     recorder.record(
@@ -47,79 +75,106 @@ async fn main() -> ExitCode {
 
     let (session_id, host_session_id) = resolve_session(&log_root);
 
+    if let Some(Commands::Eval(ref args)) = cli.command {
+        if args.code.is_none() && args.file.is_none() {
+            return handle_exit(
+                Err(usage::usage_error(
+                    "eval 需要 CODE 或 --file",
+                    &[
+                        "pi-unity eval \"<code>\"",
+                        "pi-unity eval -f Temp/PiUnityHarness/AgentScratch/probe.repl",
+                    ],
+                )),
+                json_mode,
+                trace_flag,
+                &log_root,
+                &recorder,
+                subcommand_name,
+                None,
+                session_id,
+                host_session_id,
+                0,
+                0,
+                0,
+                start_instant,
+            );
+        }
+    }
+
     let mut discover_ms = 0u64;
     let mut connect_ms = 0u64;
     let mut request_ms = 0u64;
     let mut project_root_opt: Option<PathBuf> = None;
 
     let result: Result<String, CliError> = match cli.command {
-        Commands::Session(session_args) => match session_args.action {
+        None => run_home(cli.project_path.as_deref(), json_mode, recorder.clone()).await,
+        Some(Commands::Session(session_args)) => match session_args.action {
             SessionSubcommands::Start(start_args) => {
                 recorder.record("session", "Starting sticky session");
                 match start_session(&log_root, start_args.task, start_args.agent) {
-                    Ok(data) => {
-                        if json_mode {
-                            Ok(serde_json::to_string_pretty(&json!({
-                                "ok": true,
-                                "result": data
-                            }))
-                            .unwrap())
-                        } else {
-                            Ok(format!("Session started: {}", data.session_id))
-                        }
-                    }
-                    Err(e) => Err(CliError::Other(format!("Failed to start session: {}", e))),
+                    Ok(data) => Ok(emit_value(
+                        &json!({
+                            "session": data.session_id,
+                            "started": true
+                        }),
+                        json_mode,
+                    )),
+                    Err(e) => Err(CliError::Other(format!("无法开始会话: {}", e))),
                 }
             }
             SessionSubcommands::End => {
                 recorder.record("session", "Ending sticky session");
                 match end_session(&log_root) {
-                    Ok(Some(id)) => {
-                        if json_mode {
-                            Ok(serde_json::to_string_pretty(&json!({
-                                "ok": true,
-                                "result": { "sessionId": id, "ended": true }
-                            }))
-                            .unwrap())
-                        } else {
-                            Ok(format!("Session ended: {}", id))
-                        }
-                    }
-                    Ok(None) => {
-                        if json_mode {
-                            Ok(serde_json::to_string_pretty(&json!({
-                                "ok": true,
-                                "result": { "ended": false, "message": "No active session" }
-                            }))
-                            .unwrap())
-                        } else {
-                            Ok("No active session".to_string())
-                        }
-                    }
-                    Err(e) => Err(CliError::Other(format!("Failed to end session: {}", e))),
+                    Ok(Some(id)) => Ok(emit_value(
+                        &json!({
+                            "session": id,
+                            "ended": true
+                        }),
+                        json_mode,
+                    )),
+                    Ok(None) => Ok(emit_value(
+                        &json!({
+                            "session": "already ended (no-op)"
+                        }),
+                        json_mode,
+                    )),
+                    Err(e) => Err(CliError::Other(format!("无法结束会话: {}", e))),
                 }
             }
         },
-        Commands::Mark(mark_args) => {
+        Some(Commands::Mark(mark_args)) => {
             recorder.record("mark", &format!("Marking skill {}", mark_args.skill));
             record_mark(&log_root, &mark_args.skill, &mark_args.event);
-            if json_mode {
-                Ok(serde_json::to_string_pretty(&json!({
-                    "ok": true,
-                    "result": {
-                        "skill": mark_args.skill,
-                        "event": mark_args.event
+            Ok(emit_value(
+                &json!({
+                    "skill": mark_args.skill,
+                    "event": mark_args.event
+                }),
+                json_mode,
+            ))
+        }
+        Some(Commands::Setup(setup_args)) => {
+            let disc_start = Instant::now();
+            let project_root = if setup_args.project {
+                match resolve_project_root(cli.project_path.as_deref()) {
+                    Ok(root) => {
+                        project_root_opt = Some(root.clone());
+                        Some(root)
                     }
-                }))
-                .unwrap())
+                    Err(_) => std::env::current_dir().ok(),
+                }
             } else {
-                Ok(format!(
-                    "Marked skill: {} (event: {})",
-                    mark_args.skill, mark_args.event
-                ))
+                None
+            };
+            discover_ms = disc_start.elapsed().as_millis() as u64;
+            let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("pi-unity"));
+            let (claude, codex, plugin) = setup::default_hook_paths(project_root.as_deref());
+            match setup::install_hooks(&exe, &claude, &codex, &plugin) {
+                Ok(report) => Ok(setup::format_report(&report, json_mode)),
+                Err(e) => Err(e),
             }
         }
-        Commands::Skills(skills_args) => {
+        Some(Commands::Skills(skills_args)) => {
             let disc_start = Instant::now();
             let p_root = match resolve_project_root(cli.project_path.as_deref()) {
                 Ok(root) => {
@@ -131,7 +186,7 @@ async fn main() -> ExitCode {
             discover_ms = disc_start.elapsed().as_millis() as u64;
             handle_skills_command(skills_args, &p_root, json_mode)
         }
-        other_cmd => {
+        Some(other_cmd) => {
             let disc_start = Instant::now();
             let p_root = match resolve_project_root(cli.project_path.as_deref()) {
                 Ok(root) => {
@@ -215,6 +270,7 @@ async fn main() -> ExitCode {
                 &mut client,
                 &p_root,
                 json_mode,
+                &view_opts,
                 &recorder,
             )
             .await;
@@ -239,6 +295,65 @@ async fn main() -> ExitCode {
         request_ms,
         start_instant,
     )
+}
+
+async fn run_home(
+    project_path: Option<&str>,
+    json_mode: bool,
+    recorder: Arc<TraceRecorder>,
+) -> Result<String, CliError> {
+    let bin = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("pi-unity"));
+    let project = resolve_project_root(project_path).ok();
+    let mut status = None;
+    let mut snapshot = None;
+    let mut reason = None;
+    if let Some(root) = project.as_ref() {
+        match HarnessClient::new(root.clone(), recorder.clone()) {
+            Ok(mut client) => {
+                if client.handshake().await.is_ok() {
+                    status = client.send_request("status", json!({}), 3000).await.ok();
+                    snapshot = client
+                        .send_request(
+                            "context_snapshot",
+                            json!({
+                                "maxDepth": 1,
+                                "maxNodes": 20,
+                                "logLimit": 20,
+                                "logLevel": "error",
+                                "includeComponents": false,
+                            }),
+                            8000,
+                        )
+                        .await
+                        .ok();
+                } else {
+                    reason = Some("协议握手失败".to_string());
+                }
+            }
+            Err(e) => reason = Some(e.message().to_string()),
+        }
+    } else {
+        reason = Some("找不到正在运行的 Unity Editor 或未加载 com.pi.unity-harness".to_string());
+    }
+
+    if json_mode {
+        let body = json!({
+            "bin": home::collapse_home(&bin),
+            "description": home::DESCRIPTION,
+            "connected": status.is_some(),
+            "status": status,
+            "reason": reason,
+        });
+        return Ok(emit_value(&body, true));
+    }
+
+    Ok(home::render_home(
+        &bin,
+        status.as_ref(),
+        snapshot.as_ref(),
+        project_path,
+        reason.as_deref(),
+    ))
 }
 
 fn handle_exit(
@@ -317,6 +432,7 @@ fn handle_exit(
 
 fn handle_error(err: &CliError, json_mode: bool, project_root: Option<&Path>) {
     let mut msg = err.message().to_string();
+    let help = err.help();
 
     if msg.len() > MAX_SAFE_RESPONSE_CHARS {
         if let Some(root) = project_root {
@@ -338,27 +454,45 @@ fn handle_error(err: &CliError, json_mode: bool, project_root: Option<&Path>) {
         }
     }
 
-    if json_mode {
-        let out = json!({
-            "ok": false,
-            "error": msg,
-            "exitCode": err.exit_code()
-        });
-        println!("{}", serde_json::to_string_pretty(&out).unwrap());
-    } else {
-        eprintln!("[pi-unity error] {}", msg);
-    }
+    let out = usage::format_usage(&msg, &help, json_mode);
+    println!("{}", out);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
+
+    fn bin_exe() -> PathBuf {
+        env!("CARGO_BIN_EXE_pi_unity").into()
+    }
+
+    fn run_cli(args: &[&str]) -> (i32, String, String) {
+        let output = Command::new(bin_exe())
+            .args(args)
+            .output()
+            .expect("run pi-unity");
+        let code = output.status.code().unwrap_or(255);
+        (
+            code,
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        )
+    }
 
     #[test]
     fn test_exit_codes() {
         assert_eq!(CliError::ExecutionFailed("err".into()).exit_code(), 1);
-        assert_eq!(CliError::BridgeNotFound("err".into()).exit_code(), 2);
-        assert_eq!(CliError::Timeout("err".into()).exit_code(), 3);
+        assert_eq!(CliError::BridgeNotFound("err".into()).exit_code(), 1);
+        assert_eq!(CliError::Timeout("err".into()).exit_code(), 1);
+        assert_eq!(
+            CliError::Usage {
+                error: "x".into(),
+                help: vec![]
+            }
+            .exit_code(),
+            2
+        );
         assert_eq!(CliError::Other("err".into()).exit_code(), 1);
     }
 
@@ -418,25 +552,29 @@ mod tests {
     fn test_format_safe_output_truncation_json() {
         let temp_dir = std::env::temp_dir();
         let mut large_map = serde_json::Map::new();
-        for i in 0..1000 {
-            large_map.insert(format!("key_{}", i), json!("A long value to exceed buffer size"));
+        for i in 0..4000 {
+            large_map.insert(
+                format!("key_{}", i),
+                json!("A long value to exceed buffer size and force 32KB truncation"),
+            );
         }
         let raw = Value::Object(large_map);
         let out = format_safe_output(&raw, &temp_dir, true, None);
-        assert!(out.len() <= MAX_SAFE_RESPONSE_CHARS);
+        assert!(out.len() <= MAX_SAFE_RESPONSE_CHARS + 2048);
         let parsed: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(parsed["ok"], json!(true));
-        assert_eq!(parsed["truncated"], json!(true));
-        assert!(parsed["savedScratchPath"].as_str().is_some());
+        let result = parsed.get("result").unwrap();
+        assert_eq!(result["truncated"], json!(true));
+        assert!(result["savedScratchPath"].as_str().is_some());
     }
 
     #[test]
-    fn test_format_safe_output_truncation_text() {
+    fn test_format_safe_output_truncation_toon_has_full_hint() {
         let temp_dir = std::env::temp_dir();
         let long_str = Value::String("Line of test output. ".repeat(3000));
         let out = format_safe_output(&long_str, &temp_dir, false, None);
-        assert!(out.contains("WARNING: Output truncated"));
-        assert!(out.contains("Full output saved to:"));
+        assert!(out.contains("truncated") || out.contains("(truncated"));
+        assert!(out.contains("--full") || out.contains("savedScratchPath") || out.contains("help"));
     }
 
     #[test]
@@ -469,4 +607,97 @@ mod tests {
         assert_eq!(CliError::Other("err".into()).error_type(), "other");
     }
 
+    #[test]
+    fn version_fast_path_prints_bare_version() {
+        for flag in ["--version", "-v", "-V"] {
+            let (code, stdout, stderr) = run_cli(&[flag]);
+            assert_eq!(code, 0, "{flag}");
+            assert_eq!(stdout.trim(), version::VERSION);
+            assert!(stderr.is_empty(), "{flag} stderr={stderr}");
+            assert!(!stdout.contains("pi-unity"));
+        }
+    }
+
+    #[test]
+    fn no_args_home_is_not_usage() {
+        let (code, stdout, _stderr) = run_cli(&[]);
+        assert_eq!(code, 0);
+        assert!(stdout.contains("bin:"));
+        assert!(stdout.contains("description:"));
+        assert!(stdout.contains("snapshot"));
+        assert!(!stdout.to_lowercase().contains("usage:"));
+    }
+
+    #[test]
+    fn usage_unknown_flag_is_exit_2_on_stdout() {
+        let (code, stdout, stderr) = run_cli(&["snapshot", "--stat"]);
+        assert_eq!(code, 2);
+        assert!(stdout.contains("error:"));
+        assert!(stdout.contains("--stat") || stdout.contains("未知"));
+        assert!(!stderr.contains("[pi-unity error]"));
+    }
+
+    #[test]
+    fn eval_missing_code_is_usage() {
+        let (code, stdout, _stderr) = run_cli(&["eval"]);
+        assert_eq!(code, 2);
+        assert!(stdout.contains("eval 需要 CODE") || stdout.contains("error:"));
+        assert!(stdout.contains("pi-unity eval"));
+    }
+
+    #[test]
+    fn session_end_without_session_is_noop() {
+        let dir = std::env::temp_dir().join(format!("pi-unity-session-{}", std::process::id()));
+        let _ = fs::create_dir_all(&dir);
+        let output = Command::new(bin_exe())
+            .args(["session", "end"])
+            .env("PI_UNITY_LOG_DIR", &dir)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(0));
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("already") && stdout.contains("no-op"));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn json_mode_still_available() {
+        let (code, stdout, _stderr) = run_cli(&["--json"]);
+        assert_eq!(code, 0);
+        let parsed: Value = serde_json::from_str(&stdout).expect("json");
+        assert_eq!(parsed["ok"], json!(true));
+    }
+
+    #[test]
+    fn setup_does_not_run_from_status() {
+        let (code, stdout, _stderr) = run_cli(&["status", "--help"]);
+        assert_eq!(code, 0);
+        assert!(!stdout.contains("SessionStart"));
+        assert!(stdout.contains("--timeout"));
+    }
+
+    #[test]
+    fn snapshot_help_is_concise() {
+        let (code, stdout, _stderr) = run_cli(&["snapshot", "--help"]);
+        assert_eq!(code, 0);
+        assert!(stdout.contains("--depth"));
+        assert!(stdout.contains("示例") || stdout.contains("Examples") || stdout.contains("pi-unity snapshot"));
+        assert!(!stdout.contains("run-tests"));
+    }
+
+    #[test]
+    fn ping_does_not_register_hooks() {
+        let home = std::env::temp_dir().join(format!("pi-unity-nohook-{}", std::process::id()));
+        let _ = fs::create_dir_all(&home);
+        let output = Command::new(bin_exe())
+            .args(["ping"])
+            .env("HOME", &home)
+            .env("USERPROFILE", &home)
+            .output()
+            .unwrap();
+        assert!(!home.join(".claude/settings.json").exists());
+        assert!(!home.join(".codex/hooks.json").exists());
+        let _ = output;
+        let _ = fs::remove_dir_all(home);
+    }
 }

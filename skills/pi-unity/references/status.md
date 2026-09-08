@@ -8,6 +8,8 @@ pi-unity status
 pi-unity status --json
 ```
 
+默认 TOON 摘要：`editor` / `generation` / `play` / `modal`。
+
 `ping` 和 `status` 由 native broker 直接回答。域重载期间仍可用来看状态。
 
 | 字段 | 含义 |

@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 pub const LOG_FORMAT_VERSION: u32 = 1;
-pub const DEFAULT_VERSION: &str = "0.1.0";
+pub const DEFAULT_VERSION: &str = super::version::VERSION;
 pub const MAX_EVENT_FILE_SIZE: u64 = 50 * 1024 * 1024; // 50MB
 pub const SESSION_TTL_MS: i64 = 12 * 3600 * 1000; // 12 hours
 pub const TRACE_RETENTION_DAYS: u64 = 7;

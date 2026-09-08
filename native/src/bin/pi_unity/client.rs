@@ -26,15 +26,17 @@ pub(crate) enum CliError {
     ExecutionFailed(String),
     BridgeNotFound(String),
     Timeout(String),
+    Usage { error: String, help: Vec<String> },
     Other(String),
 }
 
 impl CliError {
     pub(crate) fn exit_code(&self) -> i32 {
         match self {
+            CliError::Usage { .. } => 2,
             CliError::ExecutionFailed(_) => 1,
-            CliError::BridgeNotFound(_) => 2,
-            CliError::Timeout(_) => 3,
+            CliError::BridgeNotFound(_) => 1,
+            CliError::Timeout(_) => 1,
             CliError::Other(_) => 1,
         }
     }
@@ -44,6 +46,7 @@ impl CliError {
             CliError::ExecutionFailed(_) => "execution_failed",
             CliError::BridgeNotFound(_) => "bridge_not_found",
             CliError::Timeout(_) => "timeout",
+            CliError::Usage { .. } => "usage",
             CliError::Other(_) => "other",
         }
     }
@@ -53,7 +56,20 @@ impl CliError {
             CliError::ExecutionFailed(msg) => msg,
             CliError::BridgeNotFound(msg) => msg,
             CliError::Timeout(msg) => msg,
+            CliError::Usage { error, .. } => error,
             CliError::Other(msg) => msg,
+        }
+    }
+
+    pub(crate) fn help(&self) -> Vec<String> {
+        match self {
+            CliError::Usage { help, .. } => help.clone(),
+            CliError::BridgeNotFound(_) => vec![
+                "打开 Unity Editor 并加载 com.pi.unity-harness".to_string(),
+                "pi-unity --project-path <path> status".to_string(),
+            ],
+            CliError::Timeout(_) => vec!["pi-unity status".to_string()],
+            CliError::ExecutionFailed(_) | CliError::Other(_) => Vec::new(),
         }
     }
 }

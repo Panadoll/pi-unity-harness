@@ -1,9 +1,10 @@
 # pipeline
 
-发现并执行 `[CliCommand]`。命令名和参数名以 `pi-unity list-commands --json` 为准。参数是 snake_case。
+发现并执行 `[CliCommand]`。命令名和参数名以 `pi-unity list-commands` 为准。参数是 snake_case。默认只给 `name,summary`；`--full` 才带 schema。
 
 ```bash
 pi-unity list-commands
+pi-unity list-commands --full
 pi-unity list-commands --json
 ```
 

@@ -18,7 +18,7 @@
   - **Speed Mode (Default)**: `snapshot` + `eval` + `uitree_*` white-box inspection, takes tens of milliseconds, no large images, saves tokens.
   - **GUI Mode (On-Demand)**: `observe` + `capture` multi-frame capture and dHash change detection. Large images are saved to disk (`Temp/PiUnityHarness/Captures/`), never dumping Base64 to stdout.
 - **Automatic Domain Reload Reconnection**: `pi-unity compile` manages connection drop and polls until `managedState == "ready"`.
-- **Standard Exit Codes & Formatting**: Human-readable and `--json` structured outputs; Exit Code `0` (Success), `1` (Runtime Error), `2` (Not Connected), `3` (Timeout).
+- **AXI output**: stdout defaults to TOON; `--json` opts into JSON. Bare `pi-unity` prints a live dashboard. Exit codes: `0` success (including idempotent no-ops), `1` error (including not connected / timeout), `2` usage.
 
 ---
 
@@ -26,18 +26,20 @@
 
 | CLI Command | Options | Description |
 | :--- | :--- | :--- |
-| `pi-unity ping` | `--timeout <ms>` | Probe Unity Broker responsiveness |
-| `pi-unity status` | `--json` | Get Editor status, domain reload generation, focus and modal dialogs |
-| `pi-unity eval <code>` | `-f, --file <path>` | Execute C# code or expression in Unity main thread |
-| `pi-unity compile` | `--timeout <ms>` | Trigger script compilation and wait for domain reload to ready |
-| `pi-unity snapshot` | `--depth <N>` `--max-nodes <N>` `--log-limit <N>` `--log-level <error\|warning\|all>` `--no-components` | Get active scene hierarchy, components, selection, and logs |
-| `pi-unity list-commands` | `--json` | List all registered Pipeline `[CliCommand]`s |
-| `pi-unity pipeline <name>` | `-p <key=val>` `--params-json <json>` | Execute a registered Unity Pipeline command |
-| `pi-unity run-tests` | `--mode <edit\|play>` `--filter <pattern>` | Run Unity UTF test suites (EditMode / PlayMode) |
-| `pi-unity observe` | `--frames <N>` `--interval <ms>` `--overlay <grid\|annotations\|both\|none>` | Multi-frame vision observation + dHash change detection |
-| `pi-unity capture` | `--mode <game\|scene>` `--out <path>` | Viewport screenshot capture (Speed mode) |
-| `pi-unity timeline` | `--limit <N>` `--success <all\|success\|failure>` | Query recent operations timeline and audit history |
-| `pi-unity skills install` | `--agents` `--claude` `--target <dir>` | Install Agent Skills into target project |
+| `pi-unity` | (none) | Live dashboard (bin / editor state / next steps) |
+| `pi-unity ping` | `--timeout <ms>` | Probe Unity Broker |
+| `pi-unity status` | `--json` `--full` | Editor status, generation, focus, modal |
+| `pi-unity eval <code>` | `-f, --file <path>` | Run C# on the main thread |
+| `pi-unity compile` | `--timeout <ms>` | Compile and wait until ready |
+| `pi-unity snapshot` | `--depth` `--max-nodes` `--fields` `--full` | Hierarchy (default path,name,active), selection, logs |
+| `pi-unity list-commands` | `--full` | Pipeline commands (default name,summary) |
+| `pi-unity pipeline <name>` | `-p <key=val>` `--params-json` | Run a `[CliCommand]` |
+| `pi-unity run-tests` | `--mode <edit\|play>` `--filter` | EditMode / PlayMode tests |
+| `pi-unity observe` | `--frames` `--interval` `--overlay` | Multi-frame capture + dHash; paths only |
+| `pi-unity capture` | `--mode` `--out` | Single screenshot |
+| `pi-unity timeline` | `--limit` `--success` | Audit history (default id,name,ok) |
+| `pi-unity setup` | `--project` | Install SessionStart hooks (Claude / Codex / OpenCode) |
+| `pi-unity skills install` | `--agents` `--claude` `--target` | Install the skill; `skills check` fails on drift |
 
 ---
 

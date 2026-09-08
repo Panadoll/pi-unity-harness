@@ -1,15 +1,15 @@
 ---
 name: pi-unity
 description: >
-  Drive a running Unity Editor via the pi-unity CLI (status, eval, compile,
-  snapshot, pipeline, run-tests, observe, capture, timeline). Use when Unity is
-  already open and you need to inspect scenes, run C#, compile, test, or capture
-  PlayMode. Do not use this skill to edit the pi-unity-harness source tree.
+  通过 pi-unity CLI 驱动已打开的 Unity Editor（status、eval、compile、
+  snapshot、pipeline、run-tests、observe、capture、timeline）。Unity 已打开且
+  需要检查场景、跑 C#、编译、测试或截 PlayMode 时使用。不要用本 skill 改
+  pi-unity-harness 源码树。
 ---
 
 # pi-unity
 
-`pi-unity` 是代理和已经在跑的 Unity Editor 之间的 CLI。Editor 要已加载 `com.pi.unity-harness`。命令名和参数以 `pi-unity list-commands --json` 为准，不要猜。
+从 shell 驱动正在运行的 Unity Editor。默认 stdout 是 TOON；`--json` 才输出 JSON。无参 `pi-unity` 打印 live dashboard，不要先跑 `--help`。
 
 需要某条子命令的字段表时，读同目录 `references/<命令>.md`。
 
@@ -28,6 +28,8 @@ description: >
 | `pi-unity observe` | 多帧画面 | [observe.md](references/observe.md) |
 | `pi-unity capture` | 单张截图 | [capture.md](references/capture.md) |
 | `pi-unity timeline` | 最近操作 | [timeline.md](references/timeline.md) |
+| `pi-unity setup` | 安装 SessionStart hook | 见下 |
+| `pi-unity skills install` | 安装本 skill | 见下 |
 
 ```bash
 pi-unity pipeline gameobject_find -p name="Main Camera"
@@ -57,12 +59,11 @@ pi-unity pipeline input_click -p x=640 -p y=360
 
 ## 退出码
 
-- `0` 成功
-- `1` 执行失败
-- `2` 连不上 Unity（没开 Editor，或没加载 harness）
-- `3` 超时或主线程卡住
+- `0` 成功，含幂等 no-op（文案含 already … (no-op)）
+- `1` 执行失败，含连不上 Unity、超时
+- `2` 用法错误（缺参、未知 flag、未知子命令）
 
-`--json` 时 stdout 是 JSON。别把 stderr 拼进 JSON。
+`--json` 时 stdout 是 JSON。别把 stderr 拼进 JSON。默认 TOON。`--help` 永远合法。
 
 ## eval 红线
 
@@ -70,6 +71,6 @@ pi-unity pipeline input_click -p x=640 -p y=360
 2. eval 里不要调 `AssetDatabase.Refresh()`，也不要自己触发编译。编译用 `pi-unity compile`。
 3. 代码跑在 Editor 主线程。不要 `Thread.Sleep`，不要同步死锁。
 
-## 可观测性
+## 发现
 
-CLI 每次调用会自己记一条 call 事件。你不必先跑 `pi-unity mark`。项目若要额外审计，再手动 `pi-unity mark`。
+优先 `pi-unity setup` 装 SessionStart hook（Claude Code / Codex / OpenCode），每个会话注入 live dashboard。本 skill 是第二条路径，不含 live Editor 状态。CLI 版本 0.1.0。

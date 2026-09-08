@@ -6,23 +6,30 @@ use serde_json::{json, Value};
 
 use super::args::*;
 use super::client::{HarnessClient, CliError};
+use super::home;
 use super::logging::TraceRecorder;
-use super::output::format_safe_output;
+use super::output::format_safe_output_with_opts;
+use super::schema::{self, ViewOptions};
+use super::usage;
 
 pub(crate) fn parse_param_pairs(pairs: &[String], explicit_json: Option<&str>) -> Result<Value, CliError> {
     let mut map = serde_json::Map::new();
 
     if let Some(json_str) = explicit_json {
         let val: Value = serde_json::from_str(json_str).map_err(|e| {
-            CliError::ExecutionFailed(format!("Invalid --params-json string: {}", e))
+            usage::usage_error(
+                format!("--params-json 无效: {e}"),
+                &["pi-unity pipeline <name> --params-json '{\"key\":\"value\"}'"],
+            )
         })?;
         if let Value::Object(obj) = val {
             for (k, v) in obj {
                 map.insert(k, v);
             }
         } else {
-            return Err(CliError::ExecutionFailed(
-                "--params-json must be a JSON object".to_string(),
+            return Err(usage::usage_error(
+                "--params-json 必须是 JSON 对象",
+                &["pi-unity pipeline <name> --params-json '{\"key\":\"value\"}'"],
             ));
         }
     }
@@ -71,16 +78,55 @@ const LEGACY_CONSUMER_SKILLS: &[&str] = &[
     "pi-unity-timeline",
 ];
 
+pub(crate) fn expected_skill_markdown() -> String {
+    home::static_skill_markdown()
+}
+
+pub(crate) fn skill_is_current(committed: &str) -> bool {
+    normalize_skill_text(committed) == normalize_skill_text(&expected_skill_markdown())
+}
+
+fn normalize_skill_text(s: &str) -> String {
+    s.replace("\r\n", "\n").trim().to_string()
+}
+
+fn check_skill_drift(project_root: &Path) -> Result<(), CliError> {
+    let repo_root = find_skills_source_root(project_root);
+    let skill_path = repo_root.join("skills/pi-unity/SKILL.md");
+    let committed = fs::read_to_string(&skill_path).map_err(|e| {
+        CliError::Other(format!("无法读取 {}: {}", skill_path.display(), e))
+    })?;
+    if skill_is_current(&committed) {
+        Ok(())
+    } else {
+        Err(CliError::Other(
+            "skills/pi-unity/SKILL.md 与 CLI home 文案漂移，请同步后再提交".to_string(),
+        ))
+    }
+}
+
 pub(crate) fn handle_skills_command(
     args: SkillsArgs,
     project_root: &Path,
     json_mode: bool,
 ) -> Result<String, CliError> {
+    if args.action == "check" {
+        check_skill_drift(project_root)?;
+        let result = json!({"check": "ok"});
+        return Ok(super::output::emit_value(&result, json_mode));
+    }
+    if args.action != "install" {
+        return Err(usage::usage_error(
+            format!("未知 skills 动作 {}", args.action),
+            &["pi-unity skills install", "pi-unity skills check"],
+        ));
+    }
+
     let repo_root = find_skills_source_root(project_root);
     let skills_source = repo_root.join("skills");
     if !skills_source.exists() {
         return Err(CliError::Other(format!(
-            "Skills source directory not found at {}",
+            "找不到 skills 源目录 {}",
             skills_source.display()
         )));
     }
@@ -133,17 +179,7 @@ pub(crate) fn handle_skills_command(
         "totalFilesCopied": installed_count
     });
 
-    if json_mode {
-        Ok(serde_json::to_string_pretty(&json!({ "ok": true, "result": result })).unwrap())
-    } else {
-        let msg = format!(
-            "[pi-unity] Installed {} skills ({}) to {}",
-            result["skillsCount"],
-            result["skills"].as_array().map(|a| a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(", ")).unwrap_or_default(),
-            result["targets"].as_array().map(|a| a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join("; ")).unwrap_or_default()
-        );
-        Ok(msg)
-    }
+    Ok(super::output::emit_value(&result, json_mode))
 }
 
 fn should_skip_skill_entry(name: &str) -> bool {
@@ -332,22 +368,35 @@ fn find_skills_source_root(project_root: &Path) -> PathBuf {
     project_root.to_path_buf()
 }
 
+struct FormatCtx<'a> {
+    project_root: &'a Path,
+    json_mode: bool,
+    opts: &'a ViewOptions,
+    recorder: &'a TraceRecorder,
+}
+
+fn emit_shaped(ctx: &FormatCtx<'_>, shaped: Value, full_hint: &str) -> String {
+    format_safe_output_with_opts(
+        &shaped,
+        ctx.project_root,
+        ctx.json_mode,
+        ctx.opts,
+        Some(full_hint),
+        Some(ctx.recorder),
+    )
+}
+
 async fn send_and_format(
     client: &mut HarnessClient,
     req_type: &str,
     payload: Value,
     timeout_ms: u64,
-    project_root: &Path,
-    json_mode: bool,
-    recorder: &TraceRecorder,
+    ctx: &FormatCtx<'_>,
+    full_hint: &str,
+    shape: impl FnOnce(&Value) -> Value,
 ) -> Result<String, CliError> {
     let res = client.send_request(req_type, payload, timeout_ms).await?;
-    Ok(format_safe_output(
-        &res,
-        project_root,
-        json_mode,
-        Some(recorder),
-    ))
+    Ok(emit_shaped(ctx, shape(&res), full_hint))
 }
 
 async fn send_pipeline_command(
@@ -355,12 +404,11 @@ async fn send_pipeline_command(
     name: &str,
     params: Value,
     timeout_ms: u64,
-    project_root: &Path,
-    json_mode: bool,
-    recorder: &TraceRecorder,
+    ctx: &FormatCtx<'_>,
 ) -> Result<String, CliError> {
     let params_json_str =
         serde_json::to_string(&params).unwrap_or_else(|_| "{}".to_string());
+    let hint = format!("pi-unity pipeline {name} --full");
     send_and_format(
         client,
         "command",
@@ -369,9 +417,13 @@ async fn send_pipeline_command(
             "parametersJson": params_json_str,
         }),
         timeout_ms,
-        project_root,
-        json_mode,
-        recorder,
+        ctx,
+        &hint,
+        |raw| match name {
+            "run_tests" => schema::shape_run_tests(raw),
+            "vision_observe" => schema::shape_observe(raw),
+            _ => schema::shape_generic(raw, ctx.opts),
+        },
     )
     .await
 }
@@ -381,8 +433,15 @@ pub(crate) async fn execute_harness_command(
     client: &mut HarnessClient,
     project_root: &Path,
     json_mode: bool,
+    opts: &ViewOptions,
     recorder: &TraceRecorder,
 ) -> Result<String, CliError> {
+    let ctx = FormatCtx {
+        project_root,
+        json_mode,
+        opts,
+        recorder,
+    };
     match command {
         Commands::Ping(args) => {
             send_and_format(
@@ -390,9 +449,9 @@ pub(crate) async fn execute_harness_command(
                 "ping",
                 json!({}),
                 args.timeout,
-                project_root,
-                json_mode,
-                recorder,
+                &ctx,
+                "pi-unity ping --json",
+                |raw| raw.clone(),
             )
             .await
         }
@@ -403,9 +462,9 @@ pub(crate) async fn execute_harness_command(
                 "status",
                 json!({}),
                 args.timeout,
-                project_root,
-                json_mode,
-                recorder,
+                &ctx,
+                "pi-unity status --full",
+                schema::shape_status,
             )
             .await
         }
@@ -427,7 +486,7 @@ pub(crate) async fn execute_harness_command(
 
                 if !full_path.exists() {
                     return Err(CliError::ExecutionFailed(format!(
-                        "Eval file does not exist: {}",
+                        "找不到 eval 文件: {}",
                         full_path.display()
                     )));
                 }
@@ -444,8 +503,12 @@ pub(crate) async fn execute_harness_command(
                     json!({ "filePath": forward_rel }),
                 )
             } else {
-                return Err(CliError::ExecutionFailed(
-                    "Either inline code or -f/--file must be provided for eval".to_string(),
+                return Err(usage::usage_error(
+                    "eval 需要 CODE 或 --file",
+                    &[
+                        "pi-unity eval \"<code>\"",
+                        "pi-unity eval -f Temp/PiUnityHarness/AgentScratch/probe.repl",
+                    ],
                 ));
             };
 
@@ -454,9 +517,9 @@ pub(crate) async fn execute_harness_command(
                 req_type,
                 payload,
                 args.timeout,
-                project_root,
-                json_mode,
-                recorder,
+                &ctx,
+                "pi-unity eval --full",
+                |raw| schema::shape_generic(raw, opts),
             )
             .await
         }
@@ -498,17 +561,14 @@ pub(crate) async fn execute_harness_command(
                     Err(CliError::BridgeNotFound(msg)) => {
                         return Err(CliError::BridgeNotFound(msg));
                     }
-                    Err(_) => {
-                        // Connection dropped or pipe not ready yet during reload; expected.
-                    }
+                    Err(_) => {}
                 }
                 tokio::time::sleep(Duration::from_millis(500)).await;
             }
 
             if !is_ready {
                 return Err(CliError::Timeout(
-                    "Compilation and domain reload timed out waiting for managed state 'ready'"
-                        .to_string(),
+                    "编译和域重载等待 managedState=ready 超时".to_string(),
                 ));
             }
 
@@ -519,12 +579,7 @@ pub(crate) async fn execute_harness_command(
                 "editorStatus": last_status.get("editorStatus").cloned().unwrap_or(Value::Null),
             });
 
-            Ok(format_safe_output(
-                &result,
-                project_root,
-                json_mode,
-                Some(recorder),
-            ))
+            Ok(emit_shaped(&ctx, result, "pi-unity compile --full"))
         }
 
         Commands::Snapshot(args) => {
@@ -539,7 +594,7 @@ pub(crate) async fn execute_harness_command(
                 "maxNodes": args.max_nodes,
                 "logLimit": args.log_limit,
                 "logLevel": log_level_str,
-                "includeComponents": !args.no_components,
+                "includeComponents": opts.full || opts.wants("components"),
             });
 
             let res = client
@@ -569,11 +624,10 @@ pub(crate) async fn execute_harness_command(
                 }
             }
 
-            Ok(format_safe_output(
-                &final_content,
-                project_root,
-                json_mode,
-                Some(recorder),
+            Ok(emit_shaped(
+                &ctx,
+                schema::shape_snapshot(&final_content, opts),
+                "pi-unity snapshot --full",
             ))
         }
 
@@ -583,9 +637,9 @@ pub(crate) async fn execute_harness_command(
                 "list_commands",
                 json!({}),
                 args.timeout,
-                project_root,
-                json_mode,
-                recorder,
+                &ctx,
+                "pi-unity list-commands --full",
+                |raw| schema::shape_list_commands(raw, opts),
             )
             .await
         }
@@ -598,9 +652,7 @@ pub(crate) async fn execute_harness_command(
                 &args.name,
                 param_obj,
                 args.timeout,
-                project_root,
-                json_mode,
-                recorder,
+                &ctx,
             )
             .await
         }
@@ -623,9 +675,7 @@ pub(crate) async fn execute_harness_command(
                 "run_tests",
                 Value::Object(param_map),
                 args.timeout,
-                project_root,
-                json_mode,
-                recorder,
+                &ctx,
             )
             .await
         }
@@ -648,9 +698,7 @@ pub(crate) async fn execute_harness_command(
                     "overlay": overlay_str,
                 }),
                 args.timeout,
-                project_root,
-                json_mode,
-                recorder,
+                &ctx,
             )
             .await
         }
@@ -672,9 +720,7 @@ pub(crate) async fn execute_harness_command(
                 "vision_capture",
                 Value::Object(param_map),
                 args.timeout,
-                project_root,
-                json_mode,
-                recorder,
+                &ctx,
             )
             .await
         }
@@ -694,14 +740,16 @@ pub(crate) async fn execute_harness_command(
                     "success": success_filter,
                 }),
                 args.timeout,
-                project_root,
-                json_mode,
-                recorder,
+                &ctx,
+                "pi-unity timeline --full",
+                |raw| schema::shape_timeline(raw, opts),
             )
             .await
         }
 
-        Commands::Skills(_) | Commands::Session(_) | Commands::Mark(_) => unreachable!(),
+        Commands::Skills(_) | Commands::Session(_) | Commands::Mark(_) | Commands::Setup(_) => {
+            unreachable!()
+        }
     }
 }
 
@@ -821,5 +869,15 @@ mod tests {
         assert!(target.join("pi-unity-eval-keep/notes.md").is_file());
         assert!(target.join("other-skill/SKILL.md").is_file());
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn committed_skill_matches_home_copy() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../skills/pi-unity/SKILL.md");
+        let committed = fs::read_to_string(&path).expect("SKILL.md");
+        assert!(
+            skill_is_current(&committed),
+            "skills/pi-unity/SKILL.md 与 CLI home 文案漂移"
+        );
     }
 }
