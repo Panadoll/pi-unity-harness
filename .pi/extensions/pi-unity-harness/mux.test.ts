@@ -26,15 +26,32 @@ type FakeChild = EventEmitter & {
   pid: number;
   exitCode: number | null;
   kill: () => boolean;
+  pendingWriteCbs: Array<(err?: Error | null) => void>;
 };
 
-function makeFakeChild(): FakeChild {
+function makeFakeChild(opts?: { holdWriteCb?: boolean }): FakeChild {
   const child = new EventEmitter() as FakeChild;
   child.stdin = new PassThrough();
   child.stdout = new PassThrough();
   child.stderr = new PassThrough();
   child.pid = 4242;
   child.exitCode = null;
+  child.pendingWriteCbs = [];
+  const origWrite = child.stdin.write.bind(child.stdin);
+  child.stdin.write = ((chunk: unknown, encodingOrCb?: unknown, cb?: unknown) => {
+    const callback =
+      typeof encodingOrCb === "function"
+        ? (encodingOrCb as (err?: Error | null) => void)
+        : typeof cb === "function"
+          ? (cb as (err?: Error | null) => void)
+          : undefined;
+    origWrite(chunk as string | Buffer);
+    if (callback) {
+      if (opts?.holdWriteCb) child.pendingWriteCbs.push(callback);
+      else queueMicrotask(() => callback(null));
+    }
+    return true;
+  }) as typeof child.stdin.write;
   child.kill = () => {
     child.exitCode = 1;
     child.emit("exit", 1);
@@ -316,6 +333,46 @@ test("in-flight timeout drops queued jobs without exec replay", async () => {
     assert.equal(execTried, 1);
   } finally {
     setActiveMux(null);
+    await client.shutdown();
+  }
+});
+
+test("stale write callback does not kill restarted mux", async () => {
+  const children: FakeChild[] = [];
+  const spawnImpl = (() => {
+    const isFirst = children.length === 0;
+    const child = makeFakeChild({ holdWriteCb: isFirst });
+    children.push(child);
+    if (!isFirst) {
+      child.stdin.on("data", (buf: Buffer) => {
+        const line = buf.toString("utf8").trim();
+        if (!line) return;
+        const msg = JSON.parse(line) as { id: string; quit?: boolean };
+        if (msg.quit) return;
+        child.stdout.write(JSON.stringify({
+          id: msg.id,
+          ok: true,
+          exitCode: 0,
+          result: { gen: children.length },
+        }) + "\n");
+      });
+    }
+    return child;
+  }) as typeof spawn;
+  const client = new MuxClient(process.execPath, undefined, spawnImpl);
+  try {
+    const first = client.request(["status"], { timeoutMs: 20 });
+    const firstRes = await first;
+    assert.equal(firstRes.result.ok, false);
+    assert.equal(children.length, 1);
+    const second = await client.request(["status"], { timeoutMs: 2000 });
+    assert.equal(second.result.ok, true);
+    assert.equal(children.length, 2);
+    for (const cb of children[0].pendingWriteCbs.splice(0)) cb(new Error("stale write"));
+    const third = await client.request(["ping"], { timeoutMs: 2000 });
+    assert.equal(third.result.ok, true);
+    assert.equal(children.length, 2);
+  } finally {
     await client.shutdown();
   }
 });

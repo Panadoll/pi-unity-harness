@@ -452,12 +452,19 @@ export class MuxClient {
       this.failTransport(`mux 超时 ${job.timeoutMs}ms`);
     }, job.timeoutMs);
     const payload = `${JSON.stringify({ id, argv: job.argv })}\n`;
+    const child = this.child;
+    const stdin = child?.stdin;
+    if (!child || !stdin) {
+      this.failTransport("mux stdin 写入失败");
+      return;
+    }
     try {
-      this.child.stdin.write(payload, (err) => {
+      stdin.write(payload, (err) => {
+        if (this.child !== child) return;
         if (err) this.failTransport("mux stdin 写入失败");
       });
     } catch {
-      this.failTransport("mux stdin 写入失败");
+      if (this.child === child) this.failTransport("mux stdin 写入失败");
     }
   }
 
