@@ -100,6 +100,29 @@ pub fn help_items(commands: &[&str]) -> Value {
     Value::Array(arr)
 }
 
+fn append_requested_fields(target: &mut Value, raw: &Value, opts: &ViewOptions) {
+    if opts.fields.is_empty() {
+        return;
+    }
+    let Some(obj) = target.as_object_mut() else {
+        return;
+    };
+    for field in &opts.fields {
+        if let Some(v) = raw.get(field) {
+            obj.insert(field.clone(), v.clone());
+        }
+    }
+}
+
+pub fn shape_status_view(raw: &Value, opts: &ViewOptions) -> Value {
+    if opts.full {
+        return raw.clone();
+    }
+    let mut shaped = shape_status(raw);
+    append_requested_fields(&mut shaped, raw, opts);
+    shaped
+}
+
 pub fn shape_status(raw: &Value) -> Value {
     let editor = pick_str(raw, &["managedState"]);
     let generation = pick_i64(raw, &["managedGeneration"], 0);
@@ -124,7 +147,6 @@ pub fn shape_status(raw: &Value) -> Value {
     };
     json!({
         "editor": if editor.is_empty() { "unknown" } else { &editor },
-        "state": if editor.is_empty() { "unknown" } else { &editor },
         "generation": generation,
         "play": play,
         "modal": modal_text,
@@ -298,7 +320,10 @@ pub fn shape_list_commands(raw: &Value, opts: &ViewOptions) -> Value {
     })
 }
 
-pub fn shape_timeline(raw: &Value, _opts: &ViewOptions) -> Value {
+pub fn shape_timeline(raw: &Value, opts: &ViewOptions) -> Value {
+    if opts.full {
+        return raw.clone();
+    }
     let actions = raw
         .get("actions")
         .and_then(Value::as_array)
@@ -316,11 +341,13 @@ pub fn shape_timeline(raw: &Value, _opts: &ViewOptions) -> Value {
     let rows: Vec<Value> = actions
         .iter()
         .map(|a| {
-            json!({
+            let mut row = json!({
                 "id": pick_str(a, &["requestId", "id"]),
                 "name": pick_str(a, &["action", "requestType", "name"]),
                 "ok": a.get("success").and_then(Value::as_bool).unwrap_or(false),
-            })
+            });
+            append_requested_fields(&mut row, a, opts);
+            row
         })
         .collect();
     json!({
@@ -466,5 +493,72 @@ mod tests {
         let text = out["commands"].as_str().unwrap();
         assert!(text.starts_with("0 "));
         assert!(text.contains("found"));
+    }
+
+    #[test]
+    fn status_full_returns_raw() {
+        let raw = json!({
+            "managedState": "ready",
+            "pipe": r"\\.\pipe\x",
+            "extra": 1
+        });
+        let out = shape_status_view(
+            &raw,
+            &ViewOptions {
+                fields: vec![],
+                full: true,
+            },
+        );
+        assert_eq!(out, raw);
+    }
+
+    #[test]
+    fn status_fields_appends_raw_keys() {
+        let raw = json!({
+            "managedState": "ready",
+            "pipe": r"\\.\pipe\x",
+            "token": "abc"
+        });
+        let out = shape_status_view(
+            &raw,
+            &ViewOptions {
+                fields: vec!["pipe".into()],
+                full: false,
+            },
+        );
+        assert_eq!(out["editor"], "ready");
+        assert_eq!(out["pipe"], r"\\.\pipe\x");
+        assert!(out.get("token").is_none());
+        assert!(out.get("state").is_none());
+    }
+
+    #[test]
+    fn timeline_full_and_fields() {
+        let raw = json!({
+            "count": 1,
+            "actions": [{
+                "requestId": "1",
+                "action": "status",
+                "success": true,
+                "durationMs": 12
+            }]
+        });
+        let full = shape_timeline(
+            &raw,
+            &ViewOptions {
+                fields: vec![],
+                full: true,
+            },
+        );
+        assert_eq!(full, raw);
+        let slim = shape_timeline(
+            &raw,
+            &ViewOptions {
+                fields: vec!["durationMs".into()],
+                full: false,
+            },
+        );
+        assert_eq!(slim["actions"][0]["id"], "1");
+        assert_eq!(slim["actions"][0]["durationMs"], 12);
     }
 }

@@ -233,7 +233,10 @@ export class MuxClient {
       this.child = child;
       this.closed = false;
       child.stdout?.setEncoding("utf8");
-      child.stdout?.on("data", (chunk: string) => this.onStdout(chunk));
+      child.stdout?.on("data", (chunk: string) => {
+        if (this.child !== child) return;
+        this.onStdout(chunk);
+      });
       child.stderr?.resume();
       child.once("error", () => {
         if (this.child !== child) return;
@@ -588,12 +591,33 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
+  function toolTimeout(params: { timeoutMs?: unknown }, fallback: number, extra = 0): number {
+    const n = typeof params.timeoutMs === "number" && Number.isFinite(params.timeoutMs)
+      ? params.timeoutMs
+      : fallback;
+    return n + extra + 1000;
+  }
+
   async function runTool(
     args: string[],
     options?: { projectPath?: string; timeoutMs?: number; signal?: AbortSignal },
   ) {
     assertEnabled();
     return formatResult(await runPiUnityCli(args, options));
+  }
+
+  async function stopSessionMux() {
+    const mux = sessionMux;
+    sessionMux = null;
+    if (getActiveMux() === mux) setActiveMux(null);
+    if (mux) await mux.shutdown();
+  }
+
+  function startSessionMux(cwd: string) {
+    const projectPath = process.env.UNITY_PROJECT_PATH?.trim() || undefined;
+    sessionMux = new MuxClient(findPiUnityBinary(), projectPath, spawn, cwd);
+    setActiveMux(sessionMux);
+    void sessionMux.start();
   }
 
   async function refreshDynamicPipelineTools(signal?: AbortSignal) {
@@ -629,11 +653,9 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event, ctx) => {
     settings = loadUnityHarnessSettings();
+    await stopSessionMux();
     if (settings.enabled) {
-      const projectPath = process.env.UNITY_PROJECT_PATH?.trim() || undefined;
-      sessionMux = new MuxClient(findPiUnityBinary(), projectPath, spawn, ctx.cwd);
-      setActiveMux(sessionMux);
-      void sessionMux.start();
+      startSessionMux(ctx.cwd);
       void refreshDynamicPipelineTools();
     }
   });
@@ -646,24 +668,27 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("session_shutdown", async () => {
-    const mux = sessionMux;
-    sessionMux = null;
-    if (getActiveMux() === mux) setActiveMux(null);
-    if (mux) await mux.shutdown();
+    await stopSessionMux();
   });
 
   // ---- /unity-harness-settings command ----
   pi.registerCommand("unity-harness-settings", {
     description: "Inspect or toggle pi-unity-harness settings (enabled/disabled)",
-    handler: (args, ctx) => {
+    handler: async (args, ctx) => {
       const enable = coerceEnabled(args.trim());
       if (enable === undefined) {
-        ctx.ui.notify(inspectUnityHarnessSettings(), "info");
+        ctx.ui.notify(JSON.stringify(inspectUnityHarnessSettings(), null, 2), "info");
         return;
       }
-      persistEnabled(enable);
-      settings = loadUnityHarnessSettings();
-      if (enable) void refreshDynamicPipelineTools();
+      persistEnabled(enable, "global", ctx.cwd);
+      settings = loadUnityHarnessSettings(ctx.cwd);
+      if (!enable) {
+        await stopSessionMux();
+      } else {
+        await stopSessionMux();
+        startSessionMux(ctx.cwd);
+        void refreshDynamicPipelineTools();
+      }
       ctx.ui.notify(`pi-unity-harness ${enable ? "enabled" : "disabled"}.`, "info");
     },
   });
@@ -676,9 +701,12 @@ export default function (pi: ExtensionAPI) {
     promptSnippet: "Use unity_ping to probe whether the Unity Editor is running and responding.",
     parameters: toolSchema({
       timeoutMs: Type.Number({ description: "Timeout in milliseconds, default 5000" }),
+      ...VIEW_FIELDS,
     }),
     async execute(_toolCallId, params, signal) {
-      return runTool(["ping", "--timeout", String(params.timeoutMs ?? 5000)], { signal });
+      const args = ["ping", "--timeout", String(params.timeoutMs ?? 5000)];
+      pushViewArgs(args, params);
+      return runTool(args, { timeoutMs: toolTimeout(params, 5000), signal });
     },
   });
 
@@ -695,7 +723,7 @@ export default function (pi: ExtensionAPI) {
     async execute(_toolCallId, params, signal) {
       const args = ["status", "--timeout", String(params.timeoutMs ?? 5000)];
       pushViewArgs(args, params);
-      return runTool(args, { signal });
+      return runTool(args, { timeoutMs: toolTimeout(params, 5000), signal });
     },
   });
 
@@ -721,7 +749,7 @@ export default function (pi: ExtensionAPI) {
       pushArg(args, "--log-level", params.logLevel);
       pushArg(args, "--timeout", params.timeoutMs);
       pushViewArgs(args, params);
-      return runTool(args, { signal });
+      return runTool(args, { timeoutMs: toolTimeout(params, 20000), signal });
     },
   });
 
@@ -740,7 +768,7 @@ export default function (pi: ExtensionAPI) {
       const args = ["eval", params.code];
       pushArg(args, "--timeout", params.timeoutMs);
       pushViewArgs(args, params);
-      return runTool(args, { signal });
+      return runTool(args, { timeoutMs: toolTimeout(params, 30000), signal });
     },
   });
 
@@ -753,11 +781,13 @@ export default function (pi: ExtensionAPI) {
     parameters: toolSchema({
       filePath: Type.String({ description: "Path to .cs or .repl file (relative to project root or absolute)." }),
       timeoutMs: Type.Number({ description: "Timeout in milliseconds, default 30000" }),
+      ...VIEW_FIELDS,
     }, ["filePath"]),
     async execute(_toolCallId, params, signal) {
       const args = ["eval", "-f", params.filePath];
       pushArg(args, "--timeout", params.timeoutMs);
-      return runTool(args, { signal });
+      pushViewArgs(args, params);
+      return runTool(args, { timeoutMs: toolTimeout(params, 30000), signal });
     },
   });
 
@@ -769,11 +799,13 @@ export default function (pi: ExtensionAPI) {
     promptSnippet: "Use unity_recompile after C# edits to trigger compilation and await domain reload.",
     parameters: toolSchema({
       timeoutMs: Type.Number({ description: "Timeout in milliseconds, default 120000" }),
+      ...VIEW_FIELDS,
     }),
     async execute(_toolCallId, params, signal) {
       const args = ["compile"];
       pushArg(args, "--timeout", params.timeoutMs);
-      return runTool(args, { timeoutMs: (params.timeoutMs ?? 120000) + 10000, signal });
+      pushViewArgs(args, params);
+      return runTool(args, { timeoutMs: toolTimeout(params, 120000, 10000), signal });
     },
   });
 
@@ -793,7 +825,7 @@ export default function (pi: ExtensionAPI) {
       pushArg(args, "--timeout", params.timeoutMs);
       pushViewArgs(args, params);
       void refreshDynamicPipelineTools(signal);
-      return runTool(args, { signal });
+      return runTool(args, { timeoutMs: toolTimeout(params, 15000), signal });
     },
   });
 
@@ -817,15 +849,17 @@ export default function (pi: ExtensionAPI) {
         additionalProperties: true,
       }),
       timeoutMs: Type.Number({ description: "Timeout in milliseconds, default 30000" }),
+      ...VIEW_FIELDS,
     }),
     async execute(_toolCallId, params, signal) {
       const cmdName = (params.name || params.command || "").trim();
-      if (!cmdName) return runTool(["list-commands"], { signal });
+      if (!cmdName) return runTool(["list-commands"], { timeoutMs: toolTimeout(params, 15000), signal });
       const args = ["pipeline", cmdName];
       const paramObj = params.parameters || params.params;
       if (paramObj) args.push("--params-json", JSON.stringify(paramObj));
       pushArg(args, "--timeout", params.timeoutMs);
-      return runTool(args, { signal });
+      pushViewArgs(args, params);
+      return runTool(args, { timeoutMs: toolTimeout(params, 30000), signal });
     },
   });
 
@@ -839,13 +873,15 @@ export default function (pi: ExtensionAPI) {
       mode: Type.String({ description: "Test mode: edit or play (default: edit)" }),
       filter: Type.String({ description: "Optional test name or namespace filter pattern" }),
       timeoutMs: Type.Number({ description: "Timeout in milliseconds, default 330000" }),
+      ...VIEW_FIELDS,
     }),
     async execute(_toolCallId, params, signal) {
       const args = ["run-tests"];
       pushArg(args, "--mode", params.mode);
       pushArg(args, "--filter", params.filter);
       pushArg(args, "--timeout", params.timeoutMs);
-      return runTool(args, { timeoutMs: (params.timeoutMs ?? 330000) + 10000, signal });
+      pushViewArgs(args, params);
+      return runTool(args, { timeoutMs: toolTimeout(params, 330000, 10000), signal });
     },
   });
 
@@ -860,6 +896,7 @@ export default function (pi: ExtensionAPI) {
       intervalMs: Type.Number({ description: "Interval between frames in ms (default: 160)" }),
       overlay: Type.String({ description: "Overlay mode: grid, annotations, both, or none (default: both)" }),
       timeoutMs: Type.Number({ description: "Timeout in milliseconds, default 30000" }),
+      ...VIEW_FIELDS,
     }),
     async execute(_toolCallId, params, signal) {
       const args = ["observe"];
@@ -867,7 +904,8 @@ export default function (pi: ExtensionAPI) {
       pushArg(args, "--interval", params.intervalMs);
       pushArg(args, "--overlay", params.overlay);
       pushArg(args, "--timeout", params.timeoutMs);
-      return runTool(args, { signal });
+      pushViewArgs(args, params);
+      return runTool(args, { timeoutMs: toolTimeout(params, 30000), signal });
     },
   });
 
@@ -881,13 +919,15 @@ export default function (pi: ExtensionAPI) {
       mode: Type.String({ description: "Viewport mode: game or scene (default: game)" }),
       outPath: Type.String({ description: "Output path for the saved image file" }),
       timeoutMs: Type.Number({ description: "Timeout in milliseconds, default 30000" }),
+      ...VIEW_FIELDS,
     }),
     async execute(_toolCallId, params, signal) {
       const args = ["capture"];
       pushArg(args, "--mode", params.mode);
       pushArg(args, "--out", params.outPath);
       pushArg(args, "--timeout", params.timeoutMs);
-      return runTool(args, { signal });
+      pushViewArgs(args, params);
+      return runTool(args, { timeoutMs: toolTimeout(params, 30000), signal });
     },
   });
 
@@ -909,7 +949,7 @@ export default function (pi: ExtensionAPI) {
       pushArg(args, "--success", params.success);
       pushArg(args, "--timeout", params.timeoutMs);
       pushViewArgs(args, params);
-      return runTool(args, { signal });
+      return runTool(args, { timeoutMs: toolTimeout(params, 15000), signal });
     },
   });
 }
