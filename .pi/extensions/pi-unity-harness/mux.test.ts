@@ -99,7 +99,7 @@ test("mux protocol damage fails without exec retry after write", async () => {
   try {
     const res = await runPiUnityCli(["status"]);
     assert.equal(res.ok, false);
-    assert.match(res.error ?? "", /mux/);
+    assert.match(res.error ?? "", /mux|协议损坏/);
   } finally {
     setActiveMux(null);
     await client.shutdown();
@@ -228,6 +228,96 @@ test("pushViewArgs writes fields/full and never no-components", () => {
   pushViewArgs(args, { fields: "components,tag", full: true });
   assert.deepEqual(args, ["snapshot", "--fields", "components,tag", "--full"]);
   assert.equal(args.includes("--no-components"), false);
+});
+
+function serialMuxScript(): string {
+  return [
+    "const readline = require('node:readline');",
+    "const rl = readline.createInterface({ input: process.stdin });",
+    "let busy = 0;",
+    "let maxBusy = 0;",
+    "const queued = [];",
+    "function handle(line) {",
+    "  const msg = JSON.parse(line);",
+    "  if (msg.quit) { process.stdout.write(JSON.stringify({ id: msg.id, ok: true, exitCode: 0, result: { quit: true } }) + '\\n'); process.exit(0); }",
+    "  busy += 1;",
+    "  maxBusy = Math.max(maxBusy, busy);",
+    "  const delay = (msg.argv || []).includes('slow') ? 200 : 0;",
+    "  setTimeout(() => {",
+    "    process.stdout.write(JSON.stringify({ id: msg.id, ok: true, exitCode: 0, result: { argv: msg.argv, maxBusy } }) + '\\n');",
+    "    busy -= 1;",
+    "    const next = queued.shift();",
+    "    if (next) handle(next);",
+    "  }, delay);",
+    "}",
+    "rl.on('line', (line) => { if (busy > 0) queued.push(line); else handle(line); });",
+  ].join("");
+}
+
+test("FIFO keeps one in-flight so a short follow-up survives a slow request", async () => {
+  const spawnImpl = ((_bin: string, _argv: readonly string[] | undefined, opts: unknown) => {
+    return spawn(process.execPath, ["-e", serialMuxScript()], opts as Parameters<typeof spawn>[2]);
+  }) as typeof spawn;
+  const client = new MuxClient(process.execPath, undefined, spawnImpl);
+  setActiveMux(client);
+  try {
+    const [slow, fast] = await Promise.all([
+      runPiUnityCli(["slow"], { timeoutMs: 5000 }),
+      runPiUnityCli(["ping"], { timeoutMs: 80 }),
+    ]);
+    assert.equal(slow.ok, true);
+    assert.equal(fast.ok, true);
+    const slowRes = slow.result as { maxBusy?: number };
+    const fastRes = fast.result as { maxBusy?: number };
+    assert.equal(slowRes.maxBusy, 1);
+    assert.equal(fastRes.maxBusy, 1);
+  } finally {
+    setActiveMux(null);
+    await client.shutdown();
+  }
+});
+
+test("queued abort does not kill in-flight request", async () => {
+  const spawnImpl = ((_bin: string, _argv: readonly string[] | undefined, opts: unknown) => {
+    return spawn(process.execPath, ["-e", serialMuxScript()], opts as Parameters<typeof spawn>[2]);
+  }) as typeof spawn;
+  const client = new MuxClient(process.execPath, undefined, spawnImpl);
+  const ac = new AbortController();
+  try {
+    const slow = client.request(["slow"], { timeoutMs: 2000 });
+    const queued = client.request(["ping"], { signal: ac.signal, timeoutMs: 2000 });
+    await new Promise((r) => setTimeout(r, 20));
+    ac.abort();
+    const queuedRes = await queued;
+    const slowRes = await slow;
+    assert.equal(queuedRes.status, "aborted");
+    assert.equal(queuedRes.written, false);
+    assert.equal(slowRes.result.ok, true);
+  } finally {
+    await client.shutdown();
+  }
+});
+
+test("in-flight timeout drops queued jobs without exec replay", async () => {
+  let execTried = 0;
+  const spawnImpl = ((_bin: string, _argv: readonly string[] | undefined, opts: unknown) => {
+    execTried += 1;
+    return spawn(process.execPath, ["-e", serialMuxScript()], opts as Parameters<typeof spawn>[2]);
+  }) as typeof spawn;
+  const client = new MuxClient(process.execPath, undefined, spawnImpl);
+  setActiveMux(client);
+  try {
+    const slow = runPiUnityCli(["slow"], { timeoutMs: 50 });
+    const queued = runPiUnityCli(["ping"], { timeoutMs: 2000 });
+    const [slowRes, queuedRes] = await Promise.all([slow, queued]);
+    assert.equal(slowRes.ok, false);
+    assert.equal(queuedRes.ok, false);
+    assert.match(queuedRes.error ?? "", /未发送/);
+    assert.equal(execTried, 1);
+  } finally {
+    setActiveMux(null);
+    await client.shutdown();
+  }
 });
 
 test("mux text is returned as-is", async () => {
