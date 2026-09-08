@@ -18,7 +18,7 @@
   - **速度模式（默认）**：`snapshot` + `eval` + `uitree_*` 白盒交互，耗时几十毫秒，不看大图，节省 Token。
   - **GUI 模式（按需）**：`observe` + `capture` 多帧捕获与 dHash 变化检测，大图自动存盘（`Temp/PiUnityHarness/Captures/`），禁止 Base64 倾倒到 stdout。
 - **自动域重载重连**：`pi-unity compile` 触发编译后，自动接管连接断开并在重载完成后轮询至 `ready` 状态。
-- **标准退出码与格式化输出**：支持人类可读与 `--json` 结构化输出；Exit Code `0`（成功）、`1`（失败）、`2`（未连接）、`3`（超时）。
+- **AXI 输出**：默认 stdout 为 TOON；`--json` 才输出 JSON。无参 `pi-unity` 打印 live dashboard。Exit Code `0`（成功，含幂等 no-op）、`1`（失败，含未连接/超时）、`2`（用法错误）。
 
 ---
 
@@ -26,18 +26,20 @@
 
 | CLI 子命令 | 参数选项 | 行为描述 |
 | :--- | :--- | :--- |
+| `pi-unity` | 无 | live dashboard（bin / 状态 / 下一跳） |
 | `pi-unity ping` | `--timeout <ms>` | 探测 Unity Broker 连通性 |
-| `pi-unity status` | `--json` | 获取 Editor 状态、域重载代次、焦点与模态弹窗状态 |
-| `pi-unity eval <code>` | `-f, --file <path>` | 在 Unity 主线程执行 C# 表达式或 `.repl`/`.cs` 文件 |
-| `pi-unity compile` | `--timeout <ms>` | 触发 Unity 脚本重新编译并自动等待就绪 |
-| `pi-unity snapshot` | `--depth <N>` `--max-nodes <N>` `--log-limit <N>` `--log-level <error\|warning\|all>` `--no-components` | 获取活动场景层级、组件选择和近期日志 |
-| `pi-unity list-commands` | `--json` | 列举全部已注册的 Pipeline `[CliCommand]` |
-| `pi-unity pipeline <name>` | `-p <key=val>` `--params-json <json>` | 执行 Unity Pipeline `[CliCommand]` |
-| `pi-unity run-tests` | `--mode <edit\|play>` `--filter <pattern>` | 运行 Unity 测试套件（EditMode / PlayMode） |
-| `pi-unity observe` | `--frames <N>` `--interval <ms>` `--overlay <grid\|annotations\|both\|none>` | 视觉跑测感知（多帧捕获 + dHash + 变化检测） |
-| `pi-unity capture` | `--mode <game\|scene>` `--out <path>` | 单张视口截图（速度模式） |
-| `pi-unity timeline` | `--limit <N>` `--success <all\|success\|failure>` | 查询操作审计历史 |
-| `pi-unity skills install` | `--agents` `--claude` `--target <dir>` | 安装 Agent Skills 到目标项目 |
+| `pi-unity status` | `--json` `--full` | Editor 状态、域重载代次、焦点与模态 |
+| `pi-unity eval <code>` | `-f, --file <path>` | 主线程执行 C# 或 `.repl`/`.cs` |
+| `pi-unity compile` | `--timeout <ms>` | 触发编译并等到 ready |
+| `pi-unity snapshot` | `--depth` `--max-nodes` `--fields` `--full` | 场景层级（默认 path,name,active）、选中、日志 |
+| `pi-unity list-commands` | `--full` | 列出 Pipeline 命令（默认 name,summary） |
+| `pi-unity pipeline <name>` | `-p <key=val>` `--params-json` | 执行 Pipeline `[CliCommand]` |
+| `pi-unity run-tests` | `--mode <edit\|play>` `--filter` | EditMode / PlayMode 测试 |
+| `pi-unity observe` | `--frames` `--interval` `--overlay` | 多帧捕获 + dHash，stdout 只给路径 |
+| `pi-unity capture` | `--mode` `--out` | 单张视口截图 |
+| `pi-unity timeline` | `--limit` `--success` | 审计历史（默认 id,name,ok） |
+| `pi-unity setup` | `--project` | 安装 SessionStart hook（Claude / Codex / OpenCode） |
+| `pi-unity skills install` | `--agents` `--claude` `--target` | 安装 Agent Skill；`skills check` 防漂移 |
 
 ---
 
@@ -68,16 +70,16 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build-native.ps1
 编译出的 `pi-unity.exe` 位于 `bin/` 和 `dist/`，可加入系统 PATH，或直接调用：
 
 ```bash
-# 验证连通性
-pi-unity ping
+# live dashboard（无参）
+pi-unity
 
-# 查看编辑器状态
-pi-unity status
+# 安装 SessionStart hook（Claude / Codex / OpenCode）
+pi-unity setup
 
 # 执行 C# 表达式
 pi-unity eval "UnityEngine.Application.unityVersion"
 
-# 同步 Skills 到当前项目的 .agents/skills/
+# 同步 Skill 到当前项目的 .agents/skills/
 pi-unity skills install --agents
 ```
 
