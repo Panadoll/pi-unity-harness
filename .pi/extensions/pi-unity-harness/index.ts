@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { execFile } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -78,25 +78,334 @@ export function findPiUnityBinary(): string {
 
 export interface CliExecutionResult {
   ok: boolean;
-  result?: any;
+  result?: unknown;
   error?: string;
+  error_type?: string;
+  help?: string[];
   exitCode?: number;
   truncated?: boolean;
   savedScratchPath?: string;
 }
 
-/** Execute pi-unity CLI asynchronously and return parsed JSON */
-export async function runPiUnityCli(
+interface MuxPending {
+  resolve: (value: CliExecutionResult) => void;
+  sent: boolean;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  return null;
+}
+
+function asStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const out: string[] = [];
+  for (const item of value) {
+    if (typeof item === "string") out.push(item);
+  }
+  return out;
+}
+
+function parseCliJson(text: string): CliExecutionResult {
+  const trimmed = text.trim();
+  if (!trimmed) return { ok: true, result: null };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    return { ok: false, error: trimmed, exitCode: 1 };
+  }
+  const obj = asRecord(parsed);
+  if (!obj) return { ok: false, error: trimmed, exitCode: 1 };
+  const ok = obj.ok !== false;
+  const help = asStringArray(obj.help);
+  const error = typeof obj.error === "string" ? obj.error : undefined;
+  const errorType = typeof obj.error_type === "string" ? obj.error_type : undefined;
+  const exitCode =
+    typeof obj.exitCode === "number"
+      ? obj.exitCode
+      : typeof obj.exit_code === "number"
+        ? obj.exit_code
+        : ok
+          ? 0
+          : 1;
+  return {
+    ok,
+    result: obj.result,
+    error,
+    error_type: errorType,
+    help,
+    exitCode,
+    truncated: obj.truncated === true,
+    savedScratchPath: typeof obj.savedScratchPath === "string" ? obj.savedScratchPath : undefined,
+    text: typeof obj.text === "string" ? obj.text : undefined,
+  };
+}
+
+function parseMuxReply(value: unknown): CliExecutionResult | null {
+  const obj = asRecord(value);
+  if (!obj || typeof obj.id !== "string") return null;
+  const ok = obj.ok === true;
+  const help = asStringArray(obj.help);
+  const error = typeof obj.error === "string" ? obj.error : undefined;
+  const errorType = typeof obj.error_type === "string" ? obj.error_type : undefined;
+  const exitCode =
+    typeof obj.exitCode === "number" ? obj.exitCode : ok ? 0 : 1;
+  return {
+    ok,
+    result: obj.result,
+    error,
+    error_type: errorType,
+    help,
+    exitCode,
+    truncated: obj.truncated === true,
+    savedScratchPath: typeof obj.savedScratchPath === "string" ? obj.savedScratchPath : undefined,
+    text: typeof obj.text === "string" ? obj.text : undefined,
+  };
+}
+
+export class MuxClient {
+  private child: ChildProcess | null = null;
+  private buffer = "";
+  private nextId = 1;
+  private readonly pending = new Map<string, MuxPending>();
+  private starting: Promise<boolean> | null = null;
+  private closed = false;
+
+  constructor(
+    private readonly bin: string,
+    private readonly projectPath?: string,
+    private readonly spawnImpl: typeof spawn = spawn,
+  ) {}
+
+  get alive(): boolean {
+    return !this.closed && this.child !== null && this.child.exitCode === null;
+  }
+
+  async start(): Promise<boolean> {
+    if (this.alive) return true;
+    if (this.closed) return false;
+    if (this.starting) return this.starting;
+    this.starting = this.spawnMux();
+    try {
+      return await this.starting;
+    } finally {
+      this.starting = null;
+    }
+  }
+
+  private spawnMux(): Promise<boolean> {
+    return new Promise((resolve) => {
+      const args = ["mux"];
+      if (this.projectPath) args.push("--project-path", this.projectPath);
+      let settled = false;
+      const finish = (ok: boolean) => {
+        if (settled) return;
+        settled = true;
+        resolve(ok);
+      };
+      let child: ChildProcess;
+      try {
+        child = this.spawnImpl(this.bin, args, {
+          stdio: ["pipe", "pipe", "pipe"],
+          windowsHide: true,
+          env: {
+            ...process.env,
+            PI_UNITY_CLIENT: "pi-ext",
+          },
+        });
+      } catch {
+        finish(false);
+        return;
+      }
+      this.child = child;
+      this.closed = false;
+      child.stdout?.setEncoding("utf8");
+      child.stdout?.on("data", (chunk: string) => this.onStdout(chunk));
+      child.stderr?.resume();
+      child.once("error", () => {
+        this.failAll();
+        finish(false);
+      });
+      child.once("exit", () => {
+        this.failAll();
+        finish(false);
+      });
+      child.stdin?.once("error", () => {
+        this.failAll();
+        finish(false);
+      });
+      if (child.pid) {
+        queueMicrotask(() => finish(this.alive));
+      }
+    });
+  }
+
+  private onStdout(chunk: string): void {
+    this.buffer += chunk;
+    let nl = this.buffer.indexOf("\n");
+    while (nl >= 0) {
+      const line = this.buffer.slice(0, nl).replace(/\r$/, "");
+      this.buffer = this.buffer.slice(nl + 1);
+      if (line.trim()) this.dispatchLine(line);
+      nl = this.buffer.indexOf("\n");
+    }
+  }
+
+  private dispatchLine(line: string): void {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      this.failAll();
+      return;
+    }
+    const result = parseMuxReply(parsed);
+    if (!result) {
+      this.failAll();
+      return;
+    }
+    const obj = asRecord(parsed);
+    const id = obj && typeof obj.id === "string" ? obj.id : "";
+    const waiter = this.pending.get(id);
+    if (!waiter) return;
+    this.pending.delete(id);
+    waiter.resolve(result);
+  }
+
+  private failAll(): void {
+    const waiters = [...this.pending.values()];
+    this.pending.clear();
+    this.buffer = "";
+    const child = this.child;
+    this.child = null;
+    if (child && child.exitCode === null) {
+      try {
+        child.kill();
+      } catch {}
+    }
+    for (const waiter of waiters) {
+      waiter.resolve({
+        ok: false,
+        error: waiter.sent ? "mux 响应丢失" : "mux 不可用",
+        error_type: "other",
+        exitCode: 1,
+      });
+    }
+  }
+
+  async request(
+    argv: string[],
+    options: { timeoutMs?: number; signal?: AbortSignal } = {},
+  ): Promise<{ written: boolean; result: CliExecutionResult }> {
+    if (!(await this.start()) || !this.alive || !this.child?.stdin) {
+      return {
+        written: false,
+        result: { ok: false, error: "mux 不可用", error_type: "other", exitCode: 1 },
+      };
+    }
+    const id = String(this.nextId++);
+    const payload = `${JSON.stringify({ id, argv })}\n`;
+    const stdin = this.child.stdin;
+    let written = false;
+    const result = await new Promise<CliExecutionResult>((resolve) => {
+      const waiter: MuxPending = { resolve, sent: false };
+      this.pending.set(id, waiter);
+      const onAbort = () => {
+        if (this.pending.delete(id)) {
+          resolve({
+            ok: false,
+            error: "aborted",
+            error_type: "other",
+            exitCode: 1,
+          });
+        }
+      };
+      options.signal?.addEventListener("abort", onAbort, { once: true });
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      if (options.timeoutMs && options.timeoutMs > 0) {
+        timer = setTimeout(() => {
+          if (this.pending.delete(id)) {
+            resolve({
+              ok: false,
+              error: `mux 超时 ${options.timeoutMs}ms`,
+              error_type: "timeout",
+              exitCode: 1,
+            });
+          }
+        }, options.timeoutMs);
+      }
+      const finish = (value: CliExecutionResult) => {
+        if (timer) clearTimeout(timer);
+        options.signal?.removeEventListener("abort", onAbort);
+        resolve(value);
+      };
+      waiter.resolve = finish;
+      waiter.sent = true;
+      written = true;
+      stdin.write(payload, (err) => {
+        if (err) {
+          this.pending.delete(id);
+          finish({
+            ok: false,
+            error: "mux stdin 写入失败",
+            error_type: "other",
+            exitCode: 1,
+          });
+          this.failAll();
+        }
+      });
+    });
+    return { written, result };
+  }
+
+  async shutdown(): Promise<void> {
+    const child = this.child;
+    this.closed = true;
+    if (!child) {
+      this.failAll();
+      return;
+    }
+    try {
+      child.stdin?.write(`${JSON.stringify({ id: "quit", quit: true })}\n`);
+    } catch {}
+    try {
+      child.stdin?.end();
+    } catch {}
+    await Promise.race([
+      new Promise<void>((resolve) => child.once("exit", () => resolve())),
+      new Promise<void>((resolve) => setTimeout(resolve, 500)),
+    ]);
+    if (child.exitCode === null) {
+      try {
+        child.kill();
+      } catch {}
+    }
+    this.failAll();
+  }
+}
+
+let activeMux: MuxClient | null = null;
+
+export function setActiveMux(client: MuxClient | null): void {
+  activeMux = client;
+}
+
+export function getActiveMux(): MuxClient | null {
+  return activeMux;
+}
+
+async function execPiUnity(
   args: string[],
   options: { projectPath?: string; timeoutMs?: number; signal?: AbortSignal } = {},
 ): Promise<CliExecutionResult> {
   const bin = findPiUnityBinary();
   const cliArgs = [...args, "--json"];
-
   if (options.projectPath) {
     cliArgs.push("--project-path", options.projectPath);
   }
-
   try {
     const { stdout } = await execFileAsync(bin, cliArgs, {
       encoding: "utf8",
@@ -109,32 +418,60 @@ export async function runPiUnityCli(
         PI_UNITY_CLIENT: "pi-ext",
       },
     });
-
-
-    const trimmed = stdout.trim();
-    if (!trimmed) {
-      return { ok: true, result: null };
+    return parseCliJson(stdout);
+  } catch (err: unknown) {
+    const e = err as {
+      stdout?: string | Buffer;
+      stderr?: string | Buffer;
+      status?: number | null;
+      code?: string | number;
+      message?: string;
+    };
+    const stdout = typeof e.stdout === "string" ? e.stdout : Buffer.isBuffer(e.stdout) ? e.stdout.toString("utf8") : "";
+    if (stdout.trim()) {
+      return parseCliJson(stdout);
     }
-    return JSON.parse(trimmed);
-  } catch (err: any) {
-    if (err.stdout) {
-      try {
-        return JSON.parse(err.stdout.trim());
-      } catch {}
-    }
-    const msg = err.stderr ? err.stderr.trim() : (err.message || String(err));
-    return { ok: false, error: msg, exitCode: err.status ?? err.code ?? 1 };
+    const stderr = typeof e.stderr === "string" ? e.stderr.trim() : Buffer.isBuffer(e.stderr) ? e.stderr.toString("utf8").trim() : "";
+    const message = err instanceof Error ? err.message : String(err);
+    const code = e.status ?? e.code;
+    const exitCode = typeof code === "number" ? code : 1;
+    return { ok: false, error: stderr || message, exitCode };
   }
 }
 
-function formatResult(cliRes: CliExecutionResult): { content: Array<{ type: "text"; text: string }>; details: any } {
+/** Execute pi-unity CLI asynchronously and return parsed JSON */
+export async function runPiUnityCli(
+  args: string[],
+  options: { projectPath?: string; timeoutMs?: number; signal?: AbortSignal } = {},
+): Promise<CliExecutionResult> {
+  const mux = activeMux;
+  if (mux) {
+    const { written, result } = await mux.request(args, options);
+    if (written) return result;
+    if (!result.ok && result.error === "mux 响应丢失") return result;
+  }
+  return execPiUnity(args, options);
+}
+
+function formatResult(cliRes: CliExecutionResult): { content: Array<{ type: "text"; text: string }>; details: unknown } {
   if (!cliRes.ok) {
-    throw new Error(cliRes.error || "pi-unity command failed");
+    const payload = {
+      ok: false,
+      error: cliRes.error || "pi-unity command failed",
+      error_type: cliRes.error_type,
+      help: cliRes.help ?? [],
+      exitCode: cliRes.exitCode ?? 1,
+    };
+    const text = cliRes.text || JSON.stringify(payload, null, 2);
+    const err = new Error(text) as Error & { details?: unknown };
+    err.details = payload;
+    throw err;
   }
 
-  const text = typeof cliRes.result === "string"
-    ? cliRes.result
-    : JSON.stringify(cliRes.result ?? {}, null, 2);
+  const text = cliRes.text
+    ?? (typeof cliRes.result === "string"
+      ? cliRes.result
+      : JSON.stringify(cliRes.result ?? {}, null, 2));
 
   return {
     content: [{ type: "text", text }],
@@ -163,6 +500,7 @@ function toolSchema(fields: Record<string, any>, required: string[] = []): any {
 export default function (pi: ExtensionAPI) {
   let settings = loadUnityHarnessSettings();
   const dynamicallyRegisteredTools = new Set<string>();
+  let sessionMux: MuxClient | null = null;
 
   function assertEnabled() {
     settings = loadUnityHarnessSettings();
@@ -216,8 +554,19 @@ export default function (pi: ExtensionAPI) {
     settings = loadUnityHarnessSettings();
     if (settings.enabled) {
       ctx.systemPrompt += `\n\n${UNITY_VERIFY_WORKFLOW_PROMPT}`;
+      const projectPath = process.env.UNITY_PROJECT_PATH?.trim() || undefined;
+      sessionMux = new MuxClient(findPiUnityBinary(), projectPath);
+      setActiveMux(sessionMux);
+      void sessionMux.start();
       void refreshDynamicPipelineTools();
     }
+  });
+
+  pi.on("session_shutdown", async () => {
+    const mux = sessionMux;
+    sessionMux = null;
+    if (getActiveMux() === mux) setActiveMux(null);
+    if (mux) await mux.shutdown();
   });
 
   // ---- /unity-harness-settings command ----
