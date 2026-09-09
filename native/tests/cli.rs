@@ -109,6 +109,21 @@ fn snapshot_help_is_concise() {
 }
 
 #[test]
+fn missing_project_json_exitcode_matches_process() {
+    let (code, stdout, _stderr) = run_cli(&[
+        "--json",
+        "status",
+        "--project-path",
+        "Z:/NonExistentPath_XYZ_123",
+    ]);
+    assert_eq!(code, 1);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("json");
+    assert_eq!(parsed["ok"], serde_json::json!(false));
+    assert_eq!(parsed["exitCode"], code);
+    assert_eq!(parsed["error_type"], "bridge_not_found");
+}
+
+#[test]
 fn ping_does_not_register_hooks() {
     let home = std::env::temp_dir().join(format!("pi-unity-nohook-{}", std::process::id()));
     let _ = fs::create_dir_all(&home);

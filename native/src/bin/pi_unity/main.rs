@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
@@ -19,18 +19,20 @@ mod toon;
 mod usage;
 mod version;
 
-use args::{Commands, SessionSubcommands};
-use std::fs;
-use client::{CliError, HarnessClient, normalize_pipe_name};
-use commands::{execute_harness_command, handle_skills_command, parse_param_pairs};
+use args::{Cli, Commands, SessionSubcommands};
+use clap::Parser;
+use client::{CliError, HarnessClient};
+use commands::{execute_harness_command, handle_skills_command};
 use discovery::{resolve_project_root, resolve_project_root_fast};
-use output::{emit_value, format_safe_output, is_base64_data, strip_large_base64_and_save, MAX_SAFE_RESPONSE_CHARS};
-use schema::ViewOptions;
 use logging::{
     append_event_line, compute_project_hash, end_session, lazy_cleanup_old_traces, log_root_dir,
     now_ms, record_mark, resolve_client_name, resolve_session, start_session, timestamp_utc,
     CallEvent, CallEventFlags, CallEventPhases, TraceRecorder, DEFAULT_VERSION, LOG_FORMAT_VERSION,
 };
+use output::{emit_value, MAX_SAFE_RESPONSE_CHARS};
+use schema::ViewOptions;
+use std::fs;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 pub const EXPECTED_PROTOCOL_VERSION: i32 = 1;
 
@@ -174,6 +176,9 @@ async fn main() -> ExitCode {
                 Err(e) => Err(e),
             }
         }
+        Some(Commands::Mux) => {
+            return run_mux(cli.project_path.as_deref()).await;
+        }
         Some(Commands::Skills(skills_args)) => {
             let disc_start = Instant::now();
             let p_root = match resolve_project_root(cli.project_path.as_deref()) {
@@ -298,6 +303,280 @@ async fn main() -> ExitCode {
 }
 
 const HOME_PROBE_MS: u64 = 200;
+const MUX_PING_MS: u64 = 5000;
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MuxLine {
+    id: Option<String>,
+    argv: Option<Vec<String>>,
+    quit: Option<bool>,
+}
+
+async fn run_mux(project_path: Option<&str>) -> ExitCode {
+    let mut project_root: Option<PathBuf> = None;
+    let mut client: Option<HarnessClient> = None;
+
+    let stdin = tokio::io::stdin();
+    let mut lines = BufReader::new(stdin).lines();
+    let mut stdout = tokio::io::stdout();
+    let mut ping = tokio::time::interval(Duration::from_millis(MUX_PING_MS));
+    ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+    loop {
+        tokio::select! {
+            _ = ping.tick() => {
+                if let Some(ref mut c) = client {
+                    if c.is_connected() {
+                        let connected_before = c.is_connected();
+                        if c.reload_bridge().is_err() {
+                            c.disconnect();
+                        } else if !c.is_connected() {
+                            // token/generation 变了，等下条业务再连
+                        } else if connected_before {
+                            if c.send_request("ping", json!({}), 2000).await.is_err() {
+                                c.disconnect();
+                            }
+                        }
+                    }
+                }
+            }
+            read = lines.next_line() => {
+                match read {
+                    Ok(Some(line)) => {
+                        if line.trim().is_empty() {
+                            continue;
+                        }
+                        let reply = handle_mux_line(&line, &mut client, &mut project_root, project_path).await;
+                        if write_mux_stdout(&mut stdout, &reply.0).await.is_err() {
+                            break;
+                        }
+                        if reply.1 {
+                            break;
+                        }
+                    }
+                    Ok(None) => break,
+                    Err(_) => break,
+                }
+            }
+        }
+    }
+    ExitCode::SUCCESS
+}
+
+async fn write_mux_stdout(
+    stdout: &mut tokio::io::Stdout,
+    value: &Value,
+) -> Result<(), std::io::Error> {
+    let mut bytes = serde_json::to_vec(value).unwrap_or_else(|_| br#"{"ok":false}"#.to_vec());
+    bytes.push(b'\n');
+    stdout.write_all(&bytes).await?;
+    stdout.flush().await
+}
+
+fn mux_error_value(id: &str, err: &CliError) -> Value {
+    let payload = usage::error_payload(err);
+    json!({
+        "id": id,
+        "ok": false,
+        "exitCode": payload["exitCode"],
+        "error": payload["error"],
+        "error_type": payload["error_type"],
+        "help": payload["help"],
+        "text": usage::format_error(err, false),
+    })
+}
+
+fn mux_ok_value(id: &str, output: &str) -> Value {
+    let result = match serde_json::from_str::<Value>(output) {
+        Ok(Value::Object(map)) if map.get("ok").and_then(Value::as_bool) == Some(true) => {
+            map.get("result").cloned().unwrap_or(Value::Null)
+        }
+        Ok(other) => other,
+        Err(_) => Value::String(output.to_string()),
+    };
+    json!({
+        "id": id,
+        "ok": true,
+        "exitCode": 0,
+        "result": result,
+        "text": emit_value(&result, false),
+    })
+}
+
+#[derive(Debug)]
+enum MuxParsed {
+    Command(Commands, ViewOptions),
+    Help(String),
+}
+
+fn parse_mux_command(argv: &[String]) -> Result<MuxParsed, CliError> {
+    let mut args = Vec::with_capacity(argv.len() + 1);
+    args.push("pi-unity".to_string());
+    args.extend(argv.iter().cloned());
+    match Cli::try_parse_from(args) {
+        Ok(parsed) => {
+            if parsed.project_path.is_some() {
+                return Err(usage::usage_error(
+                    "mux 请求不能带 --project-path",
+                    &["工程在 mux 启动时固定"],
+                ));
+            }
+            if parsed.trace {
+                return Err(usage::usage_error(
+                    "mux 不支持 --trace",
+                    &["pi-unity status"],
+                ));
+            }
+            match parsed.command {
+                Some(Commands::Mux) => {
+                    Err(usage::usage_error("mux 不能嵌套", &["pi-unity status"]))
+                }
+                Some(Commands::Skills(_))
+                | Some(Commands::Session(_))
+                | Some(Commands::Mark(_))
+                | Some(Commands::Setup(_)) => Err(usage::usage_error(
+                    "mux 不支持该子命令",
+                    &["pi-unity status", "pi-unity ping"],
+                )),
+                Some(Commands::Eval(eval_args))
+                    if eval_args.code.is_none() && eval_args.file.is_none() =>
+                {
+                    Err(usage::usage_error(
+                        "eval 需要 CODE 或 --file",
+                        &[
+                            "pi-unity eval \"<code>\"",
+                            "pi-unity eval -f Temp/PiUnityHarness/AgentScratch/probe.repl",
+                        ],
+                    ))
+                }
+                Some(cmd) => Ok(MuxParsed::Command(
+                    cmd,
+                    ViewOptions::from_parts(&parsed.fields, parsed.full),
+                )),
+                None => Err(usage::usage_error(
+                    "mux 请求需要子命令",
+                    &["pi-unity status"],
+                )),
+            }
+        }
+        Err(err) => match usage::clap_to_cli_error(err) {
+            Ok(help_text) => Ok(MuxParsed::Help(help_text)),
+            Err(cli_err) => Err(cli_err),
+        },
+    }
+}
+
+async fn handle_mux_line(
+    line: &str,
+    client: &mut Option<HarnessClient>,
+    project_root: &mut Option<PathBuf>,
+    project_path: Option<&str>,
+) -> (Value, bool) {
+    let parsed: MuxLine = match serde_json::from_str(line) {
+        Ok(v) => v,
+        Err(e) => {
+            return (
+                mux_error_value(
+                    "",
+                    &usage::usage_error(
+                        format!("mux JSON 无效: {e}"),
+                        &["{\"id\":\"1\",\"argv\":[\"status\"]}"],
+                    ),
+                ),
+                false,
+            );
+        }
+    };
+    let id = parsed.id.unwrap_or_default();
+    let quit = parsed.quit.unwrap_or(false)
+        || parsed
+            .argv
+            .as_ref()
+            .and_then(|a| a.first())
+            .map(|s| s == "quit")
+            .unwrap_or(false);
+    if quit {
+        return (
+            json!({
+                "id": id,
+                "ok": true,
+                "exitCode": 0,
+                "result": {"quit": true},
+            }),
+            true,
+        );
+    }
+    let Some(argv) = parsed.argv else {
+        return (
+            mux_error_value(
+                &id,
+                &usage::usage_error(
+                    "mux 请求需要 id 和 argv",
+                    &["{\"id\":\"1\",\"argv\":[\"status\"]}"],
+                ),
+            ),
+            false,
+        );
+    };
+    if id.is_empty() {
+        return (
+            mux_error_value(
+                "",
+                &usage::usage_error(
+                    "mux 请求需要 id 和 argv",
+                    &["{\"id\":\"1\",\"argv\":[\"status\"]}"],
+                ),
+            ),
+            false,
+        );
+    }
+
+    let parsed_cmd = match parse_mux_command(&argv) {
+        Ok(v) => v,
+        Err(err) => return (mux_error_value(&id, &err), false),
+    };
+    let (command, view_opts) = match parsed_cmd {
+        MuxParsed::Help(help_text) => {
+            return (mux_ok_value(&id, &json!(help_text).to_string()), false);
+        }
+        MuxParsed::Command(command, view_opts) => (command, view_opts),
+    };
+
+    if project_root.is_none() {
+        match resolve_project_root(project_path) {
+            Ok(root) => *project_root = Some(root),
+            Err(err) => return (mux_error_value(&id, &err), false),
+        }
+    }
+    let Some(root) = project_root.clone() else {
+        return (
+            mux_error_value(&id, &CliError::BridgeNotFound("找不到 Unity 工程".into())),
+            false,
+        );
+    };
+
+    if client.is_none() {
+        let recorder = Arc::new(TraceRecorder::new("mux"));
+        match HarnessClient::new_persistent(root.clone(), recorder) {
+            Ok(c) => *client = Some(c),
+            Err(err) => return (mux_error_value(&id, &err), false),
+        }
+    }
+
+    let Some(c) = client.as_mut() else {
+        return (
+            mux_error_value(&id, &CliError::Other("mux client 不可用".into())),
+            false,
+        );
+    };
+    let recorder = Arc::new(TraceRecorder::new(command.subcommand_name()));
+    c.set_recorder(recorder.clone());
+    match execute_harness_command(command, c, &root, true, &view_opts, &recorder).await {
+        Ok(output) => (mux_ok_value(&id, &output), false),
+        Err(err) => (mux_error_value(&id, &err), false),
+    }
+}
 
 async fn run_home(
     project_path: Option<&str>,
@@ -421,7 +700,6 @@ fn handle_exit(
 
 fn handle_error(err: &CliError, json_mode: bool, project_root: Option<&Path>) {
     let mut msg = err.message().to_string();
-    let help = err.help();
 
     if msg.len() > MAX_SAFE_RESPONSE_CHARS {
         if let Some(root) = project_root {
@@ -443,12 +721,31 @@ fn handle_error(err: &CliError, json_mode: bool, project_root: Option<&Path>) {
         }
     }
 
-    let out = usage::format_usage(&msg, &help, json_mode);
+    let out = if msg == err.message() {
+        usage::format_error(err, json_mode)
+    } else {
+        usage::format_error(
+            &match err {
+                CliError::Usage { help, .. } => CliError::Usage {
+                    error: msg,
+                    help: help.clone(),
+                },
+                CliError::ExecutionFailed(_) => CliError::ExecutionFailed(msg),
+                CliError::BridgeNotFound(_) => CliError::BridgeNotFound(msg),
+                CliError::Timeout(_) => CliError::Timeout(msg),
+                CliError::Other(_) => CliError::Other(msg),
+            },
+            json_mode,
+        )
+    };
     println!("{}", out);
 }
 
 #[cfg(test)]
 mod tests {
+    use super::client::normalize_pipe_name;
+    use super::commands::parse_param_pairs;
+    use super::output::{format_safe_output, is_base64_data, strip_large_base64_and_save};
     use super::*;
 
     #[test]
@@ -576,5 +873,23 @@ mod tests {
             "execution_failed"
         );
         assert_eq!(CliError::Other("err".into()).error_type(), "other");
+    }
+
+    #[test]
+    fn mux_eval_missing_code_is_usage_without_unity() {
+        let err = parse_mux_command(&["eval".into()]).unwrap_err();
+        assert_eq!(err.exit_code(), 2);
+        assert!(err.message().contains("eval 需要 CODE"));
+    }
+
+    #[test]
+    fn mux_rejects_project_path_and_trace() {
+        let err = parse_mux_command(&["--project-path".into(), "D:/other".into(), "status".into()])
+            .unwrap_err();
+        assert_eq!(err.exit_code(), 2);
+        assert!(err.message().contains("--project-path"));
+        let err = parse_mux_command(&["--trace".into(), "status".into()]).unwrap_err();
+        assert_eq!(err.exit_code(), 2);
+        assert!(err.message().contains("--trace"));
     }
 }

@@ -5,7 +5,7 @@
 
   "license": "MIT",
   "scripts": {
-    "test": "npx tsx --test helpers.test.ts config.test.ts cli.test.ts"
+    "test": "npx tsx --test helpers.test.ts config.test.ts cli.test.ts mux.test.ts lifecycle.test.ts"
   },
 
   "peerDependencies": {
