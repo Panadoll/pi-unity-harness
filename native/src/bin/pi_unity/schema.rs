@@ -96,11 +96,31 @@ fn pick_i64(obj: &Value, keys: &[&str], default: i64) -> i64 {
 }
 
 pub fn help_items(commands: &[&str]) -> Value {
-    let arr: Vec<Value> = commands
-        .iter()
-        .map(|c| json!({"run": *c}))
-        .collect();
+    let arr: Vec<Value> = commands.iter().map(|c| json!({"run": *c})).collect();
     Value::Array(arr)
+}
+
+fn append_requested_fields(target: &mut Value, raw: &Value, opts: &ViewOptions) {
+    if opts.fields.is_empty() {
+        return;
+    }
+    let Some(obj) = target.as_object_mut() else {
+        return;
+    };
+    for field in &opts.fields {
+        if let Some(v) = raw.get(field) {
+            obj.insert(field.clone(), v.clone());
+        }
+    }
+}
+
+pub fn shape_status_view(raw: &Value, opts: &ViewOptions) -> Value {
+    if opts.full {
+        return raw.clone();
+    }
+    let mut shaped = shape_status(raw);
+    append_requested_fields(&mut shaped, raw, opts);
+    shaped
 }
 
 pub fn shape_status(raw: &Value) -> Value {
@@ -142,7 +162,10 @@ fn flatten_hierarchy(nodes: &[Value], out: &mut Vec<Value>, opts: &ViewOptions) 
         row.insert("name".into(), json!(pick_str(node, &["name"])));
         row.insert(
             "active".into(),
-            json!(pick_bool(node, &["activeInHierarchy", "activeSelf", "active"])),
+            json!(pick_bool(
+                node,
+                &["activeInHierarchy", "activeSelf", "active"]
+            )),
         );
         if opts.wants("childCount") {
             row.insert(
@@ -183,11 +206,7 @@ pub fn shape_snapshot(raw: &Value, opts: &ViewOptions) -> Value {
         .pointer("/hierarchy/truncated")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let selected = pick_i64(
-        raw.get("selection").unwrap_or(&Value::Null),
-        &["count"],
-        0,
-    );
+    let selected = pick_i64(raw.get("selection").unwrap_or(&Value::Null), &["count"], 0);
     let selection_name = raw
         .pointer("/selection/activeGameObject/name")
         .or_else(|| raw.pointer("/selection/activeObject/name"))
@@ -233,10 +252,7 @@ pub fn shape_snapshot(raw: &Value, opts: &ViewOptions) -> Value {
     );
     out.insert("selected".into(), json!(selected));
     out.insert("errors".into(), json!(error_count));
-    out.insert(
-        "nodes".into(),
-        json!(format!("{shown} of {total} total")),
-    );
+    out.insert("nodes".into(), json!(format!("{shown} of {total} total")));
     if nodes.is_empty() {
         out.insert("hierarchy".into(), json!("0 个节点 found"));
     } else {
@@ -304,7 +320,10 @@ pub fn shape_list_commands(raw: &Value, opts: &ViewOptions) -> Value {
     })
 }
 
-pub fn shape_timeline(raw: &Value, _opts: &ViewOptions) -> Value {
+pub fn shape_timeline(raw: &Value, opts: &ViewOptions) -> Value {
+    if opts.full {
+        return raw.clone();
+    }
     let actions = raw
         .get("actions")
         .and_then(Value::as_array)
@@ -322,11 +341,13 @@ pub fn shape_timeline(raw: &Value, _opts: &ViewOptions) -> Value {
     let rows: Vec<Value> = actions
         .iter()
         .map(|a| {
-            json!({
+            let mut row = json!({
                 "id": pick_str(a, &["requestId", "id"]),
                 "name": pick_str(a, &["action", "requestType", "name"]),
                 "ok": a.get("success").and_then(Value::as_bool).unwrap_or(false),
-            })
+            });
+            append_requested_fields(&mut row, a, opts);
+            row
         })
         .collect();
     json!({
@@ -381,9 +402,7 @@ pub fn shape_observe(raw: &Value) -> Value {
     let changed = if raw.get("changed").and_then(Value::as_bool) == Some(true) {
         paths.len()
     } else {
-        raw.get("unique_count")
-            .and_then(Value::as_u64)
-            .unwrap_or(0) as usize
+        raw.get("unique_count").and_then(Value::as_u64).unwrap_or(0) as usize
     };
     json!({
         "changedFrames": changed,
@@ -467,9 +486,79 @@ mod tests {
 
     #[test]
     fn empty_commands_are_explicit() {
-        let out = shape_list_commands(&json!({"commands": [], "count": 0}), &ViewOptions::default());
+        let out = shape_list_commands(
+            &json!({"commands": [], "count": 0}),
+            &ViewOptions::default(),
+        );
         let text = out["commands"].as_str().unwrap();
         assert!(text.starts_with("0 "));
         assert!(text.contains("found"));
+    }
+
+    #[test]
+    fn status_full_returns_raw() {
+        let raw = json!({
+            "managedState": "ready",
+            "pipe": r"\\.\pipe\x",
+            "extra": 1
+        });
+        let out = shape_status_view(
+            &raw,
+            &ViewOptions {
+                fields: vec![],
+                full: true,
+            },
+        );
+        assert_eq!(out, raw);
+    }
+
+    #[test]
+    fn status_fields_appends_raw_keys() {
+        let raw = json!({
+            "managedState": "ready",
+            "pipe": r"\\.\pipe\x",
+            "token": "abc"
+        });
+        let out = shape_status_view(
+            &raw,
+            &ViewOptions {
+                fields: vec!["pipe".into()],
+                full: false,
+            },
+        );
+        assert_eq!(out["editor"], "ready");
+        assert_eq!(out["pipe"], r"\\.\pipe\x");
+        assert!(out.get("token").is_none());
+        assert!(out.get("state").is_none());
+    }
+
+    #[test]
+    fn timeline_full_and_fields() {
+        let raw = json!({
+            "count": 1,
+            "actions": [{
+                "requestId": "1",
+                "action": "status",
+                "success": true,
+                "durationMs": 12
+            }]
+        });
+        let full = shape_timeline(
+            &raw,
+            &ViewOptions {
+                fields: vec![],
+                full: true,
+            },
+        );
+        assert_eq!(full, raw);
+        let slim = shape_timeline(
+            &raw,
+            &ViewOptions {
+                fields: vec!["durationMs".into()],
+                full: false,
+            },
+        );
+        assert_eq!(slim["actions"][0]["id"], "1");
+        assert_eq!(slim["actions"][0]["durationMs"], 12);
     }
 }

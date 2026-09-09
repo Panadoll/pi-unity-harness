@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { execFile } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -78,25 +78,539 @@ export function findPiUnityBinary(): string {
 
 export interface CliExecutionResult {
   ok: boolean;
-  result?: any;
+  result?: unknown;
   error?: string;
+  error_type?: string;
+  help?: string[];
   exitCode?: number;
   truncated?: boolean;
   savedScratchPath?: string;
+  text?: string;
 }
 
-/** Execute pi-unity CLI asynchronously and return parsed JSON */
-export async function runPiUnityCli(
+const DEFAULT_MUX_TIMEOUT_MS = 120000;
+const MAX_MUX_STDOUT_CHARS = 32 * 1024 * 1024;
+
+/** mux 调用结果。只有从未拉起成功时才允许 exec 回退。 */
+export type MuxCallResult =
+  | { status: "completed"; written: true; retryAllowed: false; result: CliExecutionResult }
+  | { status: "unavailable-before-start"; written: false; retryAllowed: true; result: CliExecutionResult }
+  | { status: "aborted"; written: false; retryAllowed: false; result: CliExecutionResult }
+  | { status: "in-flight-lost"; written: true; retryAllowed: false; result: CliExecutionResult }
+  | { status: "queue-dropped"; written: false; retryAllowed: false; result: CliExecutionResult };
+
+interface MuxJob {
+  argv: string[];
+  timeoutMs: number;
+  signal?: AbortSignal;
+  resolve: (value: MuxCallResult) => void;
+  dispatched: boolean;
+  settled: boolean;
+  id?: string;
+  timer?: ReturnType<typeof setTimeout>;
+  onAbort?: () => void;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  return null;
+}
+
+function asStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const out: string[] = [];
+  for (const item of value) {
+    if (typeof item === "string") out.push(item);
+  }
+  return out;
+}
+
+function parseCliJson(text: string): CliExecutionResult {
+  const trimmed = text.trim();
+  if (!trimmed) return { ok: true, result: null };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    return { ok: false, error: trimmed, exitCode: 1 };
+  }
+  const obj = asRecord(parsed);
+  if (!obj) return { ok: false, error: trimmed, exitCode: 1 };
+  const ok = obj.ok !== false;
+  const help = asStringArray(obj.help);
+  const error = typeof obj.error === "string" ? obj.error : undefined;
+  const errorType = typeof obj.error_type === "string" ? obj.error_type : undefined;
+  const exitCode =
+    typeof obj.exitCode === "number"
+      ? obj.exitCode
+      : typeof obj.exit_code === "number"
+        ? obj.exit_code
+        : ok
+          ? 0
+          : 1;
+  return {
+    ok,
+    result: obj.result,
+    error,
+    error_type: errorType,
+    help,
+    exitCode,
+    truncated: obj.truncated === true,
+    savedScratchPath: typeof obj.savedScratchPath === "string" ? obj.savedScratchPath : undefined,
+    text: typeof obj.text === "string" ? obj.text : undefined,
+  };
+}
+
+function parseMuxReply(value: unknown): CliExecutionResult | null {
+  const obj = asRecord(value);
+  if (!obj || typeof obj.id !== "string") return null;
+  const ok = obj.ok === true;
+  const help = asStringArray(obj.help);
+  const error = typeof obj.error === "string" ? obj.error : undefined;
+  const errorType = typeof obj.error_type === "string" ? obj.error_type : undefined;
+  const exitCode =
+    typeof obj.exitCode === "number" ? obj.exitCode : ok ? 0 : 1;
+  return {
+    ok,
+    result: obj.result,
+    error,
+    error_type: errorType,
+    help,
+    exitCode,
+    truncated: obj.truncated === true,
+    savedScratchPath: typeof obj.savedScratchPath === "string" ? obj.savedScratchPath : undefined,
+    text: typeof obj.text === "string" ? obj.text : undefined,
+  };
+}
+
+export class MuxClient {
+  private child: ChildProcess | null = null;
+  private buffer = "";
+  private nextId = 1;
+  private starting: Promise<boolean> | null = null;
+  private closed = false;
+  private startedOnce = false;
+  private readonly queue: MuxJob[] = [];
+  private inflight: MuxJob | null = null;
+
+  constructor(
+    private readonly bin: string,
+    private readonly projectPath?: string,
+    private readonly spawnImpl: typeof spawn = spawn,
+    private readonly cwd?: string,
+  ) {}
+
+  get alive(): boolean {
+    return !this.closed && this.child !== null && this.child.exitCode === null;
+  }
+
+  get fixedProjectPath(): string | undefined {
+    return this.projectPath;
+  }
+
+  async start(): Promise<boolean> {
+    if (this.starting) return this.starting;
+    if (this.alive) return true;
+    if (this.closed) return false;
+    this.starting = this.spawnMux();
+    try {
+      return await this.starting;
+    } finally {
+      this.starting = null;
+    }
+  }
+
+  private spawnMux(): Promise<boolean> {
+    return new Promise((resolve) => {
+      const args = ["mux"];
+      if (this.projectPath) args.push("--project-path", this.projectPath);
+      let settled = false;
+      const finish = (ok: boolean) => {
+        if (settled) return;
+        settled = true;
+        resolve(ok);
+      };
+      let child: ChildProcess;
+      try {
+        child = this.spawnImpl(this.bin, args, {
+          stdio: ["pipe", "pipe", "pipe"],
+          windowsHide: true,
+          cwd: this.cwd,
+          env: {
+            ...process.env,
+            PI_UNITY_CLIENT: "pi-ext",
+          },
+        });
+      } catch {
+        finish(false);
+        return;
+      }
+      this.child = child;
+      this.closed = false;
+      child.stdout?.setEncoding("utf8");
+      child.stdout?.on("data", (chunk: string) => {
+        if (this.child !== child) return;
+        this.onStdout(chunk);
+      });
+      child.stderr?.resume();
+      const failStart = () => {
+        if (this.child === child) this.child = null;
+        this.buffer = "";
+        try {
+          child.kill();
+        } catch {}
+        finish(false);
+      };
+      child.once("spawn", () => {
+        if (this.child !== child) return;
+        this.startedOnce = true;
+        finish(true);
+      });
+      child.once("error", () => {
+        if (this.child !== child) return;
+        if (!this.startedOnce) {
+          failStart();
+          return;
+        }
+        this.failTransport("mux 进程错误");
+        finish(false);
+      });
+      child.once("exit", () => {
+        if (this.child !== child) return;
+        if (!this.startedOnce) {
+          failStart();
+          return;
+        }
+        this.failTransport("mux 进程退出");
+        finish(false);
+      });
+      child.stdin?.once("error", () => {
+        if (this.child !== child) return;
+        if (!this.startedOnce) {
+          failStart();
+          return;
+        }
+        this.failTransport("mux stdin 错误");
+        finish(false);
+      });
+    });
+  }
+
+  private onStdout(chunk: string): void {
+    this.buffer += chunk;
+    if (this.buffer.length > MAX_MUX_STDOUT_CHARS) {
+      this.failTransport("mux stdout 过大");
+      return;
+    }
+    let nl = this.buffer.indexOf("\n");
+    while (nl >= 0) {
+      const line = this.buffer.slice(0, nl).replace(/\r$/, "");
+      this.buffer = this.buffer.slice(nl + 1);
+      if (line.trim()) this.dispatchLine(line);
+      nl = this.buffer.indexOf("\n");
+    }
+  }
+
+  private dispatchLine(line: string): void {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      this.failTransport("协议损坏");
+      return;
+    }
+    const result = parseMuxReply(parsed);
+    if (!result) {
+      this.failTransport("协议损坏");
+      return;
+    }
+    const obj = asRecord(parsed);
+    const id = obj && typeof obj.id === "string" ? obj.id : "";
+    const job = this.inflight;
+    if (!job || job.id !== id) return;
+    this.finishJob(job, { status: "completed", written: true, retryAllowed: false, result });
+    this.inflight = null;
+    this.pump();
+  }
+
+  private finishJob(job: MuxJob, value: MuxCallResult): void {
+    if (job.settled) return;
+    job.settled = true;
+    if (job.timer) {
+      clearTimeout(job.timer);
+      job.timer = undefined;
+    }
+    if (job.onAbort) {
+      job.signal?.removeEventListener("abort", job.onAbort);
+      job.onAbort = undefined;
+    }
+    job.resolve(value);
+  }
+
+  private dropQueued(reason: string): void {
+    const queued = this.queue.splice(0);
+    for (const job of queued) {
+      this.finishJob(job, {
+        status: "queue-dropped",
+        written: false,
+        retryAllowed: false,
+        result: { ok: false, error: reason, error_type: "other", exitCode: 1 },
+      });
+    }
+  }
+
+  private killChild(): void {
+    const child = this.child;
+    this.child = null;
+    this.buffer = "";
+    if (child && child.exitCode === null) {
+      try {
+        child.kill();
+      } catch {}
+    }
+  }
+
+  private failTransport(reason: string): void {
+    const current = this.inflight;
+    this.inflight = null;
+    this.killChild();
+    if (current?.dispatched) {
+      this.finishJob(current, {
+        status: "in-flight-lost",
+        written: true,
+        retryAllowed: false,
+        result: {
+          ok: false,
+          error: reason,
+          error_type: reason.startsWith("mux 超时") ? "timeout" : "other",
+          exitCode: 1,
+        },
+      });
+    } else if (current) {
+      this.finishJob(current, {
+        status: "queue-dropped",
+        written: false,
+        retryAllowed: false,
+        result: { ok: false, error: "mux 未发送已终止", error_type: "other", exitCode: 1 },
+      });
+    }
+    this.dropQueued("mux 未发送已终止");
+  }
+
+  private pump(): void {
+    if (this.closed || this.inflight) return;
+    const job = this.queue.shift();
+    if (!job) return;
+    this.inflight = job;
+    void this.dispatch(job);
+  }
+
+  private async dispatch(job: MuxJob): Promise<void> {
+    if (job.signal?.aborted) {
+      this.finishJob(job, {
+        status: "aborted",
+        written: false,
+        retryAllowed: false,
+        result: { ok: false, error: "aborted", error_type: "other", exitCode: 1 },
+      });
+      if (this.inflight === job) this.inflight = null;
+      this.pump();
+      return;
+    }
+    if (this.closed) {
+      this.finishJob(job, {
+        status: "queue-dropped",
+        written: false,
+        retryAllowed: false,
+        result: { ok: false, error: "mux 未发送已终止", error_type: "other", exitCode: 1 },
+      });
+      if (this.inflight === job) this.inflight = null;
+      return;
+    }
+    const started = await this.start();
+    if (job.settled || this.closed || this.inflight !== job) {
+      if (this.inflight === job) this.inflight = null;
+      this.pump();
+      return;
+    }
+    if (!started || !this.alive || !this.child?.stdin) {
+      const canFallback = !this.startedOnce;
+      this.finishJob(job, {
+        status: canFallback ? "unavailable-before-start" : "queue-dropped",
+        written: false,
+        retryAllowed: canFallback,
+        result: {
+          ok: false,
+          error: canFallback ? "mux 不可用" : "mux 未发送已终止",
+          error_type: "other",
+          exitCode: 1,
+        },
+      });
+      if (this.inflight === job) this.inflight = null;
+      this.dropQueued("mux 未发送已终止");
+      return;
+    }
+    if (job.settled || job.signal?.aborted) {
+      if (!job.settled) {
+        this.finishJob(job, {
+          status: "aborted",
+          written: false,
+          retryAllowed: false,
+          result: { ok: false, error: "aborted", error_type: "other", exitCode: 1 },
+        });
+      }
+      if (this.inflight === job) this.inflight = null;
+      this.pump();
+      return;
+    }
+    const id = String(this.nextId++);
+    job.id = id;
+    job.dispatched = true;
+    this.inflight = job;
+    job.timer = setTimeout(() => {
+      this.failTransport(`mux 超时 ${job.timeoutMs}ms`);
+    }, job.timeoutMs);
+    const payload = `${JSON.stringify({ id, argv: job.argv })}\n`;
+    const child = this.child;
+    const stdin = child?.stdin;
+    if (!child || !stdin) {
+      this.failTransport("mux stdin 写入失败");
+      return;
+    }
+    try {
+      stdin.write(payload, (err) => {
+        if (this.child !== child) return;
+        if (err) this.failTransport("mux stdin 写入失败");
+      });
+    } catch {
+      if (this.child === child) this.failTransport("mux stdin 写入失败");
+    }
+  }
+
+  async request(
+    argv: string[],
+    options: { timeoutMs?: number; signal?: AbortSignal } = {},
+  ): Promise<MuxCallResult> {
+    if (options.signal?.aborted) {
+      return {
+        status: "aborted",
+        written: false,
+        retryAllowed: false,
+        result: { ok: false, error: "aborted", error_type: "other", exitCode: 1 },
+      };
+    }
+    if (this.closed) {
+      return {
+        status: "queue-dropped",
+        written: false,
+        retryAllowed: false,
+        result: { ok: false, error: "mux 未发送已终止", error_type: "other", exitCode: 1 },
+      };
+    }
+    const timeoutMs = options.timeoutMs && options.timeoutMs > 0 ? options.timeoutMs : DEFAULT_MUX_TIMEOUT_MS;
+    return new Promise<MuxCallResult>((resolve) => {
+      const job: MuxJob = {
+        argv,
+        timeoutMs,
+        signal: options.signal,
+        resolve,
+        dispatched: false,
+        settled: false,
+      };
+      job.onAbort = () => {
+        if (job.dispatched) {
+          this.failTransport("aborted");
+          return;
+        }
+        const idx = this.queue.indexOf(job);
+        if (idx >= 0) this.queue.splice(idx, 1);
+        const wasInflight = this.inflight === job;
+        this.finishJob(job, {
+          status: "aborted",
+          written: false,
+          retryAllowed: false,
+          result: { ok: false, error: "aborted", error_type: "other", exitCode: 1 },
+        });
+        if (wasInflight) {
+          this.inflight = null;
+          this.pump();
+        }
+      };
+      options.signal?.addEventListener("abort", job.onAbort);
+      this.queue.push(job);
+      this.pump();
+    });
+  }
+
+  async shutdown(): Promise<void> {
+    this.closed = true;
+    this.dropQueued("mux 未发送已终止");
+    const current = this.inflight;
+    if (current && !current.dispatched) {
+      this.inflight = null;
+      this.finishJob(current, {
+        status: "queue-dropped",
+        written: false,
+        retryAllowed: false,
+        result: { ok: false, error: "mux 未发送已终止", error_type: "other", exitCode: 1 },
+      });
+    }
+    const child = this.child;
+    if (!child) {
+      if (this.inflight) {
+        this.finishJob(this.inflight, {
+          status: "queue-dropped",
+          written: false,
+          retryAllowed: false,
+          result: { ok: false, error: "mux 未发送已终止", error_type: "other", exitCode: 1 },
+        });
+        this.inflight = null;
+      }
+      return;
+    }
+    const stdin = child.stdin;
+    if (stdin && stdin.writable) {
+      try {
+        stdin.write(`${JSON.stringify({ id: "quit", quit: true })}\n`);
+      } catch {}
+      try {
+        stdin.end();
+      } catch {}
+    }
+    await Promise.race([
+      new Promise<void>((resolve) => child.once("exit", () => resolve())),
+      new Promise<void>((resolve) => setTimeout(resolve, 500)),
+    ]);
+    if (child.exitCode === null) {
+      try {
+        child.kill();
+      } catch {}
+    }
+    this.failTransport("mux 未发送已终止");
+  }
+}
+
+let activeMux: MuxClient | null = null;
+
+export function setActiveMux(client: MuxClient | null): void {
+  activeMux = client;
+}
+
+export function getActiveMux(): MuxClient | null {
+  return activeMux;
+}
+
+async function execPiUnity(
   args: string[],
   options: { projectPath?: string; timeoutMs?: number; signal?: AbortSignal } = {},
 ): Promise<CliExecutionResult> {
   const bin = findPiUnityBinary();
   const cliArgs = [...args, "--json"];
-
   if (options.projectPath) {
     cliArgs.push("--project-path", options.projectPath);
   }
-
   try {
     const { stdout } = await execFileAsync(bin, cliArgs, {
       encoding: "utf8",
@@ -109,32 +623,79 @@ export async function runPiUnityCli(
         PI_UNITY_CLIENT: "pi-ext",
       },
     });
-
-
-    const trimmed = stdout.trim();
-    if (!trimmed) {
-      return { ok: true, result: null };
+    return parseCliJson(stdout);
+  } catch (err: unknown) {
+    const e = err as {
+      stdout?: string | Buffer;
+      stderr?: string | Buffer;
+      status?: number | null;
+      code?: string | number;
+      message?: string;
+    };
+    const stdout = typeof e.stdout === "string" ? e.stdout : Buffer.isBuffer(e.stdout) ? e.stdout.toString("utf8") : "";
+    if (stdout.trim()) {
+      return parseCliJson(stdout);
     }
-    return JSON.parse(trimmed);
-  } catch (err: any) {
-    if (err.stdout) {
-      try {
-        return JSON.parse(err.stdout.trim());
-      } catch {}
-    }
-    const msg = err.stderr ? err.stderr.trim() : (err.message || String(err));
-    return { ok: false, error: msg, exitCode: err.status ?? err.code ?? 1 };
+    const stderr = typeof e.stderr === "string" ? e.stderr.trim() : Buffer.isBuffer(e.stderr) ? e.stderr.toString("utf8").trim() : "";
+    const message = err instanceof Error ? err.message : String(err);
+    const code = e.status ?? e.code;
+    const exitCode = typeof code === "number" ? code : 1;
+    return { ok: false, error: stderr || message, exitCode };
   }
 }
 
-function formatResult(cliRes: CliExecutionResult): { content: Array<{ type: "text"; text: string }>; details: any } {
+/** Execute pi-unity CLI asynchronously and return parsed JSON */
+function sameProjectPath(a: string, b: string): boolean {
+  return resolve(a) === resolve(b);
+}
+
+export async function runPiUnityCli(
+  args: string[],
+  options: { projectPath?: string; timeoutMs?: number; signal?: AbortSignal } = {},
+): Promise<CliExecutionResult> {
+  if (options.signal?.aborted) {
+    return { ok: false, error: "aborted", error_type: "other", exitCode: 1 };
+  }
+  const mux = activeMux;
+  if (mux) {
+    const muxProject = mux.fixedProjectPath;
+    if (options.projectPath && (!muxProject || !sameProjectPath(options.projectPath, muxProject))) {
+      return {
+        ok: false,
+        error: muxProject
+          ? `mux 已绑定工程 ${muxProject}，不能改用 ${options.projectPath}`
+          : `mux 工程未固定，不能传 --project-path ${options.projectPath}`,
+        error_type: "usage",
+        help: ["不要在 mux 会话中传不同的 --project-path"],
+        exitCode: 2,
+      };
+    }
+    const call = await mux.request(args, options);
+    if (call.retryAllowed) return execPiUnity(args, options);
+    return call.result;
+  }
+  return execPiUnity(args, options);
+}
+
+function formatResult(cliRes: CliExecutionResult): { content: Array<{ type: "text"; text: string }>; details: unknown } {
   if (!cliRes.ok) {
-    throw new Error(cliRes.error || "pi-unity command failed");
+    const payload = {
+      ok: false,
+      error: cliRes.error || "pi-unity command failed",
+      error_type: cliRes.error_type,
+      help: cliRes.help ?? [],
+      exitCode: cliRes.exitCode ?? 1,
+    };
+    const text = cliRes.text || JSON.stringify(payload, null, 2);
+    const err = new Error(text) as Error & { details?: unknown };
+    err.details = payload;
+    throw err;
   }
 
-  const text = typeof cliRes.result === "string"
-    ? cliRes.result
-    : JSON.stringify(cliRes.result ?? {}, null, 2);
+  const text = cliRes.text
+    ?? (typeof cliRes.result === "string"
+      ? cliRes.result
+      : JSON.stringify(cliRes.result ?? {}, null, 2));
 
   return {
     content: [{ type: "text", text }],
@@ -147,6 +708,18 @@ function pushArg(args: string[], flag: string, value: string | number | undefine
   if (value === undefined || value === "") return;
   args.push(flag, String(value));
 }
+
+export function pushViewArgs(args: string[], params: { fields?: unknown; full?: unknown }) {
+  if (typeof params.fields === "string" && params.fields.trim()) {
+    args.push("--fields", params.fields.trim());
+  }
+  if (params.full === true) args.push("--full");
+}
+
+const VIEW_FIELDS = {
+  fields: Type.String({ description: "追加字段，逗号分隔" }),
+  full: Type.Boolean({ description: "输出完整 schema" }),
+};
 
 /** Tool parameter schema. Names in `required` stay required; the rest are optional. */
 function toolSchema(fields: Record<string, any>, required: string[] = []): any {
@@ -163,6 +736,7 @@ function toolSchema(fields: Record<string, any>, required: string[] = []): any {
 export default function (pi: ExtensionAPI) {
   let settings = loadUnityHarnessSettings();
   const dynamicallyRegisteredTools = new Set<string>();
+  let sessionMux: MuxClient | null = null;
 
   function assertEnabled() {
     settings = loadUnityHarnessSettings();
@@ -173,6 +747,13 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
+  function toolTimeout(params: { timeoutMs?: unknown }, fallback: number, extra = 0): number {
+    const n = typeof params.timeoutMs === "number" && Number.isFinite(params.timeoutMs)
+      ? params.timeoutMs
+      : fallback;
+    return n + extra + 1000;
+  }
+
   async function runTool(
     args: string[],
     options?: { projectPath?: string; timeoutMs?: number; signal?: AbortSignal },
@@ -181,9 +762,23 @@ export default function (pi: ExtensionAPI) {
     return formatResult(await runPiUnityCli(args, options));
   }
 
-  async function refreshDynamicPipelineTools() {
+  async function stopSessionMux() {
+    const mux = sessionMux;
+    sessionMux = null;
+    if (getActiveMux() === mux) setActiveMux(null);
+    if (mux) await mux.shutdown();
+  }
+
+  function startSessionMux(cwd: string) {
+    const projectPath = process.env.UNITY_PROJECT_PATH?.trim() || undefined;
+    sessionMux = new MuxClient(findPiUnityBinary(), projectPath, spawn, cwd);
+    setActiveMux(sessionMux);
+    void sessionMux.start();
+  }
+
+  async function refreshDynamicPipelineTools(signal?: AbortSignal) {
     try {
-      const res = await runPiUnityCli(["list-commands"], { timeoutMs: 15000 });
+      const res = await runPiUnityCli(["list-commands", "--full"], { timeoutMs: 15000, signal });
       if (!res.ok || !res.result) return;
       const list = res.result as PipelineCommandList;
       const filtered = filterPipelineCommands(list);
@@ -200,8 +795,8 @@ export default function (pi: ExtensionAPI) {
             description: cmd.description || `Execute Unity Pipeline command: ${cmd.name}`,
             promptSnippet: `Use ${toolName} to execute the ${cmd.name} pipeline command.`,
             parameters: schema,
-            async execute(_toolCallId, params) {
-              return runTool(["pipeline", cmd.name, "--params-json", JSON.stringify(params ?? {})]);
+            async execute(_toolCallId, params, signal) {
+              return runTool(["pipeline", cmd.name, "--params-json", JSON.stringify(params ?? {})], { signal });
             },
           });
           dynamicallyRegisteredTools.add(toolName);
@@ -214,24 +809,42 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event, ctx) => {
     settings = loadUnityHarnessSettings();
+    await stopSessionMux();
     if (settings.enabled) {
-      ctx.systemPrompt += `\n\n${UNITY_VERIFY_WORKFLOW_PROMPT}`;
+      startSessionMux(ctx.cwd);
       void refreshDynamicPipelineTools();
     }
+  });
+
+  pi.on("before_agent_start", (event) => {
+    settings = loadUnityHarnessSettings();
+    if (!settings.enabled) return;
+    if (event.systemPrompt.includes(UNITY_VERIFY_WORKFLOW_PROMPT)) return;
+    return { systemPrompt: `${event.systemPrompt}\n\n${UNITY_VERIFY_WORKFLOW_PROMPT}` };
+  });
+
+  pi.on("session_shutdown", async () => {
+    await stopSessionMux();
   });
 
   // ---- /unity-harness-settings command ----
   pi.registerCommand("unity-harness-settings", {
     description: "Inspect or toggle pi-unity-harness settings (enabled/disabled)",
-    handler: (args, ctx) => {
+    handler: async (args, ctx) => {
       const enable = coerceEnabled(args.trim());
       if (enable === undefined) {
-        ctx.ui.notify(inspectUnityHarnessSettings(), "info");
+        ctx.ui.notify(JSON.stringify(inspectUnityHarnessSettings(), null, 2), "info");
         return;
       }
-      persistEnabled(enable);
-      settings = loadUnityHarnessSettings();
-      if (enable) void refreshDynamicPipelineTools();
+      persistEnabled(enable, "global", ctx.cwd);
+      settings = loadUnityHarnessSettings(ctx.cwd);
+      if (!enable) {
+        await stopSessionMux();
+      } else {
+        await stopSessionMux();
+        startSessionMux(ctx.cwd);
+        void refreshDynamicPipelineTools();
+      }
       ctx.ui.notify(`pi-unity-harness ${enable ? "enabled" : "disabled"}.`, "info");
     },
   });
@@ -244,9 +857,12 @@ export default function (pi: ExtensionAPI) {
     promptSnippet: "Use unity_ping to probe whether the Unity Editor is running and responding.",
     parameters: toolSchema({
       timeoutMs: Type.Number({ description: "Timeout in milliseconds, default 5000" }),
+      ...VIEW_FIELDS,
     }),
-    async execute(_toolCallId, params) {
-      return runTool(["ping", "--timeout", String(params.timeoutMs ?? 5000)]);
+    async execute(_toolCallId, params, signal) {
+      const args = ["ping", "--timeout", String(params.timeoutMs ?? 5000)];
+      pushViewArgs(args, params);
+      return runTool(args, { timeoutMs: toolTimeout(params, 5000), signal });
     },
   });
 
@@ -258,9 +874,12 @@ export default function (pi: ExtensionAPI) {
     promptSnippet: "Use unity_status to check Editor state, domain reload generation, and modal dialogs.",
     parameters: toolSchema({
       timeoutMs: Type.Number({ description: "Timeout in milliseconds, default 5000" }),
+      ...VIEW_FIELDS,
     }),
-    async execute(_toolCallId, params) {
-      return runTool(["status", "--timeout", String(params.timeoutMs ?? 5000)]);
+    async execute(_toolCallId, params, signal) {
+      const args = ["status", "--timeout", String(params.timeoutMs ?? 5000)];
+      pushViewArgs(args, params);
+      return runTool(args, { timeoutMs: toolTimeout(params, 5000), signal });
     },
   });
 
@@ -275,18 +894,18 @@ export default function (pi: ExtensionAPI) {
       maxNodes: Type.Integer({ description: "Max GameObjects to include (default: 500)" }),
       logLimit: Type.Integer({ description: "Max recent logs to include (default: 50)" }),
       logLevel: Type.String({ description: "Log level filter: error, warning, or all (default: error)" }),
-      noComponents: Type.Boolean({ description: "Omit component details for smaller output" }),
       timeoutMs: Type.Number({ description: "Timeout in milliseconds, default 20000" }),
+      ...VIEW_FIELDS,
     }),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params, signal) {
       const args = ["snapshot"];
       pushArg(args, "--depth", params.depth);
       pushArg(args, "--max-nodes", params.maxNodes);
       pushArg(args, "--log-limit", params.logLimit);
       pushArg(args, "--log-level", params.logLevel);
-      if (params.noComponents) args.push("--no-components");
       pushArg(args, "--timeout", params.timeoutMs);
-      return runTool(args);
+      pushViewArgs(args, params);
+      return runTool(args, { timeoutMs: toolTimeout(params, 20000), signal });
     },
   });
 
@@ -299,11 +918,13 @@ export default function (pi: ExtensionAPI) {
     parameters: toolSchema({
       code: Type.String({ description: "C# code or expression to execute in Unity Editor." }),
       timeoutMs: Type.Number({ description: "Timeout in milliseconds, default 30000" }),
+      ...VIEW_FIELDS,
     }, ["code"]),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params, signal) {
       const args = ["eval", params.code];
       pushArg(args, "--timeout", params.timeoutMs);
-      return runTool(args);
+      pushViewArgs(args, params);
+      return runTool(args, { timeoutMs: toolTimeout(params, 30000), signal });
     },
   });
 
@@ -316,11 +937,13 @@ export default function (pi: ExtensionAPI) {
     parameters: toolSchema({
       filePath: Type.String({ description: "Path to .cs or .repl file (relative to project root or absolute)." }),
       timeoutMs: Type.Number({ description: "Timeout in milliseconds, default 30000" }),
+      ...VIEW_FIELDS,
     }, ["filePath"]),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params, signal) {
       const args = ["eval", "-f", params.filePath];
       pushArg(args, "--timeout", params.timeoutMs);
-      return runTool(args);
+      pushViewArgs(args, params);
+      return runTool(args, { timeoutMs: toolTimeout(params, 30000), signal });
     },
   });
 
@@ -332,11 +955,13 @@ export default function (pi: ExtensionAPI) {
     promptSnippet: "Use unity_recompile after C# edits to trigger compilation and await domain reload.",
     parameters: toolSchema({
       timeoutMs: Type.Number({ description: "Timeout in milliseconds, default 120000" }),
+      ...VIEW_FIELDS,
     }),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params, signal) {
       const args = ["compile"];
       pushArg(args, "--timeout", params.timeoutMs);
-      return runTool(args, { timeoutMs: (params.timeoutMs ?? 120000) + 10000 });
+      pushViewArgs(args, params);
+      return runTool(args, { timeoutMs: toolTimeout(params, 120000, 10000), signal });
     },
   });
 
@@ -348,13 +973,15 @@ export default function (pi: ExtensionAPI) {
     promptSnippet: "Use unity_list_commands to discover available pipeline commands and parameter schemas.",
     parameters: toolSchema({
       timeoutMs: Type.Number({ description: "Timeout in milliseconds, default 15000" }),
+      ...VIEW_FIELDS,
     }),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params, signal) {
       assertEnabled();
       const args = ["list-commands"];
       pushArg(args, "--timeout", params.timeoutMs);
-      void refreshDynamicPipelineTools();
-      return runTool(args);
+      pushViewArgs(args, params);
+      void refreshDynamicPipelineTools(signal);
+      return runTool(args, { timeoutMs: toolTimeout(params, 15000), signal });
     },
   });
 
@@ -378,15 +1005,17 @@ export default function (pi: ExtensionAPI) {
         additionalProperties: true,
       }),
       timeoutMs: Type.Number({ description: "Timeout in milliseconds, default 30000" }),
+      ...VIEW_FIELDS,
     }),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params, signal) {
       const cmdName = (params.name || params.command || "").trim();
-      if (!cmdName) return runTool(["list-commands"]);
+      if (!cmdName) return runTool(["list-commands"], { timeoutMs: toolTimeout(params, 15000), signal });
       const args = ["pipeline", cmdName];
       const paramObj = params.parameters || params.params;
       if (paramObj) args.push("--params-json", JSON.stringify(paramObj));
       pushArg(args, "--timeout", params.timeoutMs);
-      return runTool(args);
+      pushViewArgs(args, params);
+      return runTool(args, { timeoutMs: toolTimeout(params, 30000), signal });
     },
   });
 
@@ -400,13 +1029,15 @@ export default function (pi: ExtensionAPI) {
       mode: Type.String({ description: "Test mode: edit or play (default: edit)" }),
       filter: Type.String({ description: "Optional test name or namespace filter pattern" }),
       timeoutMs: Type.Number({ description: "Timeout in milliseconds, default 330000" }),
+      ...VIEW_FIELDS,
     }),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params, signal) {
       const args = ["run-tests"];
       pushArg(args, "--mode", params.mode);
       pushArg(args, "--filter", params.filter);
       pushArg(args, "--timeout", params.timeoutMs);
-      return runTool(args, { timeoutMs: (params.timeoutMs ?? 330000) + 10000 });
+      pushViewArgs(args, params);
+      return runTool(args, { timeoutMs: toolTimeout(params, 330000, 10000), signal });
     },
   });
 
@@ -421,14 +1052,16 @@ export default function (pi: ExtensionAPI) {
       intervalMs: Type.Number({ description: "Interval between frames in ms (default: 160)" }),
       overlay: Type.String({ description: "Overlay mode: grid, annotations, both, or none (default: both)" }),
       timeoutMs: Type.Number({ description: "Timeout in milliseconds, default 30000" }),
+      ...VIEW_FIELDS,
     }),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params, signal) {
       const args = ["observe"];
       pushArg(args, "--frames", params.frames);
       pushArg(args, "--interval", params.intervalMs);
       pushArg(args, "--overlay", params.overlay);
       pushArg(args, "--timeout", params.timeoutMs);
-      return runTool(args);
+      pushViewArgs(args, params);
+      return runTool(args, { timeoutMs: toolTimeout(params, 30000), signal });
     },
   });
 
@@ -442,13 +1075,15 @@ export default function (pi: ExtensionAPI) {
       mode: Type.String({ description: "Viewport mode: game or scene (default: game)" }),
       outPath: Type.String({ description: "Output path for the saved image file" }),
       timeoutMs: Type.Number({ description: "Timeout in milliseconds, default 30000" }),
+      ...VIEW_FIELDS,
     }),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params, signal) {
       const args = ["capture"];
       pushArg(args, "--mode", params.mode);
       pushArg(args, "--out", params.outPath);
       pushArg(args, "--timeout", params.timeoutMs);
-      return runTool(args);
+      pushViewArgs(args, params);
+      return runTool(args, { timeoutMs: toolTimeout(params, 30000), signal });
     },
   });
 
@@ -462,13 +1097,15 @@ export default function (pi: ExtensionAPI) {
       limit: Type.Integer({ description: "Number of timeline entries to return (default: 20)" }),
       success: Type.String({ description: "Filter status: all, success, or failure (default: all)" }),
       timeoutMs: Type.Number({ description: "Timeout in milliseconds, default 15000" }),
+      ...VIEW_FIELDS,
     }),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params, signal) {
       const args = ["timeline"];
       pushArg(args, "--limit", params.limit);
       pushArg(args, "--success", params.success);
       pushArg(args, "--timeout", params.timeoutMs);
-      return runTool(args);
+      pushViewArgs(args, params);
+      return runTool(args, { timeoutMs: toolTimeout(params, 15000), signal });
     },
   });
 }

@@ -24,21 +24,32 @@ pub fn usage_error(error: impl Into<String>, help: &[&str]) -> CliError {
     }
 }
 
-pub fn format_usage(error: &str, help: &[String], json_mode: bool) -> String {
+pub fn error_payload(err: &CliError) -> serde_json::Value {
+    json!({
+        "ok": false,
+        "error": err.message(),
+        "error_type": err.error_type(),
+        "exitCode": err.exit_code(),
+        "help": err.help(),
+    })
+}
+
+pub fn format_error(err: &CliError, json_mode: bool) -> String {
+    let payload = error_payload(err);
     if json_mode {
-        return serde_json::to_string_pretty(&json!({
-            "ok": false,
-            "error": error,
-            "exitCode": 2,
-            "help": help,
-        }))
-        .unwrap();
+        return serde_json::to_string_pretty(&payload).unwrap();
     }
-    let help_items: Vec<serde_json::Value> = help.iter().map(|h| json!({"run": h})).collect();
-    toon::encode(&json!({
-        "error": error,
-        "help": help_items,
-    }))
+    toon::encode(&payload)
+}
+
+pub fn format_usage(error: &str, help: &[String], json_mode: bool) -> String {
+    format_error(
+        &CliError::Usage {
+            error: error.to_string(),
+            help: help.to_vec(),
+        },
+        json_mode,
+    )
 }
 
 pub fn valid_flags(subcommand: &str) -> &'static str {
@@ -62,21 +73,37 @@ pub fn valid_flags(subcommand: &str) -> &'static str {
 }
 
 const RENAMES: &[(&str, &str)] = &[
-    ("--no-components", "--no-components 已删除；默认不含 components，全量用 --full 或 --fields components"),
-    ("--status", "--status 已改名；请用 --success（timeline）或 pi-unity status"),
+    (
+        "--no-components",
+        "--no-components 已删除；默认不含 components，全量用 --full 或 --fields components",
+    ),
+    (
+        "--status",
+        "--status 已改名；请用 --success（timeline）或 pi-unity status",
+    ),
 ];
 
-pub fn from_clap_error(err: clap::Error, json_mode: bool) -> (String, i32) {
+pub fn clap_to_cli_error(err: clap::Error) -> Result<String, CliError> {
     match err.kind() {
         ErrorKind::DisplayHelp | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand => {
-            (err.render().to_string(), 0)
+            Ok(err.render().to_string())
         }
-        ErrorKind::DisplayVersion => (format!("{VERSION}\n"), 0),
+        ErrorKind::DisplayVersion => Ok(format!("{VERSION}\n")),
         _ => {
             let rendered = err.render().to_string();
             let (msg, help) = translate_clap(&rendered);
-            (format_usage(&msg, &help, json_mode), 2)
+            Err(CliError::Usage { error: msg, help })
         }
+    }
+}
+
+pub fn from_clap_error(err: clap::Error, json_mode: bool) -> (String, i32) {
+    match clap_to_cli_error(err) {
+        Ok(out) => (out, 0),
+        Err(cli_err) => (
+            format_usage(cli_err.message(), &cli_err.help(), json_mode),
+            2,
+        ),
     }
 }
 

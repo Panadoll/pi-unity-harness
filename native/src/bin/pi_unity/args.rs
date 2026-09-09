@@ -48,7 +48,9 @@ pub(crate) enum Commands {
     Status(StatusArgs),
 
     /// 主线程执行 C#
-    #[command(after_help = "示例:\n  pi-unity eval \"UnityEngine.Application.unityVersion\"\n  pi-unity eval -f Temp/PiUnityHarness/AgentScratch/probe.repl")]
+    #[command(
+        after_help = "示例:\n  pi-unity eval \"UnityEngine.Application.unityVersion\"\n  pi-unity eval -f Temp/PiUnityHarness/AgentScratch/probe.repl"
+    )]
     Eval(EvalArgs),
 
     /// 编译并等到 ready
@@ -56,7 +58,9 @@ pub(crate) enum Commands {
     Compile(CompileArgs),
 
     /// 场景树、选中、日志
-    #[command(after_help = "示例:\n  pi-unity snapshot\n  pi-unity snapshot --fields childCount,tag\n  pi-unity snapshot --full")]
+    #[command(
+        after_help = "示例:\n  pi-unity snapshot\n  pi-unity snapshot --fields childCount,tag\n  pi-unity snapshot --full"
+    )]
     Snapshot(SnapshotArgs),
 
     /// 列出 [CliCommand]
@@ -64,23 +68,33 @@ pub(crate) enum Commands {
     ListCommands(ListCommandsArgs),
 
     /// 跑一条 pipeline
-    #[command(after_help = "示例:\n  pi-unity pipeline gameobject_find -p name=\"Main Camera\"\n  pi-unity pipeline uitree_find -p query=\"Start Game\"")]
+    #[command(
+        after_help = "示例:\n  pi-unity pipeline gameobject_find -p name=\"Main Camera\"\n  pi-unity pipeline uitree_find -p query=\"Start Game\""
+    )]
     Pipeline(PipelineArgs),
 
     /// EditMode / PlayMode 测试
-    #[command(after_help = "示例:\n  pi-unity run-tests --mode edit\n  pi-unity run-tests --mode play --filter FooTests")]
+    #[command(
+        after_help = "示例:\n  pi-unity run-tests --mode edit\n  pi-unity run-tests --mode play --filter FooTests"
+    )]
     RunTests(RunTestsArgs),
 
     /// 多帧画面
-    #[command(after_help = "示例:\n  pi-unity observe\n  pi-unity observe --frames 4 --overlay none")]
+    #[command(
+        after_help = "示例:\n  pi-unity observe\n  pi-unity observe --frames 4 --overlay none"
+    )]
     Observe(ObserveArgs),
 
     /// 单张截图
-    #[command(after_help = "示例:\n  pi-unity capture\n  pi-unity capture --mode scene --out Temp/shot.png")]
+    #[command(
+        after_help = "示例:\n  pi-unity capture\n  pi-unity capture --mode scene --out Temp/shot.png"
+    )]
     Capture(CaptureArgs),
 
     /// 最近操作
-    #[command(after_help = "示例:\n  pi-unity timeline\n  pi-unity timeline --success failure --limit 50")]
+    #[command(
+        after_help = "示例:\n  pi-unity timeline\n  pi-unity timeline --success failure --limit 50"
+    )]
     Timeline(TimelineArgs),
 
     /// 安装 Agent Skill
@@ -88,7 +102,9 @@ pub(crate) enum Commands {
     Skills(SkillsArgs),
 
     /// 粘性会话
-    #[command(after_help = "示例:\n  pi-unity session start --task \"重构\"\n  pi-unity session end")]
+    #[command(
+        after_help = "示例:\n  pi-unity session start --task \"重构\"\n  pi-unity session end"
+    )]
     Session(SessionArgs),
 
     /// 记一条 skill 事件
@@ -98,6 +114,10 @@ pub(crate) enum Commands {
     /// 安装 SessionStart hook
     #[command(after_help = "示例:\n  pi-unity setup\n  pi-unity setup --project")]
     Setup(SetupArgs),
+
+    /// 扩展 JSONL 会话通道
+    #[command(hide = true)]
+    Mux,
 }
 
 impl Commands {
@@ -118,6 +138,7 @@ impl Commands {
             Commands::Session(_) => "session",
             Commands::Mark(_) => "mark",
             Commands::Setup(_) => "setup",
+            Commands::Mux => "mux",
         }
     }
 }
