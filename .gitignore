@@ -8,4 +8,7 @@ unity/com.pi.unity-harness/Editor/Plugins/x86_64/*.lib
 node_modules/
 /bin/
 /dist/
+Temp/
+.agents/
+skills-lock.json
 
