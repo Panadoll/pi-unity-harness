@@ -33,7 +33,7 @@ namespace Pi.UnityHarness.Editor.Capabilities.PipelineCommands
                 ["quality"] = quality
             };
             return PiUloopToolRunner.Run(
-                () => new RecordVideoTool().ExecuteAsync(token, CancellationToken.None),
+                ct => new RecordVideoTool().ExecuteAsync(token, ct),
                 timeoutMs);
         }
     }
