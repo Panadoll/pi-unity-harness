@@ -1,0 +1,140 @@
+{
+  "//": "vendor-uloop.py 的输入：从 unity-cli-loop 的 Packages/src 复制哪些 asmdef 目录到 Vendor/Uloop。",
+  "//layout": "目标路径 = Vendor/Uloop/<相对 Packages/src 的路径>，与上游同构，便于升级时直接 diff。",
+  "//exclude": "全局排除 Skill/ 目录、DESIGN.md、*.meta 中无对应资产的孤立 meta。",
+  "assemblies": [
+    {
+      "name": "UnityCLILoop.FirstPartyTools.Common.EditorWindowFinder.Editor"
+    },
+    {
+      "name": "UnityCLILoop.ToolContracts"
+    },
+    {
+      "name": "UnityCLILoop.Runtime"
+    },
+    {
+      "name": "UnityCLILoop.PausePoints.Runtime"
+    },
+    {
+      "name": "UnityCLILoop.FirstPartyTools.Common.GameView.Editor"
+    },
+    {
+      "name": "UnityCLILoop.FirstPartyTools.Common.InputRecording.Editor"
+    },
+    {
+      "name": "UnityCLILoop.FirstPartyTools.Common.InputSystem.Editor"
+    },
+    {
+      "name": "UnityCLILoop.FirstPartyTools.Common.MouseUi.Editor"
+    },
+    {
+      "name": "UnityCLILoop.FirstPartyTools.Common.OutputRetention.Editor"
+    },
+    {
+      "name": "UnityCLILoop.FirstPartyTools.Common.Overlay.Editor"
+    },
+    {
+      "name": "UnityCLILoop.FirstPartyTools.Common.Preflight.Editor"
+    },
+    {
+      "name": "UnityCLILoop.FirstPartyTools.ExecuteDynamicCode.Editor",
+      "//": "只取动态编译后端（Compilation/ + DynamicCompilation/ + 少量顶层文件）。uloop 的 execute-dynamic-code 工具层与 harness 原生 eval 重复，不 vendor。 Models/ 是自包含模型（AutoInjectedNamespace 等），编译器后端需要，保留。",
+      "exclude": [
+        "Execution/**",
+        "Factory/**",
+        "Skill/**",
+        "ExecuteDynamicCodeTool.cs",
+        "ExecuteDynamicCodeUseCase.cs",
+        "ExecuteDynamicCodeSchema.cs",
+        "ExecuteDynamicCodeResponse.cs",
+        "ExecuteDynamicCodeEditorStartup.cs",
+        "ExecuteDynamicCodePauseStateResolver.cs",
+        "IDynamicCodeExecutor.cs",
+        "IExecuteDynamicCodeUseCase.cs",
+        "DynamicCodeServices.cs",
+        "DynamicCodeEditorStateReader.cs",
+        "DynamicCodeDomainReloadWaitSignal.cs",
+        "DynamicCodeExecutionResponseFactory.cs",
+        "DynamicCodeFriendlyErrorConverter.cs",
+        "DynamicCodeMissingReturnRetryPolicy.cs",
+        "UloopDynamicCodePartialResults.cs"
+      ]
+    },
+    {
+      "name": "UnityCLILoop.FirstPartyTools.HotReload.Editor"
+    },
+    {
+      "name": "UnityCLILoop.FirstPartyTools.HotReload.Patching.Editor"
+    },
+    {
+      "name": "UnityCLILoop.FirstPartyTools.HotReload.Shared.Editor"
+    },
+    {
+      "name": "UnityCLILoop.FirstPartyTools.HotReload.IntroducedType.Editor"
+    },
+    {
+      "name": "UnityCLILoop.FirstPartyTools.PausePoint.Editor"
+    },
+    {
+      "name": "UnityCLILoop.FirstPartyTools.RecordInput.Editor"
+    },
+    {
+      "name": "UnityCLILoop.FirstPartyTools.ReplayInput.Editor"
+    },
+    {
+      "name": "UnityCLILoop.FirstPartyTools.Screenshot.Editor"
+    },
+    {
+      "name": "UnityCLILoop.FirstPartyTools.RecordVideo.Editor"
+    },
+    {
+      "name": "Unity.InternalAPIEditorBridge.024",
+      "//": "Screenshot 3.6.3 通过反射读取 PlayModeView 的 RenderTexture；asmdef 名带版本号但代码是反射，无编译期耦合。"
+    }
+  ],
+  "externals": [
+    "Unity.InputSystem",
+    "Unity.Nuget.Newtonsoft-Json",
+    "Unity.Pipeline",
+    "Unity.Pipeline.Editor",
+    "UnityEngine.UI",
+    "nunit.framework"
+  ],
+  "//externalGuids": "上游 asmdef 用 GUID 引用项目已安装的第三方包，Packages/src 里查不到目标，需显式登记。",
+  "externalGuids": {
+    "75469ad4d38634e559750d17036d5f7c": "Unity.InputSystem"
+  },
+  "patches": {
+    "//internals": "harness 程序集需要访问 vendor 内部类型，复制后追加 InternalsVisibleTo。",
+    "internalsVisibleTo": [
+      "Pi.UnityHarness.Editor",
+      "Pi.UnityHarness.Editor.Tests"
+    ],
+    "//publicize": "harness 从自己的 [CliCommand] 包装里直接调用这些类型/方法，internal 改 public。",
+    "publicize": {
+      "*EditorStartup.cs": [
+        "internal static class"
+      ],
+      "Editor/ToolContracts/MainThreadSwitcher.cs": [
+        "internal static void"
+      ]
+    },
+    "//pathLiterals": "上游常量按包根写路径；vendor 位于 Vendor/Uloop 下，需加前缀。",
+    "pathLiteralPrefix": {
+      "from": "\"Editor/FirstPartyTools/",
+      "to": "\"Vendor/Uloop/Editor/FirstPartyTools/"
+    },
+    "//stripUsings": "上游文件里有对未 vendor 程序集的死 using（Application/Domain/Infrastructure/Presentation/CompositionRoot），C# 对不存在的命名空间 using 是硬错误，必须剥离。InternalAPIBridge 已 vendor，不能剥。",
+    "stripUsings": [
+      "io.github.hatayama.UnityCliLoop.Application",
+      "io.github.hatayama.UnityCliLoop.Domain",
+      "io.github.hatayama.UnityCliLoop.Infrastructure",
+      "io.github.hatayama.UnityCliLoop.Presentation",
+      "io.github.hatayama.UnityCliLoop.CompositionRoot"
+    ]
+  },
+  "//dllMeta": "不复制 .dll.meta：沿用上游 GUID 会让 Unity 复用旧路径的导入 artifact，导致 -analyzer 引用已删除路径。",
+  "globalExclude": [
+    "**/*.dll.meta"
+  ]
+}

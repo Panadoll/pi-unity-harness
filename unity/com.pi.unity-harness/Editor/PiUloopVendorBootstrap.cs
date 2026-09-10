@@ -13,6 +13,8 @@ namespace Pi.UnityHarness.Editor
             MainThreadSwitcher.InitializeForEditorStartup();
             HotReloadEditorStartup.Initialize();
             PausePointEditorStartup.Initialize();
+            RecordVideoEditorStartup.Initialize();
+            EditorFrameWaiter.InitializeForEditorStartup();
         }
     }
 }

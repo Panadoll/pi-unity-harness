@@ -1,0 +1,17 @@
+using UnityEngine;
+
+namespace io.github.hatayama.UnityCliLoop.FirstPartyTools
+{
+    /// <summary>
+    /// Reads the current Play Mode view into a reusable Texture2D.
+    /// </summary>
+    internal interface IGameViewFrameSource
+    {
+        bool TryReadFrame(Texture2D destination);
+
+        /// <summary>
+        /// True once the source can never produce another frame (for example the target window was destroyed).
+        /// </summary>
+        bool IsSourceClosed { get; }
+    }
+}

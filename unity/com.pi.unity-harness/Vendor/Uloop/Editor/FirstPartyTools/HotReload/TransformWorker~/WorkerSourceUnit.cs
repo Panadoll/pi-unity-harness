@@ -1,0 +1,86 @@
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Collections.Immutable;
+using System.Globalization;
+using System.IO;
+using System.Linq;
+using System.Runtime.Loader;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Text;
+
+// Everything one edited source file contributes to a group run: its parse products, its
+// baseline, and the rows and warnings that belong to that file alone. A group run holds one
+// unit per source so per-file state never has to be threaded through the emit pipeline.
+internal sealed class WorkerSourceUnit
+{
+    public WorkerSourceInput Input { get; set; }
+
+    // Null when the source could not be read or its path is invalid; such a unit stays out of
+    // the compilation and every later per-unit step skips it.
+    public SyntaxTree SyntaxTree { get; set; }
+
+    // Annotated root, bound to SyntaxTree. Emit needs the uloop-line annotations.
+    public CompilationUnitSyntax Root { get; set; }
+
+    // Unannotated root. Baseline comparison must use it on both sides.
+    public CompilationUnitSyntax PlainRoot { get; set; }
+
+    // The tree the transform compilation binds against: the annotated tree with the declarations
+    // that are already served from a retained artifact removed. Equal to SyntaxTree when the run
+    // has no such declaration. A SemanticModel only answers for nodes of the tree it came from,
+    // so every consumer that uses SemanticModel must read BindingRoot, never Root.
+    public SyntaxTree BindingSyntaxTree { get; set; }
+
+    // Root of BindingSyntaxTree.
+    public CompilationUnitSyntax BindingRoot { get; set; }
+
+    public SemanticModel SemanticModel { get; set; }
+
+    // The verified mapping the binding trees were built with, so the emit steps can ask whether a
+    // type is served from a retained artifact without threading it through every signature.
+    // Empty for every run that has no artifact.
+    public IntroducedTypeArtifactMap ArtifactMap { get; set; } = IntroducedTypeArtifactMap.Empty;
+
+    // A model of the same tree from a compilation that also holds the files this run does not
+    // transform but that were edited too. Only const comparison may use it: a const declared in
+    // one of those files binds to the compiled metadata value in every other compilation, so its
+    // edited value would be invisible. Null until planning sets it.
+    public SemanticModel ConstDriftSemanticModel { get; set; }
+
+    public BaselineSnapshotState Baseline { get; set; }
+
+    public string SourceContentSha256 { get; set; }
+
+    public List<string> ParseErrors { get; } = new List<string>();
+
+    public List<string> DeclarationDriftWarnings { get; } = new List<string>();
+
+    public List<WorkerRemovedMember> RemovedMembers { get; } = new List<WorkerRemovedMember>();
+
+    public List<WorkerRemovedMethodSignature> RemovedMethodSignatures { get; } =
+        new List<WorkerRemovedMethodSignature>();
+
+    public List<WorkerIntroducedType> IntroducedTypes { get; } = new List<WorkerIntroducedType>();
+
+    public List<string> IntroducedTypeDiagnostics { get; } = new List<string>();
+
+    public List<WorkerIntroducedTypeReuse> IntroducedTypeReuses { get; } =
+        new List<WorkerIntroducedTypeReuse>();
+
+    // Metadata names of the top-level declarations in this file that a verified artifact record
+    // already serves. The drift check reads the unmodified edited root, where such a declaration
+    // is still present even though the reload did apply it, so it needs this list to tell an
+    // introduced type from an edit that really requires a compile.
+    public List<string> RetainedIntroducedTypeMetadataNames { get; } = new List<string>();
+
+    public CompiledMemberKindChangeWarnings.SyntaxKeys KindChangeSyntaxKeys { get; set; }
+
+    public List<TypeEmitState> TypeEmitStates { get; set; } = new List<TypeEmitState>();
+}

@@ -1,15 +1,17 @@
 {
     "name": "UnityCLILoop.ToolContracts",
     "rootNamespace": "io.github.hatayama.UnityCliLoop.ToolContracts",
-    "references": [
-        "Unity.Nuget.Newtonsoft-Json"
+    "references": [],
+    "includePlatforms": [
+        "Editor"
     ],
-    "includePlatforms": ["Editor"],
     "excludePlatforms": [],
     "allowUnsafeCode": false,
-    "overrideReferences": false,
-    "precompiledReferences": [],
-    "autoReferenced": false,
+    "overrideReferences": true,
+    "precompiledReferences": [
+        "Newtonsoft.Json.dll"
+    ],
+    "autoReferenced": true,
     "defineConstraints": [],
     "versionDefines": [],
     "noEngineReferences": false

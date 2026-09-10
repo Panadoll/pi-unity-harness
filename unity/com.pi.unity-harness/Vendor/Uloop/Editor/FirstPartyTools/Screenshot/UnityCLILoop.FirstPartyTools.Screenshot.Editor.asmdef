@@ -1,0 +1,24 @@
+{
+    "name": "UnityCLILoop.FirstPartyTools.Screenshot.Editor",
+    "rootNamespace": "io.github.hatayama.UnityCliLoop.FirstPartyTools",
+    "references": [
+        "Unity.InternalAPIEditorBridge.024",
+        "UnityCLILoop.FirstPartyTools.Common.MouseUi.Editor",
+        "UnityCLILoop.ToolContracts",
+        "UnityCLILoop.FirstPartyTools.Common.GameView.Editor",
+        "UnityCLILoop.FirstPartyTools.Common.OutputRetention.Editor",
+        "UnityCLILoop.FirstPartyTools.Common.Overlay.Editor",
+        "UnityCLILoop.FirstPartyTools.Common.EditorWindowFinder.Editor"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": false,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}
