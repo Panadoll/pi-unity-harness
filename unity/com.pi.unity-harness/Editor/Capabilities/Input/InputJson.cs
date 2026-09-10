@@ -3,8 +3,6 @@ using System.Runtime.CompilerServices;
 using System.Text;
 using Pi.UnityHarness.Editor;
 
-[assembly: InternalsVisibleTo("Pi.UnityHarness.Editor.Tests")]
-
 namespace Pi.UnityHarness.Editor.Capabilities.Input
 {
     internal sealed class InputJson

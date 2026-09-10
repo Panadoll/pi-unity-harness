@@ -5,8 +5,6 @@ using UnityEditor;
 using UnityEngine;
 using UnityEngine.UIElements;
 
-[assembly: InternalsVisibleTo("Harness.UiTree.Editor.Tests")]
-
 namespace Pi.UnityHarness.Editor.Capabilities.UiTree
 {
     /// <summary>

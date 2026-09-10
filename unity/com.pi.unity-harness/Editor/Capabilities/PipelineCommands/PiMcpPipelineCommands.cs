@@ -159,13 +159,5 @@ namespace Pi.UnityHarness.Editor.Capabilities.PipelineCommands
             };
         }
     }
-
-    internal static class PiMcpConsoleLogBuffer
-    {
-        public static List<PiUnityConsoleLogBuffer.Entry> Get(int limit, string level) =>
-            PiUnityConsoleLogBuffer.Get(limit, level);
-
-        public static void Clear() => PiUnityConsoleLogBuffer.Clear();
-    }
 }
 #endif

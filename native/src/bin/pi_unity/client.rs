@@ -12,12 +12,14 @@ use super::EXPECTED_PROTOCOL_VERSION;
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct BridgeJson {
+    #[allow(dead_code)]
     project: Option<String>,
     pid: Option<u32>,
     pipe: String,
     token: String,
     generation: Option<i64>,
     #[serde(rename = "statePlaneName")]
+    #[allow(dead_code)]
     state_plane_name: Option<String>,
 }
 
@@ -97,10 +99,6 @@ pub(crate) struct HarnessClient {
     persistent: bool,
     connection: Option<BufReader<NamedPipeClient>>,
     handshake_done: bool,
-    #[cfg(test)]
-    connect_count: u64,
-    #[cfg(test)]
-    handshake_count: u64,
 }
 
 impl HarnessClient {
@@ -126,10 +124,6 @@ impl HarnessClient {
             persistent: false,
             connection: None,
             handshake_done: false,
-            #[cfg(test)]
-            connect_count: 0,
-            #[cfg(test)]
-            handshake_count: 0,
         })
     }
 
@@ -153,16 +147,6 @@ impl HarnessClient {
 
     pub(crate) fn is_connected(&self) -> bool {
         self.connection.is_some()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn connect_count(&self) -> u64 {
-        self.connect_count
-    }
-
-    #[cfg(test)]
-    pub(crate) fn handshake_count(&self) -> u64 {
-        self.handshake_count
     }
 
     pub(crate) fn reload_bridge(&mut self) -> Result<(), CliError> {
@@ -190,10 +174,6 @@ impl HarnessClient {
             "handshake",
             "Probing bridge_capabilities protocol handshake",
         );
-        #[cfg(test)]
-        {
-            self.handshake_count += 1;
-        }
         let caps = match self
             .exchange("bridge_capabilities", json!({}), timeout_ms)
             .await
@@ -405,10 +385,6 @@ impl HarnessClient {
                     ))
                 })??;
 
-        #[cfg(test)]
-        {
-            self.connect_count += 1;
-        }
         Ok(BufReader::new(pipe_client))
     }
 }
