@@ -77,6 +77,11 @@ namespace Pi.UnityHarness.Editor
             SessionState.SetBool(SessionKey_CompileHasErrors, false);
             SessionState.SetString(SessionKey_CompileErrorSummary, "");
 
+            // 先处理外部文件改动：编辑器不在前台时 Unity 不会自动刷新，
+            // 少了这一步，"改完文件直接 compile" 会看不到新/改动脚本，静默地什么都不编译。
+            // 上游 uloop 的 compile 路径同样是先 Refresh 再请求编译。
+            AssetDatabase.Refresh();
+
             // Explicitly request script compilation. With only AssetDatabase.Refresh, dirty scripts /
             // asset-only refreshes can leave isCompiling=true without ever firing compilationFinished,
             // which would hang the pipe-side recompile until timeout.
