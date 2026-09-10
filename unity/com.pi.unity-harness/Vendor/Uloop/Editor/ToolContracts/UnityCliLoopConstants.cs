@@ -1,3 +1,5 @@
+using System.IO;
+
 namespace io.github.hatayama.UnityCliLoop.ToolContracts
 {
     /// <summary>
@@ -73,9 +75,11 @@ namespace io.github.hatayama.UnityCliLoop.ToolContracts
         public const string TOOL_NAME_CLEAR_WATCH = "clear-watch";
         public const string TOOL_NAME_GET_WATCH_VALUES = "get-watch-values";
         public const string TOOL_NAME_HOT_RELOAD = "hot-reload";
+        public const string TOOL_NAME_RECORD_VIDEO = "record-video";
         public const string COMMAND_NAME_GET_TOOL_DETAILS = "get-tool-details";
         public const string COMMAND_NAME_GET_VERSION = "get-version";
         public const string COMMAND_NAME_GET_COMPILE_STATUS = "get-compile-status";
+        public const string COMMAND_NAME_GET_RUN_TESTS_STATUS = "get-run-tests-status";
         public const string COMMAND_NAME_AWAIT_PAUSE_POINT = "await-pause-point";
         public const string SETTINGS_TOOL_NAME_PAUSE_POINT = "pause-point";
         public const string COMMAND_NAME_PAUSE_POINT_STATUS = "pause-point-status";
@@ -90,11 +94,14 @@ namespace io.github.hatayama.UnityCliLoop.ToolContracts
         public const string PACKAGE_NAME_TEST_FRAMEWORK = "com.unity.test-framework";
 
         // File output directories
-        public const string OUTPUT_ROOT_DIR = ".uloop/outputs";
+        public const string OUTPUTS_DIR = "outputs";
+        // Built with Path.Combine so Windows never receives an embedded "/" that Path.Combine would keep as-is.
+        public static readonly string OUTPUT_ROOT_DIR = Path.Combine(ULOOP_DIR, OUTPUTS_DIR);
         public const string TEST_RESULTS_DIR = "TestResults";
         public const string HIERARCHY_RESULTS_DIR = "HierarchyResults";
         public const string FIND_GAMEOBJECTS_RESULTS_DIR = "FindGameObjectsResults";
         public const string SCREENSHOTS_DIR = "Screenshots";
+        public const string VIDEOS_DIR = "Videos";
         public const string VIBE_LOGS_DIR = "VibeLogs";
 
         // Raycast tool constants
@@ -125,9 +132,21 @@ namespace io.github.hatayama.UnityCliLoop.ToolContracts
         public const string ERROR_MESSAGE_DYNAMIC_CODE_RUNTIME_RESTARTING =
             "Dynamic-code runtime was disposed during a server reset or domain reload; retry the same command shortly.";
         public const string ERROR_MESSAGE_NO_COMPILED_ASSEMBLY = "No compiled assembly provided";
-        public const string ERROR_MESSAGE_NO_EXECUTE_METHOD = "No Execute method found in compiled assembly";
+        public const string ERROR_MESSAGE_NO_EXECUTE_METHOD =
+            "No Execute method found in compiled assembly. --code is compiled as the body of a generated Execute method, " +
+            "so write top-level statements directly (no class, namespace, or entry-point method); 'return' is optional " +
+            "and 'using' directives may appear at the top.";
         public const string ERROR_MESSAGE_FAILED_TO_CREATE_INSTANCE = "Failed to create instance of target type";
         public const string ERROR_MESSAGE_UNSUPPORTED_SIGNATURE = "Execute method signature not supported";
+
+        /// <summary>
+        /// Recovery step when execute-dynamic-code receives an entry-point wrapper instead of statements.
+        /// </summary>
+        public static readonly string[] DYNAMIC_CODE_NO_EXECUTE_METHOD_NEXT_ACTIONS =
+        {
+            "Remove the class, namespace, and method wrapper and pass the statements themselves, e.g. " +
+            "--code \"return GameObject.Find(\\\"Player\\\").transform.position;\"",
+        };
 
         /// <summary>
         /// Recovery steps when execute-dynamic-code hits a disposed runtime during reset/reload.

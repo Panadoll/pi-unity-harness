@@ -1,0 +1,315 @@
+using System;
+
+namespace io.github.hatayama.UnityCliLoop.FirstPartyTools
+{
+    /// <summary>
+    /// Input payload written for the out-of-process transform worker (UTF-8 JSON, no BOM).
+    /// </summary>
+    [Serializable]
+    internal sealed class TransformWorkerInputDto
+    {
+        // Null/empty retains the existing transform operation for callers that predate planning.
+        public string operation;
+
+        // Edited files this worker run must transform together. One or more; every source must
+        // belong to the same compilation assembly so a single shim assembly can host them all.
+        // Keep in sync with TransformWorker~/WorkerInput.cs.
+        public TransformWorkerSourceDto[] sources;
+
+        public string[] defines;
+        public string[] referencePaths;
+        public string targetTypesAssemblyPath;
+        public string targetAssemblyName;
+        public string targetAssemblyMvid;
+
+        // Method keys (see HotReloadMethodKeys.BuildMethodKey) already reported Failed from a
+        // first compile round; the retry worker run drops these methods entirely.
+        public string[] excludedMethodKeys;
+
+        // Added-method keys whose shim bodies failed the first compile. Distinct from
+        // excludedMethodKeys so a healthy added shim is not dropped when an existing method fails
+        // (G1), while a broken added body can still be excluded together with its callers.
+        public string[] excludedAddedMethodKeys;
+
+        // Absolute paths of every source file in the edited file's compilation assembly.
+        // The worker scans these for global using directives. Null/omitted is treated as empty.
+        public string[] assemblySourcePaths;
+
+        // Absolute paths of snapshot-mismatched sibling sources in the same compilation assembly.
+        // The worker scans these for const drift the edited file's syntax tree cannot see.
+        // Null/omitted is treated as empty.
+        public string[] changedSiblingSourcePaths;
+
+        // Retained introduced-type assemblies the worker may bind against. Each record carries the
+        // complete identity and the reference path together, so the worker can confirm the file it
+        // resolved really is the assembly the record claims before it normalizes anything through
+        // it. Null/omitted is treated as empty.
+        public TransformWorkerIntroducedTypeArtifactDto[] introducedTypeArtifacts;
+    }
+
+    /// <summary>
+    /// One retained introduced-type assembly a worker run may bind against.
+    /// </summary>
+    // Keep in sync with TransformWorker~/WorkerIntroducedTypeArtifact.cs.
+    [Serializable]
+    internal sealed class TransformWorkerIntroducedTypeArtifactDto
+    {
+        // Complete assembly identity display name of the artifact assembly, not a simple name.
+        // The worker rejects the record when the assembly it resolves from referencePath reports
+        // a different identity, so a self-reported name alone can never drive normalization.
+        public string assemblyFullName;
+
+        // Absolute path the artifact assembly is referenced from.
+        public string referencePath;
+
+        // Types this artifact holds, with the original identity each one must normalize back to.
+        public TransformWorkerIntroducedTypeArtifactTypeDto[] types;
+    }
+
+    /// <summary>
+    /// One retained type inside an introduced-type artifact assembly.
+    /// </summary>
+    // Keep in sync with WorkerIntroducedTypeArtifactType in TransformWorker~/WorkerIntroducedTypeArtifact.cs.
+    [Serializable]
+    internal sealed class TransformWorkerIntroducedTypeArtifactTypeDto
+    {
+        // Metadata name of the type as it exists inside the artifact assembly.
+        public string metadataName;
+
+        // Assembly the type is attributed to once normalized: the assembly its source belongs to.
+        public string originalAssemblyName;
+
+        public string originalAssemblyMvid;
+
+        // Project-relative forward-slash path of the source the retained type was planned from.
+        public string ownerProjectRelativePath;
+
+        // Fingerprint the retained type was planned with. A declaration may only be removed from
+        // the tree the transform binds against when the source still produces this value.
+        public string declarationFingerprint;
+    }
+
+    /// <summary>
+    /// One edited file inside a transform worker run.
+    /// </summary>
+    // Keep in sync with TransformWorker~/WorkerSourceInput.cs.
+    [Serializable]
+    internal sealed class TransformWorkerSourceDto
+    {
+        // Absolute path the worker reads the edited text from. May be a temp override copy.
+        public string sourcePath;
+
+        // Project-relative forward-slash path baked into #line document names so shim compile
+        // diagnostics map back to the user's file (not the temp HotReloadShim.cs path).
+        public string projectRelativePath;
+
+        // Verified snapshot text for edited-method detection. Null = no baseline, patch all methods.
+        // Why pass text (not a path): avoids an IO race between orchestrator verification and worker
+        // read that would crash the whole file under the no-try-catch policy.
+        public string snapshotSource;
+    }
+
+    /// <summary>
+    /// Per-file half of the transform worker output; one entry per input source, same order.
+    /// </summary>
+    // Keep in sync with TransformWorker~/WorkerFileOutput.cs.
+    [Serializable]
+    internal sealed class TransformWorkerFileOutputDto
+    {
+        // Echoes TransformWorkerSourceDto.projectRelativePath of the source this row set describes.
+        public string projectRelativePath;
+
+        // SHA-256 (lowercase hex) of the raw source bytes the worker actually read.
+        // Empty when the worker returned before reading the file.
+        public string sourceContentSha256;
+
+        public string[] parseErrors;
+        public string[] declarationDriftWarnings;
+
+        // True when snapshotSource was provided but a duplicate syntax-method key on either side
+        // disabled baseline comparison (silent patch-all fallback). False when snapshotSource is null.
+        public bool baselineDisabledByDuplicateKeys;
+
+        // Members present in the snapshot (or compiled assembly for fields) but absent from the
+        // edited source. Null/omitted deserializes as empty after client coalesce.
+        public TransformWorkerRemovedMemberDto[] removedMembers;
+
+        // Compiled identities of methods that left the edited file (or whose return type changed).
+        // Null/omitted deserializes as empty after client coalesce.
+        public TransformWorkerRemovedMethodSignatureDto[] removedMethodSignatures;
+
+        // Source-level names ("Ns.Type.field") of fields this reload added via store rewrite.
+        // Null/omitted deserializes as empty after client coalesce.
+        public string[] addedFieldNames;
+
+        // Source-level names of added consts folded into edited bodies as literals.
+        // Null/omitted deserializes as empty after client coalesce.
+        public string[] addedConstNames;
+
+        public TransformWorkerIntroducedTypeDto[] introducedTypes;
+
+        public string[] introducedTypeDiagnostics;
+
+        // The declarations this run did not introduce because the domain already retains an
+        // assembly for them. Reported so a reload can name the types it bound from an active
+        // artifact; introducing them again is what the transform refuses.
+        public TransformWorkerIntroducedTypeReuseDto[] introducedTypeReuses;
+    }
+
+    /// <summary>
+    /// One declaration a preparation run bound from an already active artifact instead of
+    /// introducing it a second time.
+    /// </summary>
+    // Keep in sync with TransformWorker~/WorkerIntroducedTypeReuse.cs.
+    [Serializable]
+    internal sealed class TransformWorkerIntroducedTypeReuseDto
+    {
+        public string metadataName;
+
+        public string originalAssemblyName;
+
+        public string originalAssemblyMvid;
+    }
+
+    /// <summary>
+    /// One top-level type declaration prepared by the transform worker for an artifact assembly.
+    /// </summary>
+    // Keep in sync with TransformWorker~/WorkerIntroducedType.cs.
+    [Serializable]
+    internal sealed class TransformWorkerIntroducedTypeDto
+    {
+        public string originalAssemblyName;
+        public string originalAssemblyMvid;
+        public string metadataName;
+        public string ownerProjectRelativePath;
+        public string declarationFingerprint;
+        public string source;
+    }
+
+    /// <summary>
+    /// Output payload read from the out-of-process transform worker.
+    /// </summary>
+    [Serializable]
+    internal sealed class TransformWorkerOutputDto
+    {
+        public string shimSource;
+        public TransformWorkerEntryDto[] entries;
+        public TransformWorkerSkippedDto[] skipped;
+
+        // Per-file results, in the same order and count as TransformWorkerInputDto.sources.
+        // Null/omitted deserializes as empty after client coalesce.
+        public TransformWorkerFileOutputDto[] files;
+
+        // Run-level failures that cannot be attributed to any single source (for example a
+        // missing or empty sources array). Per-file failures belong in files[i].parseErrors.
+        public string[] parseErrors;
+
+        // Const-drift warnings collected from snapshot-mismatched sibling sources.
+        // Kept separate from declarationDriftWarnings so the orchestrator can dedupe
+        // sibling-derived text without collapsing own-file duplicate-input warnings.
+        public string[] siblingConstDriftWarnings;
+
+        // Identities of methods left untouched because they match the verified snapshot.
+        // Null/empty means none (or no baseline). UnchangedTotal is derived from Length.
+        public TransformWorkerUnchangedMethodDto[] unchangedMethods;
+
+        // True when any emitted shim type contains Harmony accessor delegates. Drives Harmony
+        // reference injection; patchKind "addedMethod" entries can also need accessors (B2).
+        public bool hasAccessorDelegates;
+
+        // True when any emitted shim body rewrites an added-field access to HotReloadAddedFieldStore.
+        // Drives ToolContracts assembly injection at both the first compile and isolation retry.
+        public bool hasAddedFieldRewrites;
+    }
+
+    [Serializable]
+    internal sealed class TransformWorkerRemovedMethodSignatureDto
+    {
+        public string typeMetadataName;
+        public string methodName;
+        public string[] parameterTypeFullNames;
+
+        // Open generic arity. 0 for non-generic methods so existing keys stay unchanged.
+        public int genericArity;
+    }
+
+    [Serializable]
+    internal sealed class TransformWorkerRemovedMemberDto
+    {
+        // "method" | "field"
+        public string kind;
+        public string name;
+    }
+
+    [Serializable]
+    internal sealed class TransformWorkerUnchangedMethodDto
+    {
+        // Project-relative forward-slash path of the file this row was produced from.
+        // Why: once several edited files share one shim assembly, a row must say which file it
+        // came from; it is the projectRelativePath of the TransformWorkerSourceDto that produced it.
+        public string sourceProjectRelativePath;
+
+        public string typeMetadataName;
+        public string methodName;
+        public string[] parameterTypeFullNames;
+
+        // Open generic arity. 0 for non-generic methods so existing keys stay unchanged.
+        public int genericArity;
+    }
+
+    [Serializable]
+    internal sealed class TransformWorkerEntryDto
+    {
+        // Project-relative forward-slash path of the file this row was produced from.
+        // Why: once several edited files share one shim assembly, a row must say which file it
+        // came from; it is the projectRelativePath of the TransformWorkerSourceDto that produced it.
+        public string sourceProjectRelativePath;
+
+        public string typeMetadataName;
+        public string methodName;
+        public string[] parameterTypeFullNames;
+
+        // Open generic arity. 0 for non-generic methods so existing keys stay unchanged.
+        public int genericArity;
+
+        public string shimTypeName;
+        public string shimMethodName;
+
+        // "transplant" | "delegation" | "addedMethod". Null/empty is treated as transplant by the orchestrator.
+        public string patchKind;
+
+        // Method keys of added methods this entry's body calls. Null/omitted is empty.
+        // Isolation retry excludes these callers instead of dropping the added-method shim (G1).
+        public string[] calledAddedMethodKeys;
+
+        // 1-based, both ends inclusive, within the original edited source file (not shimSource).
+        // Used to attribute shim compile errors whose #line-mapped locations fall in this method.
+        public int sourceStartLine;
+        public int sourceEndLine;
+
+        // Null/empty when the method is not a one-shot lifecycle method and is not only called
+        // from them inside this file.
+        public string lifecycleNote;
+
+        // True when this addedMethod entry replaces a compiled method whose return type changed.
+        public bool replacesCompiledMethod;
+    }
+
+    [Serializable]
+    internal sealed class TransformWorkerSkippedDto
+    {
+        // Project-relative forward-slash path of the file this row was produced from.
+        // Why: once several edited files share one shim assembly, a row must say which file it
+        // came from; it is the projectRelativePath of the TransformWorkerSourceDto that produced it.
+        public string sourceProjectRelativePath;
+
+        public string method;
+        public string reason;
+        // Wire key of the skipped method. Why: the isolation-retry closure must add this in
+        // the same format as calledAddedMethodKey and ExcludedAddedMethodKeys; `method` is the
+        // display label and would not match the next hop.
+        public string methodKey;
+        // Callee wire key. Set only when reason is UnavailableAddedCall.
+        public string calledAddedMethodKey;
+    }
+}
