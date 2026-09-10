@@ -17,7 +17,7 @@ Verify the uloop V3 unique tools recently ported into `com.pi.unity-harness` act
    - `vision_annotate_raycast`
 3. Run EditMode tests (real Test Runner, not eval stubs):
    - `unity_run_tests` mode `editor`, filter `Pi.UnityHarness`
-   - If that is too broad, also run with filter containing `UloopUniqueToolsDiscovery`, `HotReloadFileSystemPath`, `RaycastGridAnnotator`
+   - If that is too broad, run with targeted filter such as `PipelineCommandDiscovery`, `PlaytestVisionAlgorithm`
 4. Pipeline smokes (safe, no PlayMode required unless noted):
    - `unity_pipeline` `hot_reload_status`
    - `unity_pipeline` `pause_point_status`

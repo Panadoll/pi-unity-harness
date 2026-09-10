@@ -126,6 +126,7 @@ pub(crate) fn emit_value(val: &Value, json_mode: bool) -> String {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn format_safe_output(
     raw_val: &Value,
     project_root: &Path,
