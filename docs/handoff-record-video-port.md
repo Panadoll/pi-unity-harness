@@ -188,8 +188,9 @@ RecordVideoEditorStartup.Initialize();
 1. **编译与回归**：`scriptCompilationFailed=False`；`run-tests --mode edit` 仍是 222/222。
 
 2. **Game View 录制**：
-   先进入 PlayMode（harness 没有 play-mode 的 pipeline 命令，用 eval）：
-   `pi-unity eval 'UnityEditor.EditorApplication.isPlaying = true;'`
+   先进入 PlayMode：`pi-unity pipeline editor_application_set_state -p set_playing=true -p is_playing=true`
+   （用 `pi-unity pipeline editor_application_get_state` 确认 `IsPlaying=true`；
+   响应里的 `IsPlayingOrWillChangePlaymode` 先为 true 是正常的，等一拍再看）
    然后：`pi-unity pipeline record_video -p action=start -p frame_rate=30 -p max_duration_seconds=10`
    → 等 3~5 秒 → `pi-unity pipeline record_video -p action=stop`。
    判定：`Success=true`、`IsRecording=false`、`OutputPath` 文件存在且 `size > 0`、
@@ -197,7 +198,7 @@ RecordVideoEditorStartup.Initialize();
    `Width/Height` 与 GameView 尺寸一致（受 `ResolutionScale` 影响）。
    文件校验：`head -c 12 file.mp4` 里能看到 `ftyp`；有 ffprobe 的话 `ffprobe -v error -show_format file.mp4`。
 3. **Editor 窗口录制（不需要 PlayMode）**：
-   退出 PlayMode（`pi-unity eval 'UnityEditor.EditorApplication.isPlaying = false;'`）后：
+   退出 PlayMode（`editor_application_set_state -p set_playing=true -p is_playing=false`）后：
    `pi-unity pipeline record_video -p action=start -p window_name=Console -p match_mode=contains` → stop。
    判定同上，文件名前缀应为 `window_`。
    反向用例：`-p window_name=不存在的窗口` 应返回窗口未找到的失败信息，而不是抛异常。
@@ -226,6 +227,8 @@ RecordVideoEditorStartup.Initialize();
 - 上游实现：`unity-cli-loop/Packages/src/Editor/FirstPartyTools/RecordVideo/*`（尤其 `RecordVideoUseCase.cs`、`RecordVideoService.cs`、`RecordVideoSchema.cs`）
 - 依赖：`Editor/ToolContracts/UnityCliLoopScreenshotTypes.cs`（`WindowMatchMode`）、`Editor/ToolContracts/EditorFrameWaiter.cs`
 - 本仓库包装样例：`unity/com.pi.unity-harness/Editor/Capabilities/PipelineCommands/PiUloopUniquePipelineCommands.cs`
+- PlayMode 控制：`unity/com.pi.unity-harness/Editor/Capabilities/PipelineCommands/PiEditorPipelineCommands.cs`
+  （`editor_application_set_state` / `editor_application_get_state`，可设 playing 与 paused）
 - vendor 工具链：`scripts/vendor-uloop.py`、`scripts/vendor-uloop.manifest.json`、`unity/com.pi.unity-harness/Vendor/Uloop/VENDOR.md`
 - 迁移说明：`docs/uloop-unique-tools-port.md`
 
