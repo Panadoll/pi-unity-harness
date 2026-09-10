@@ -32,6 +32,7 @@ harness 自有内容请放 `scripts/vendor-extras/`，行为补丁请改 `script
 | `UnityCLILoop.FirstPartyTools.RecordInput.Editor` | `Editor\FirstPartyTools\RecordInput` | 7 |
 | `UnityCLILoop.FirstPartyTools.ReplayInput.Editor` | `Editor\FirstPartyTools\ReplayInput` | 8 |
 | `UnityCLILoop.FirstPartyTools.Screenshot.Editor` | `Editor\FirstPartyTools\Screenshot` | 29 |
+| `UnityCLILoop.FirstPartyTools.RecordVideo.Editor` | `Editor\FirstPartyTools\RecordVideo` | 24 |
 | `Unity.InternalAPIEditorBridge.024` | `Editor\InternalAPIBridge` | 6 |
 
 不做 vendor 的上游程序集：`UnityCLILoop.Application`、`UnityCLILoop.Domain`、
