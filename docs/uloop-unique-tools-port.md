@@ -40,8 +40,9 @@ harness 自有文件放 `scripts/vendor-extras/`（按 vendor 相对路径复制
 | `input_record_start` / `input_record_stop` / `input_record_status` | Input System 录制 |
 | `input_replay` / `input_replay_stop` / `input_replay_status` | 回放录制的 JSON |
 | `vision_annotate_raycast` | 分簇物理射线标注（胶水在 `Editor/Capabilities/VendorGlue/RaycastAnnotationGlue.cs`） |
+| `record_video` | 录制 Game View（PlayMode）或 Editor 窗口到 MP4（支持分辨率缩放、帧率、质量分档与自动保留） |
 
-包装入口：`Editor/Capabilities/PipelineCommands/PiUloopUniquePipelineCommands.cs`，
+包装入口：`Editor/Capabilities/PipelineCommands/PiUloopUniquePipelineCommands.cs` 与 `PiUloopRecordVideoCommands.cs`（通用运行器为 `PiUloopToolRunner.cs`），
 初始化入口：`Editor/PiUloopVendorBootstrap.cs`。
 uloop 工具本身只暴露 `protected ExecuteAsync(TSchema, ct)`，harness 调基类的公开重载
 `ExecuteAsync(JToken, ct)`，因此**不需要**再给 vendor 打可见性补丁。
@@ -51,7 +52,7 @@ uloop 工具本身只暴露 `protected ExecuteAsync(TSchema, ct)`，harness 调�
 harness 侧程序集引用（新增或调整过）：
 
 - `Pi.UnityHarness.Editor` 额外引用 `UnityCLILoop.FirstPartyTools.Common.GameView.Editor`
-  （`RaycastAnnotationGlue` 需要读 GameView 尺寸）。
+  （`RaycastAnnotationGlue` 需要读 GameView 尺寸）与 `UnityCLILoop.FirstPartyTools.RecordVideo.Editor`。
 - `Pi.UnityHarness.Editor.Tests` 额外引用 `UnityCLILoop.FirstPartyTools.HotReload.Shared.Editor`
   （3.6.3 把 `HotReloadFileSystemPath` 等移到了 Shared，内部类型靠 `InternalsVisibleTo` 可见）。
 
@@ -64,6 +65,7 @@ harness 侧程序集引用（新增或调整过）：
 - pause point 端到端：命中 `Compute` 第 27 行，捕获 `seed=3`、`acc=1015`（pre-line）；
   `snapshot_timing=post-line` 捕获 `acc=1016`；`persist=true` 返回 `Persisted=true`。
 - PlayMode：uloop `capture_game_view` 出 1280x720 PNG（覆盖新 vendor 的 Screenshot + InternalAPIBridge）。
+- record_video 端到端：Game View 录制（1036x560，30fps，~212帧）、Editor 窗口录制（Console 窗口，1370x244，~218帧）、PlayMode 退出自动停止落盘（StoppedBy=play-mode-exit）、EditMode 录制 GameView 前置检查拦截、超出20个文件自动清理（OutputFileRetention）。
 
 探针脚本：`F:/UnityProjects/2022test/Assets/PiHarnessFixtures/HotReloadProbe.cs`。
 
@@ -83,6 +85,6 @@ harness 侧程序集引用（新增或调整过）：
 
 ## 未 vendor
 
-`RecordVideo`（视频录制）、`Watch`（watch 表达式）、uloop CLI 侧工具（compile/run-tests/logo 等，harness 有原生实现）、
+`Watch`（watch 表达式）、uloop CLI 侧工具（compile/run-tests/logo 等，harness 有原生实现）、
 以及 uloop 的 `Application`/`Domain`/`Infrastructure`/`Presentation` 服务框架。
 `Watch` 依赖完整动态编译服务，harness 只 vendor 了编译器后端，移植需先接好 `IDynamicCompilationService`。

@@ -16,7 +16,8 @@
     "UnityCLILoop.FirstPartyTools.RecordInput.Editor",
     "UnityCLILoop.FirstPartyTools.Screenshot.Editor",
     "UnityCLILoop.FirstPartyTools.Common.InputRecording.Editor",
-    "UnityCLILoop.FirstPartyTools.Common.GameView.Editor"
+    "UnityCLILoop.FirstPartyTools.Common.GameView.Editor",
+    "UnityCLILoop.FirstPartyTools.RecordVideo.Editor"
   ],
   "includePlatforms": [
     "Editor"

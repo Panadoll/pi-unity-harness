@@ -1,9 +1,8 @@
 # Handoff：把 uloop 录像能力（record-video）迁移进 pi-unity-harness
 
-- 状态：待执行（本轮只完成了 vendor 快照升级，录像属于新增能力，未动）
-- 预估工作量：半天（机械改动为主，风险在真实录制验证）
+- 状态：已完成（已于 `feat/uloop-record-video` 分支完成 vendor、命令包装、问题求证与全套真实 Unity 验收）
 - 上游基线：`unity-cli-loop @ v3.6.3`（commit `5c0c074c`）
-- 承接分支：`feat/uloop-3.6.3-revendor`（升级已提交、未合并；录像建议另起 `feat/uloop-record-video`）
+- 承接分支：`feat/uloop-record-video`
 
 ## 结论先说
 

@@ -161,30 +161,30 @@ namespace Pi.UnityHarness.Editor.Capabilities.PipelineCommands
             [CliArg("show_overlay", "Show replay overlay")] bool showOverlay = true,
             [CliArg("timeout_ms", "Timeout")] int timeoutMs = 15000)
         {
-            var schema = new ReplayInputSchema
+            var token = new JObject
             {
-                Action = ReplayInputAction.start,
-                InputPath = inputPath ?? string.Empty,
-                Loop = loop,
-                ShowOverlay = showOverlay
+                ["action"] = "start",
+                ["inputPath"] = inputPath ?? string.Empty,
+                ["loop"] = loop,
+                ["showOverlay"] = showOverlay
             };
-            return Run(() => new ReplayInputTool().ExecuteAsync(JObject.FromObject(schema), CancellationToken.None), timeoutMs);
+            return Run(() => new ReplayInputTool().ExecuteAsync(token, CancellationToken.None), timeoutMs);
         }
 
         [CliCommand("input_replay_stop", "Stop an in-progress input replay")]
         public static Task<string> InputReplayStop(
             [CliArg("timeout_ms", "Timeout")] int timeoutMs = 15000)
         {
-            var schema = new ReplayInputSchema { Action = ReplayInputAction.stop };
-            return Run(() => new ReplayInputTool().ExecuteAsync(JObject.FromObject(schema), CancellationToken.None), timeoutMs);
+            var token = new JObject { ["action"] = "stop" };
+            return Run(() => new ReplayInputTool().ExecuteAsync(token, CancellationToken.None), timeoutMs);
         }
 
         [CliCommand("input_replay_status", "Input replay status")]
         public static Task<string> InputReplayStatus(
             [CliArg("timeout_ms", "Timeout")] int timeoutMs = 15000)
         {
-            var schema = new ReplayInputSchema { Action = ReplayInputAction.status };
-            return Run(() => new ReplayInputTool().ExecuteAsync(JObject.FromObject(schema), CancellationToken.None), timeoutMs);
+            var token = new JObject { ["action"] = "status" };
+            return Run(() => new ReplayInputTool().ExecuteAsync(token, CancellationToken.None), timeoutMs);
         }
 
         [CliCommand("vision_annotate_raycast", "uloop clustered physics collider raycast annotations")]
@@ -195,13 +195,9 @@ namespace Pi.UnityHarness.Editor.Capabilities.PipelineCommands
             return RaycastAnnotationGlue.CollectJson(mask);
         }
 
-        private static async Task<string> Run<T>(Func<Task<T>> action, int timeoutMs)
+        private static Task<string> Run<T>(Func<Task<T>> action, int timeoutMs)
         {
-            Task<T> task = action();
-            Task completed = await Task.WhenAny(task, Task.Delay(Math.Max(1, timeoutMs)));
-            if (completed != task)
-                return JsonConvert.SerializeObject(new { success = false, message = "Timed out." });
-            return JsonConvert.SerializeObject(await task);
+            return PiUloopToolRunner.Run(action, timeoutMs);
         }
 
         private static string[] ParseStringArray(string json)

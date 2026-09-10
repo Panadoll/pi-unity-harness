@@ -85,6 +85,9 @@
       "name": "UnityCLILoop.FirstPartyTools.Screenshot.Editor"
     },
     {
+      "name": "UnityCLILoop.FirstPartyTools.RecordVideo.Editor"
+    },
+    {
       "name": "Unity.InternalAPIEditorBridge.024",
       "//": "Screenshot 3.6.3 通过反射读取 PlayModeView 的 RenderTexture；asmdef 名带版本号但代码是反射，无编译期耦合。"
     }
