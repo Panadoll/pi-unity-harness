@@ -1,0 +1,31 @@
+{
+    "name": "UnityCLILoop.FirstPartyTools.ReplayInput.Editor",
+    "rootNamespace": "io.github.hatayama.UnityCliLoop.FirstPartyTools",
+    "references": [
+        "UnityCLILoop.ToolContracts",
+        "UnityCLILoop.FirstPartyTools.Common.InputRecording.Editor",
+        "UnityCLILoop.FirstPartyTools.Common.InputSystem.Editor",
+        "UnityCLILoop.FirstPartyTools.Common.MouseUi.Editor",
+        "UnityCLILoop.FirstPartyTools.Common.Overlay.Editor",
+        "UnityCLILoop.Runtime",
+        "Unity.InputSystem",
+        "UnityCLILoop.FirstPartyTools.Common.Preflight.Editor"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": false,
+    "defineConstraints": [],
+    "versionDefines": [
+        {
+            "name": "com.unity.inputsystem",
+            "expression": "",
+            "define": "ULOOP_HAS_INPUT_SYSTEM"
+        }
+    ],
+    "noEngineReferences": false
+}

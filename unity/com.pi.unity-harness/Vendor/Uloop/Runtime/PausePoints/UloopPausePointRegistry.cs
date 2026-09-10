@@ -14,7 +14,7 @@ namespace io.github.hatayama.UnityCliLoop.Runtime
     /// accessors are Harmony entry points, and the disconnect resume path only sets a pending flag
     /// so thread-pool callers never touch EditorApplication.isPaused.
     /// </summary>
-    internal static class UloopPausePointRegistry
+    internal static partial class UloopPausePointRegistry
     {
         public const int DefaultTimeoutSeconds = 30;
         public const int DefaultMaxHistory = 20;
@@ -30,21 +30,7 @@ namespace io.github.hatayama.UnityCliLoop.Runtime
         private static Func<DateTime> _nowProvider = () => DateTime.UtcNow;
         private static int _nextGeneration;
         private static int _nextHitSequence;
-        // Why Interlocked: disconnect monitor / DisconnectAllClients run on the thread pool.
-        private static int _pendingClientDisconnectResume;
         private static UloopPausePointSnapshot _latestHitSnapshot;
-        // Set when a hit pauses the Editor (see HitCore), cleared when ResumeEditorPause runs.
-        // While set, no entry's capture window is allowed to expire (see TryExpire): a marker's
-        // own hit freezes every marker's countdown for the duration of the inspection pause,
-        // and the frozen duration is credited back to each entry's ExpiresAtUtc on resume.
-        private static DateTime? _pauseWindowStartUtc;
-        // The id of the marker whose hit is actually holding the Editor paused. Kept separate
-        // from _latestHitSnapshot, which every hit overwrites (including Trace-mode hits that
-        // never pause): using _latestHitSnapshot here would let an unrelated Trace hit that
-        // occurs while already paused (e.g. via execute-dynamic-code or Step) misattribute the
-        // pause to itself. Overwritten by a later non-Trace hit, since a second marker hitting
-        // while already paused becomes the new (only) reason the Editor stays paused.
-        private static string _pauseWindowOwnerId;
         // One input can hit several markers in the same frame; tools need the full list,
         // not just the latest hit, to report every marker that interrupted them.
         private static readonly List<UloopPausePointSnapshot> _hitSnapshots = new();
@@ -83,7 +69,8 @@ namespace io.github.hatayama.UnityCliLoop.Runtime
             int maxPreviewElements = DefaultMaxPreviewElements,
             int maxCallerFrames = DefaultMaxCallerFrames,
             string hitWhen = "",
-            UloopPausePointHitWhenCondition hitWhenCondition = null)
+            UloopPausePointHitWhenCondition hitWhenCondition = null,
+            bool patchDispatchMayBypass = false)
         {
             Debug.Assert(!string.IsNullOrWhiteSpace(id), "id must not be null or empty");
             Debug.Assert(timeoutSeconds > 0, "timeoutSeconds must be greater than zero");
@@ -106,7 +93,7 @@ namespace io.github.hatayama.UnityCliLoop.Runtime
             int generation = ++_nextGeneration;
             UloopPausePointEntry entry = new(
                 id, timeoutSeconds, mode, maxHistory, maxPreviewElements, maxCallerFrames, now, generation,
-                MethodEntryInstrumentedIds.Contains(id), hitWhen, hitWhenCondition);
+                MethodEntryInstrumentedIds.Contains(id), hitWhen, hitWhenCondition, patchDispatchMayBypass);
             Entries[id] = entry;
             // Why not clear the raw capture holder here: a re-enable does not resume Unity, so the
             // paused-window constraint (see UloopPausePointRawCaptureHolder's class comment) is not
@@ -282,6 +269,24 @@ namespace io.github.hatayama.UnityCliLoop.Runtime
         }
 
         /// <summary>
+        /// Stores the parameters capture cannot box for the currently resolved method, so status
+        /// keeps explaining a missing name after enable and after a hot-reload retarget.
+        /// Pass an empty list to clear (the resolution behind it was discarded).
+        /// No-op when the id is unknown.
+        /// </summary>
+        public static void SetNotCapturableVariables(string id, IReadOnlyList<string> notCapturableVariables)
+        {
+            Debug.Assert(notCapturableVariables != null, "notCapturableVariables must not be null");
+
+            if (!Entries.TryGetValue(id, out UloopPausePointEntry entry))
+            {
+                return;
+            }
+
+            entry.NotCapturableVariables = notCapturableVariables;
+        }
+
+        /// <summary>
         /// Extends a marker's capture window to at least minimumRemainingSeconds from now, so a
         /// slow multi-step CLI round trip (enable -&gt; seed state -&gt; await) does not let the marker
         /// expire before await-pause-point even starts observing it. Called once when the wait
@@ -348,6 +353,30 @@ namespace io.github.hatayama.UnityCliLoop.Runtime
             }
 
             return Entries.TryGetValue(id, out UloopPausePointEntry entry) && entry.IsEnabled;
+        }
+
+        /// <summary>
+        /// Reports whether the marker is still armed once an elapsed capture window has been
+        /// applied. Expiry is lazy - IsArmed only reads the flag - so a marker whose timeout ran
+        /// out without a status poll still looks enabled to it. Callers that decide something
+        /// durable from "still armed" must use this instead.
+        /// </summary>
+        public static bool IsArmedAfterExpiry(string id)
+        {
+            if (string.IsNullOrWhiteSpace(id))
+            {
+                return false;
+            }
+
+            if (!Entries.TryGetValue(id, out UloopPausePointEntry entry))
+            {
+                return false;
+            }
+
+            // TryExpire, not ExpireIfNeeded: the pause-window freeze contract lives in TryExpire
+            // and a marker must not expire while a hit has the Editor paused.
+            TryExpire(entry, NowUtc());
+            return entry.IsEnabled;
         }
 
         // Called from injected IL at method entry on whatever thread invokes the method. Entries
@@ -430,6 +459,56 @@ namespace io.github.hatayama.UnityCliLoop.Runtime
         public static int GetActiveCount()
         {
             return UloopPausePointStatusSnapshotCollector.CountActiveEntries(Entries.Values);
+        }
+
+        /// <summary>
+        /// Marks whether this pause point is re-armed after a domain reload. A no-op for an
+        /// unknown id: the caller has already learned the enable failed from its own result.
+        /// </summary>
+        /// <summary>
+        /// What the re-arm pass after the last domain reload did, one line per persisted pause
+        /// point, so pause-point-status can show it. Plain strings because this Runtime assembly
+        /// cannot reference the Editor-side response types that produced them.
+        /// </summary>
+        public static IReadOnlyList<string> DomainReloadRearmReport { get; private set; } =
+            Array.Empty<string>();
+
+        public static void SetDomainReloadRearmReport(IReadOnlyList<string> lines)
+        {
+            if (lines == null)
+            {
+                throw new ArgumentNullException(nameof(lines));
+            }
+
+            DomainReloadRearmReport = lines;
+        }
+
+        public static void SetPersisted(string id, bool persisted)
+        {
+            Debug.Assert(!string.IsNullOrWhiteSpace(id), "id must not be null or empty");
+
+            if (Entries.TryGetValue(id, out UloopPausePointEntry entry))
+            {
+                entry.Persisted = persisted;
+            }
+        }
+
+        /// <summary>
+        /// Counts armed entries that will be re-armed after the next domain reload, so warnings
+        /// can separate the pause points that come back from the ones that are simply lost.
+        /// </summary>
+        public static int GetActivePersistedCount()
+        {
+            int count = 0;
+            foreach (UloopPausePointEntry entry in Entries.Values)
+            {
+                if (entry.IsEnabled && entry.Persisted)
+                {
+                    count++;
+                }
+            }
+
+            return count;
         }
 
         private static UloopPausePointSnapshot HitCore(
@@ -516,20 +595,6 @@ namespace io.github.hatayama.UnityCliLoop.Runtime
             return _latestHitSnapshot;
         }
 
-        /// <summary>
-        /// Read-only signal for callers outside this registry (e.g. execute-dynamic-code) that
-        /// need to know whether the Editor is currently paused because of a pause-point hit, and
-        /// which marker's hit is responsible. Reads _pauseWindowOwnerId rather than
-        /// _latestHitSnapshot, which every hit overwrites (including Trace-mode hits that never
-        /// pause) and would otherwise misattribute an open pause window to an unrelated marker.
-        /// Returns empty when no window is open, even if the Editor happens to be paused for an
-        /// unrelated reason.
-        /// </summary>
-        public static string GetActivePausePointId()
-        {
-            return _pauseWindowStartUtc.HasValue ? _pauseWindowOwnerId ?? string.Empty : string.Empty;
-        }
-
         public static void ClearLatestHitSnapshot()
         {
             _latestHitSnapshot = null;
@@ -556,115 +621,6 @@ namespace io.github.hatayama.UnityCliLoop.Runtime
             if (anyExpired)
             {
                 ResumeEditorPause();
-            }
-        }
-
-        /// <summary>
-        /// Requests Editor resume when a CLI client drops mid-request or the bridge disconnects all clients.
-        /// Why flag only: callers run on the thread pool where Unity Editor APIs are unsafe; the main-thread
-        /// Editor update pump applies the resume via ApplyPendingClientDisconnectResume.
-        /// Why not on every short-lived command close: that would resume immediately after await-pause-point
-        /// returns a Hit and break the paused inspection workflow.
-        /// </summary>
-        public static void ResumeEditorPauseForClientDisconnect()
-        {
-            Interlocked.Exchange(ref _pendingClientDisconnectResume, 1);
-        }
-
-        /// <summary>
-        /// Consumes a pending client-disconnect resume on the Editor main thread.
-        /// </summary>
-        public static void ApplyPendingClientDisconnectResume()
-        {
-            if (Interlocked.Exchange(ref _pendingClientDisconnectResume, 0) == 0)
-            {
-                return;
-            }
-
-            // Why discard when already running: Option B still clears a stale request without
-            // calling Resume on an Editor that is not paused.
-            if (!_pauseController.IsPaused)
-            {
-                return;
-            }
-
-            ResumeEditorPause();
-        }
-
-        private static void ResumeEditorPause()
-        {
-            CreditPauseWindowAndClose(NowUtc());
-            _pauseController.Resume();
-        }
-
-        // Resumes the Editor only when a pause-point hit currently owns the pause (a pause window
-        // is open) and reports whether it did. Clear/ClearAll use this so they never resume a
-        // manual pause that no pause-point hit is responsible for. Disconnect and expiry paths
-        // deliberately call ResumeEditorPause directly instead, because they must release the
-        // Editor even when the pause was manual.
-        private static bool ResumeEditorPauseIfOwnedByPausePoint()
-        {
-            // A manual unpause (Editor pause button / control-play-mode) may not have been observed
-            // yet, because the external-resume sync runs on the Editor update tick. Reconcile first
-            // so a window left open by that unobserved unpause is credited and closed here instead
-            // of being misreported as a resume this clear performed (it would be a no-op resume of
-            // an already-unpaused Editor) and instead of leaving the stale window freezing expiry.
-            ClosePauseWindowIfEditorResumedExternally();
-            if (!_pauseWindowStartUtc.HasValue)
-            {
-                return false;
-            }
-
-            ResumeEditorPause();
-            return true;
-        }
-
-        // Clear(id) must resume only when this id is the pause-window owner. Clearing a different
-        // marker (including AwaitTimeoutAutoClear of a never-hit wait) must leave the owner's
-        // inspection pause in place.
-        private static bool ResumeEditorPauseIfOwnedByMarker(string id)
-        {
-            if (_pauseWindowOwnerId != id)
-            {
-                return false;
-            }
-
-            return ResumeEditorPauseIfOwnedByPausePoint();
-        }
-
-        /// <summary>
-        /// Closes an open pause window when the Editor was unpaused through a path that never
-        /// calls back into this registry - control-play-mode's Play/Stop
-        /// (<c>ControlPlayModeUseCase</c> sets <c>EditorApplication.isPaused</c> directly) or the
-        /// Editor's own pause button. Without this, a window left open by such an external resume
-        /// would freeze every marker's countdown forever and later over-credit the elapsed
-        /// wall-clock time back onto ExpiresAtUtc. Call every main-thread Editor update.
-        /// </summary>
-        public static void ClosePauseWindowIfEditorResumedExternally()
-        {
-            if (!_pauseWindowStartUtc.HasValue || _pauseController.IsPaused)
-            {
-                return;
-            }
-
-            CreditPauseWindowAndClose(NowUtc());
-        }
-
-        // Credits the frozen duration (now - max(pauseWindowStart, EnabledAtUtc)) back onto every
-        // entry's ExpiresAtUtc and closes the window. A no-op when no window is open.
-        private static void CreditPauseWindowAndClose(DateTime now)
-        {
-            if (!_pauseWindowStartUtc.HasValue)
-            {
-                return;
-            }
-
-            DateTime pauseWindowStart = _pauseWindowStartUtc.Value;
-            _pauseWindowStartUtc = null;
-            _pauseWindowOwnerId = null;
-            foreach (UloopPausePointEntry entry in Entries.Values)
-            {
-                entry.ExtendExpiryForPause(pauseWindowStart, now);
             }
         }
 
@@ -721,6 +677,7 @@ namespace io.github.hatayama.UnityCliLoop.Runtime
 
         public static void ResetForTests()
         {
+            DomainReloadRearmReport = Array.Empty<string>();
             Entries.Clear();
             MethodEntryInstrumentedIds.Clear();
             _nextGeneration = 0;

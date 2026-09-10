@@ -1,0 +1,27 @@
+{
+    "name": "UnityCLILoop.FirstPartyTools.HotReload.Editor",
+    "rootNamespace": "io.github.hatayama.UnityCliLoop.FirstPartyTools",
+    "references": [
+        "UnityCLILoop.FirstPartyTools.ExecuteDynamicCode.Editor",
+        "UnityCLILoop.ToolContracts",
+        "UnityCLILoop.PausePoints.Runtime",
+        "UnityCLILoop.FirstPartyTools.HotReload.Patching.Editor",
+        "UnityCLILoop.FirstPartyTools.HotReload.IntroducedType.Editor",
+        "UnityCLILoop.FirstPartyTools.HotReload.Shared.Editor"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": true,
+    "precompiledReferences": [
+        "UnityCliLoop.0Harmony.dll",
+        "Mono.Cecil.dll",
+        "Newtonsoft.Json.dll"
+    ],
+    "autoReferenced": false,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

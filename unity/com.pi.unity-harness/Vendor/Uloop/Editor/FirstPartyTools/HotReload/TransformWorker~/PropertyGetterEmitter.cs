@@ -1,0 +1,365 @@
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Collections.Immutable;
+using System.Globalization;
+using System.IO;
+using System.Linq;
+using System.Runtime.Loader;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Text;
+
+internal static class PropertyGetterEmitter
+{
+    internal static void EmitPropertyGettersForType(
+        TypeEmitState typeState,
+        AddedMethodCatalog addedMethodCatalog,
+        AddedFieldCatalog addedFieldCatalog,
+        AddedPropertyCatalog addedPropertyCatalog,
+        WorkerInput input,
+        List<WorkerEntry> entries,
+        List<WorkerSkipped> skipped,
+        List<WorkerUnchangedMethod> unchangedMethods,
+        List<ShimTypeBuilder> shimTypes,
+        List<UsingDirectiveSyntax> assemblyGlobalUsings,
+        ShimNameAllocator shimNames)
+    {
+        SemanticModel semanticModel = typeState.SourceUnit.SemanticModel;
+        CompilationUnitSyntax root = typeState.SourceUnit.BindingRoot;
+        BaselineSnapshotState baseline = typeState.SourceUnit.Baseline;
+        foreach (PropertyDeclarationSyntax propertyDeclaration in typeState.TypeDeclaration.Members
+            .OfType<PropertyDeclarationSyntax>())
+        {
+            IPropertySymbol propertySymbol = semanticModel.GetDeclaredSymbol(propertyDeclaration);
+            if (addedPropertyCatalog.FindBySymbolOrNull(propertySymbol) != null)
+            {
+                continue;
+            }
+
+            if (typeState.TypeIsAbsentFromCompiledAssembly)
+            {
+                PropertyGetterClassifier.SkipPropertyGetterOnUncompiledType(
+                    typeState.SourceUnit.Input.ProjectRelativePath,
+                    propertyDeclaration,
+                    semanticModel,
+                    skipped);
+                continue;
+            }
+
+            typeState.CurrentShimType = AppendPropertyGetterEntry(
+                    propertyDeclaration,
+                    typeState.TypeDeclaration,
+                    typeState.TypeSymbol,
+                    typeState.CompiledType,
+                    typeState.TypeMetadataNameFromSyntax,
+                    semanticModel,
+                    root,
+                    typeState.SourceUnit.Input.ProjectRelativePath,
+                    input,
+                    baseline.HasBaseline,
+                    baseline.SnapshotPropertyMap,
+                    baseline.PlainCurrentPropertyMap,
+                    entries,
+                    skipped,
+                    unchangedMethods,
+                    shimTypes,
+                    shimNames,
+                    typeState.CurrentShimType,
+                    assemblyGlobalUsings,
+                    addedMethodCatalog,
+                    addedFieldCatalog,
+                    addedPropertyCatalog);
+        }
+    }
+
+    // What: emit a get_<Name> entry / unchanged row / skip for one property with a getter body.
+    internal static ShimTypeBuilder AppendPropertyGetterEntry(
+            PropertyDeclarationSyntax propertyDeclaration,
+            TypeDeclarationSyntax typeDeclaration,
+            INamedTypeSymbol typeSymbol,
+            INamedTypeSymbol compiledType,
+            string typeMetadataNameFromSyntax,
+            SemanticModel semanticModel,
+            CompilationUnitSyntax root,
+            string sourceProjectRelativePath,
+            WorkerInput input,
+            bool hasBaseline,
+            Dictionary<string, PropertyDeclarationSyntax> snapshotPropertyMap,
+            Dictionary<string, PropertyDeclarationSyntax> plainCurrentPropertyMap,
+            List<WorkerEntry> entries,
+            List<WorkerSkipped> skipped,
+            List<WorkerUnchangedMethod> unchangedMethods,
+            List<ShimTypeBuilder> shimTypes,
+            ShimNameAllocator shimNames,
+            ShimTypeBuilder currentShimType,
+            List<UsingDirectiveSyntax> assemblyGlobalUsings,
+            AddedMethodCatalog addedMethodCatalog,
+            AddedFieldCatalog addedFieldCatalog,
+            AddedPropertyCatalog addedPropertyCatalog)
+    {
+        IPropertySymbol propertySymbol = semanticModel.GetDeclaredSymbol(propertyDeclaration);
+        if (propertySymbol == null || propertySymbol.GetMethod == null)
+        {
+            return currentShimType;
+        }
+
+        string propertyKey = AddedPropertyCatalog.FormatPropertyKey(
+            CecilTypeNames.ToMetadataName(typeSymbol),
+            propertySymbol.Name);
+        if (addedPropertyCatalog.IsClassifiedAdded(propertyKey))
+        {
+            return currentShimType;
+        }
+
+        (bool hasGetterBody, AccessorDeclarationSyntax getAccessor) =
+            PropertyGetterClassifier.TryGetPropertyGetterBody(propertyDeclaration);
+        if (!hasGetterBody)
+        {
+            return currentShimType;
+        }
+
+        IMethodSymbol getterSymbol = propertySymbol.GetMethod;
+        string[] parameterTypeFullNames = Array.Empty<string>();
+        string methodKey = WorkerMethodKeys.BuildMethodKey(
+            CecilTypeNames.ToMetadataName(typeSymbol),
+            getterSymbol.Name,
+            parameterTypeFullNames,
+            getterSymbol.Arity);
+        if (input.ExcludedMethodKeys.Contains(methodKey))
+        {
+            return currentShimType;
+        }
+
+        if (PropertyGetterClassifier.TryRecordUnchangedPropertyGetter(
+            sourceProjectRelativePath,
+            hasBaseline,
+            snapshotPropertyMap,
+            plainCurrentPropertyMap,
+            typeMetadataNameFromSyntax,
+            propertyDeclaration,
+            typeSymbol,
+            getterSymbol,
+            parameterTypeFullNames,
+            unchangedMethods))
+        {
+            return currentShimType;
+        }
+
+        if (propertyDeclaration.ExplicitInterfaceSpecifier != null)
+        {
+            skipped.Add(new WorkerSkipped
+            {
+                SourceProjectRelativePath = sourceProjectRelativePath,
+                Method = WorkerMethodKeys.FormatMethodLabel(getterSymbol),
+                Reason = MethodTransformSkipReasons.ExplicitInterfaceImplementation
+            });
+            return currentShimType;
+        }
+
+        // Why body stays on the property tree: SemanticModel rejects nodes re-parented onto a
+        // synthetic MethodDeclaration ("Syntax node is not within syntax tree").
+        SyntaxNode getterBodyNode = (SyntaxNode)propertyDeclaration.ExpressionBody
+            ?? (SyntaxNode)getAccessor.Body
+            ?? getAccessor.ExpressionBody;
+        (bool skipGetter, MethodTransformDecision decision) = PropertyGetterClassifier.TrySkipPropertyGetterByDecision(
+            sourceProjectRelativePath,
+            typeDeclaration,
+            typeSymbol,
+            getterSymbol,
+            getterBodyNode,
+            semanticModel,
+            compiledType,
+            addedMethodCatalog,
+            addedFieldCatalog,
+            addedPropertyCatalog,
+            skipped);
+        if (skipGetter)
+        {
+            return currentShimType;
+        }
+
+        return EmitPropertyGetterShim(
+            propertyDeclaration,
+            typeDeclaration,
+            typeSymbol,
+            getterSymbol,
+            getterBodyNode,
+            decision,
+            methodKey,
+            parameterTypeFullNames,
+            semanticModel,
+            root,
+            sourceProjectRelativePath,
+            entries,
+            shimTypes,
+            shimNames,
+            currentShimType,
+            assemblyGlobalUsings,
+            addedMethodCatalog,
+            addedFieldCatalog,
+            addedPropertyCatalog);
+    }
+
+    internal static ShimTypeBuilder EmitPropertyGetterShim(
+            PropertyDeclarationSyntax propertyDeclaration,
+            TypeDeclarationSyntax typeDeclaration,
+            INamedTypeSymbol typeSymbol,
+            IMethodSymbol getterSymbol,
+            SyntaxNode getterBodyNode,
+            MethodTransformDecision decision,
+            string methodKey,
+            string[] parameterTypeFullNames,
+            SemanticModel semanticModel,
+            CompilationUnitSyntax root,
+            string sourceProjectRelativePath,
+            List<WorkerEntry> entries,
+            List<ShimTypeBuilder> shimTypes,
+            ShimNameAllocator shimNames,
+            ShimTypeBuilder currentShimType,
+            List<UsingDirectiveSyntax> assemblyGlobalUsings,
+            AddedMethodCatalog addedMethodCatalog,
+            AddedFieldCatalog addedFieldCatalog,
+            AddedPropertyCatalog addedPropertyCatalog)
+    {
+        if (currentShimType == null)
+        {
+            string shimTypeName = shimNames.NextShimTypeName(typeSymbol.Name);
+            string namespaceName = typeSymbol.ContainingNamespace == null
+                || typeSymbol.ContainingNamespace.IsGlobalNamespace
+                ? string.Empty
+                : typeSymbol.ContainingNamespace.ToDisplayString();
+            currentShimType = new ShimTypeBuilder(
+                shimTypeName,
+                namespaceName,
+                WorkerUsingCollector.CollectUsingsForType(root, typeDeclaration, assemblyGlobalUsings),
+                sourceProjectRelativePath);
+            shimTypes.Add(currentShimType);
+        }
+
+        string shimMethodName = shimNames.NextShimMethodName(getterSymbol.Name);
+
+        FileLinePositionSpan originalSpan = propertyDeclaration.GetLocation().GetLineSpan();
+        int sourceStartLine = originalSpan.StartLinePosition.Line + 1;
+        int sourceEndLine = originalSpan.EndLinePosition.Line + 1;
+
+        AccessorPlan rewritePlan = decision.UsesDelegation
+            ? currentShimType.AccessorPlan
+            : null;
+        MethodDeclarationSyntax rewrittenMethod = RewritePropertyGetterBody(
+            propertyDeclaration,
+            getterBodyNode,
+            getterSymbol,
+            typeSymbol,
+            semanticModel,
+            rewritePlan,
+            addedMethodCatalog,
+            addedFieldCatalog,
+            addedPropertyCatalog);
+        currentShimType.AddMethod(rewrittenMethod, shimMethodName);
+
+        entries.Add(new WorkerEntry
+        {
+            SourceProjectRelativePath = sourceProjectRelativePath,
+            TypeMetadataName = CecilTypeNames.ToMetadataName(typeSymbol),
+            MethodName = getterSymbol.Name,
+            ParameterTypeFullNames = parameterTypeFullNames,
+            GenericArity = getterSymbol.Arity,
+            ShimTypeName = currentShimType.ShimTypeName,
+            ShimMethodName = shimMethodName,
+            PatchKind = decision.PatchKind,
+            CalledAddedMethodKeys = AddedCallSiteGuard.CollectCalledAddedMethodKeys(
+                getterBodyNode,
+                semanticModel,
+                addedMethodCatalog,
+                addedPropertyCatalog,
+                methodKey),
+            SourceStartLine = sourceStartLine,
+            SourceEndLine = sourceEndLine,
+            LifecycleNote = null
+        });
+
+        return currentShimType;
+    }
+
+    // What: rewrite a getter body while it is still in the bound tree, then wrap as a shim method.
+    internal static MethodDeclarationSyntax RewritePropertyGetterBody(
+        PropertyDeclarationSyntax propertyDeclaration,
+        SyntaxNode getterBodyNode,
+        IMethodSymbol getterSymbol,
+        INamedTypeSymbol targetType,
+        SemanticModel semanticModel,
+        AccessorPlan accessorPlan,
+        AddedMethodCatalog addedMethodCatalog,
+        AddedFieldCatalog addedFieldCatalog,
+        AddedPropertyCatalog addedPropertyCatalog)
+    {
+        ShimBodyRewriter rewriter = new ShimBodyRewriter(
+            semanticModel,
+            targetType,
+            accessorPlan,
+            addedMethodCatalog,
+            addedFieldCatalog,
+            addedPropertyCatalog);
+        SyntaxNode rewrittenBody = rewriter.Visit(getterBodyNode);
+        // Why transfer: Visit may rebuild ArrowExpressionClause nodes and drop #line annotations.
+        rewrittenBody = TransferUloopLineAnnotations(getterBodyNode, rewrittenBody);
+
+        TypeSyntax returnType = propertyDeclaration.Type.WithoutTrivia();
+        // ToShimMethod forces public static and injects __instance for instance getters.
+        MethodDeclarationSyntax method = SyntaxFactory.MethodDeclaration(
+                returnType,
+                SyntaxFactory.Identifier(getterSymbol.Name))
+            .WithModifiers(
+                SyntaxFactory.TokenList(
+                    SyntaxFactory.Token(SyntaxKind.PublicKeyword),
+                    SyntaxFactory.Token(SyntaxKind.StaticKeyword)))
+            .WithParameterList(SyntaxFactory.ParameterList());
+
+        if (rewrittenBody is ArrowExpressionClauseSyntax arrowBody)
+        {
+            method = method
+                .WithExpressionBody(arrowBody)
+                .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken));
+        }
+        else if (rewrittenBody is BlockSyntax blockBody)
+        {
+            method = method.WithBody(blockBody);
+        }
+        else
+        {
+            // get => expr rewritten to a bare expression: wrap as arrow.
+            ArrowExpressionClauseSyntax wrappedArrow = SyntaxFactory.ArrowExpressionClause(
+                (ExpressionSyntax)rewrittenBody);
+            wrappedArrow = (ArrowExpressionClauseSyntax)TransferUloopLineAnnotations(
+                getterBodyNode,
+                wrappedArrow);
+            method = method
+                .WithExpressionBody(wrappedArrow)
+                .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken));
+        }
+
+        return ShimMethodFactory.ToShimMethod(method, getterSymbol);
+    }
+
+    internal static SyntaxNode TransferUloopLineAnnotations(SyntaxNode source, SyntaxNode target)
+    {
+        if (source == null || target == null)
+        {
+            return target;
+        }
+
+        SyntaxNode result = target;
+        foreach (SyntaxAnnotation annotation in source.GetAnnotations(TransformWorkerProgram.UloopLineAnnotationKind))
+        {
+            result = result.WithAdditionalAnnotations(annotation);
+        }
+
+        return result;
+    }
+}

@@ -12,6 +12,7 @@
     "UnityEngine.UI",
     "UnityCLILoop.ToolContracts",
     "UnityCLILoop.FirstPartyTools.HotReload.Editor",
+    "UnityCLILoop.FirstPartyTools.HotReload.Shared.Editor",
     "UnityCLILoop.FirstPartyTools.PausePoint.Editor",
     "UnityCLILoop.FirstPartyTools.Screenshot.Editor",
     "UnityCLILoop.FirstPartyTools.Common.GameView.Editor"

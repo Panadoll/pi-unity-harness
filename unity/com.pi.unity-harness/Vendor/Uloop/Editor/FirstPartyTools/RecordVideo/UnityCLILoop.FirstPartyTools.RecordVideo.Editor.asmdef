@@ -1,0 +1,22 @@
+{
+    "name": "UnityCLILoop.FirstPartyTools.RecordVideo.Editor",
+    "rootNamespace": "io.github.hatayama.UnityCliLoop.FirstPartyTools",
+    "references": [
+        "UnityCLILoop.ToolContracts",
+        "Unity.InternalAPIEditorBridge.024",
+        "UnityCLILoop.FirstPartyTools.Common.Preflight.Editor",
+        "UnityCLILoop.FirstPartyTools.Common.OutputRetention.Editor",
+        "UnityCLILoop.FirstPartyTools.Common.EditorWindowFinder.Editor"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": false,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}
