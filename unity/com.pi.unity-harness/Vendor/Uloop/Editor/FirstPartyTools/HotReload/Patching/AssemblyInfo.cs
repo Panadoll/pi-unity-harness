@@ -1,0 +1,10 @@
+using System.Runtime.CompilerServices;
+
+// The application assembly composes this part; the split is internal to the hot-reload tool.
+[assembly: InternalsVisibleTo("UnityCLILoop.FirstPartyTools.HotReload.Editor")]
+
+// EditMode tests drive these internals directly.
+[assembly: InternalsVisibleTo("UnityCLILoop.Tests.Editor.HotReload")]
+
+[assembly: InternalsVisibleTo("Pi.UnityHarness.Editor")]
+[assembly: InternalsVisibleTo("Pi.UnityHarness.Editor.Tests")]

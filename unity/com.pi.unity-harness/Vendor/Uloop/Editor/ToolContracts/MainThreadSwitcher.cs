@@ -45,7 +45,7 @@ namespace io.github.hatayama.UnityCliLoop.ToolContracts
         /// <summary>
         /// Add a continuation to the queue to be executed on the main thread.
         /// </summary>
-        internal static void AddContinuation(Action continuation)
+        public static void AddContinuation(Action continuation)
         {
             Service.AddContinuation(continuation);
         }

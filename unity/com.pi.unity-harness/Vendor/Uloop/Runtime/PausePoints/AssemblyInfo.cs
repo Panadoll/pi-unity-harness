@@ -18,5 +18,6 @@ using System.Runtime.CompilerServices;
 [assembly: InternalsVisibleTo("UnityCLILoop.Tests.Editor.SourcePausePointPatcher")]
 // The hot-reload contract tests patch a fixture with HotReloadPatcher and then drive SourcePausePointPatcher against it.
 [assembly: InternalsVisibleTo("UnityCLILoop.Tests.Editor.HotReload")]
+
 [assembly: InternalsVisibleTo("Pi.UnityHarness.Editor")]
 [assembly: InternalsVisibleTo("Pi.UnityHarness.Editor.Tests")]
