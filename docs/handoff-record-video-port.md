@@ -6,8 +6,8 @@
 
 ## 结论先说
 
-录像能力的 **5 个依赖程序集在本仓库已经全部 vendor 完毕**（其中 2 个是本轮升级时新加的），
-因此本次不需要再 vendor 任何新程序集，只需要：manifest 加一行 → 重制 → 加一个 `[CliCommand]` 包装 → 编译 → 真实录制验证。
+录像能力程序集为 `UnityCLILoop.FirstPartyTools.RecordVideo.Editor`，其 **5 个依赖程序集在本仓库已经全部 vendor 完毕**（其中 2 个是本轮升级时新加的）。
+因此本次只需要：manifest 加一行纳入 vendor → 重制 → 加一个 `[CliCommand]` 包装 → 编译 → 真实录制验证。
 
 ## 1. 事实基线
 
@@ -99,8 +99,6 @@ python scripts/vendor-uloop.py --ref v3.6.3
 
 ```csharp
 #if PI_UNITY_PIPELINE
-using System;
-using System.Threading;
 using System.Threading.Tasks;
 using io.github.hatayama.UnityCliLoop.FirstPartyTools;
 using Newtonsoft.Json.Linq;
@@ -122,19 +120,19 @@ namespace Pi.UnityHarness.Editor.Capabilities.PipelineCommands
             [CliArg("quality", "low, medium, or high")] string quality = "medium",
             [CliArg("timeout_ms", "Command timeout")] int timeoutMs = 120000)
         {
-            var schema = new RecordVideoSchema
+            var token = new JObject
             {
-                Action = (RecordVideoAction)Enum.Parse(typeof(RecordVideoAction), action, true),
-                FrameRate = frameRate,
-                MaxDurationSeconds = maxDurationSeconds,
-                OutputPath = outputPath ?? string.Empty,
-                WindowName = windowName ?? string.Empty,
-                MatchMode = (WindowMatchMode)Enum.Parse(typeof(WindowMatchMode), matchMode, true),
-                ResolutionScale = resolutionScale,
-                Quality = (RecordVideoQuality)Enum.Parse(typeof(RecordVideoQuality), quality, true)
+                ["action"] = action,
+                ["frameRate"] = frameRate,
+                ["maxDurationSeconds"] = maxDurationSeconds,
+                ["outputPath"] = outputPath ?? string.Empty,
+                ["windowName"] = windowName ?? string.Empty,
+                ["matchMode"] = matchMode,
+                ["resolutionScale"] = resolutionScale,
+                ["quality"] = quality
             };
             return PiUloopToolRunner.Run(
-                () => new RecordVideoTool().ExecuteAsync(JObject.FromObject(schema), CancellationToken.None),
+                ct => new RecordVideoTool().ExecuteAsync(token, ct),
                 timeoutMs);
         }
     }
@@ -144,6 +142,8 @@ namespace Pi.UnityHarness.Editor.Capabilities.PipelineCommands
 
 配套把 `PiUloopUniquePipelineCommands` 里那个 `private static async Task<string> Run<T>(...)` 抽成
 `internal static class PiUloopToolRunner`（同一个目录），两处共用；不要复制粘贴第二份。
+
+注意：不要使用 `JObject.FromObject(schema)`，因为 Newtonsoft 默认将枚举序列化为整数 Token（例如 `status` 变为 `2`），而 uloop 端的 `CaseInsensitiveStringEnumConverter` 会显式拒绝整数 Token 并要求字符串，导致 `ConvertToSchema` 抛出验证失败异常。直接传递字符串 `JObject` 可以复用 uloop 内置的容错解析与校验。同时将 `ct` 传入 ToolRunner 以支持超时取消。
 
 用上游公开重载 `ExecuteAsync(JToken, ct)`，不要再走可见性补丁路线（本轮已经把旧补丁删掉了）。
 

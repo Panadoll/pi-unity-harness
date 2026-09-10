@@ -24,7 +24,7 @@ namespace Pi.UnityHarness.Editor.Capabilities.PipelineCommands
             {
                 Files = ParseStringArray(filesJson)
             };
-            return Run(() => new HotReloadTool().ExecuteAsync(JObject.FromObject(schema), CancellationToken.None), timeoutMs);
+            return Run(ct => new HotReloadTool().ExecuteAsync(JObject.FromObject(schema), ct), timeoutMs);
         }
 
         [CliCommand("hot_reload_status", "List currently applied hot-reload patches")]
@@ -32,7 +32,7 @@ namespace Pi.UnityHarness.Editor.Capabilities.PipelineCommands
             [CliArg("timeout_ms", "Timeout in milliseconds")] int timeoutMs = 30000)
         {
             var schema = new HotReloadSchema { Status = true };
-            return Run(() => new HotReloadTool().ExecuteAsync(JObject.FromObject(schema), CancellationToken.None), timeoutMs);
+            return Run(ct => new HotReloadTool().ExecuteAsync(JObject.FromObject(schema), ct), timeoutMs);
         }
 
         [CliCommand("hot_reload_revert_all", "Revert every active hot-reload patch")]
@@ -40,7 +40,7 @@ namespace Pi.UnityHarness.Editor.Capabilities.PipelineCommands
             [CliArg("timeout_ms", "Timeout in milliseconds")] int timeoutMs = 30000)
         {
             var schema = new HotReloadSchema { RevertAll = true };
-            return Run(() => new HotReloadTool().ExecuteAsync(JObject.FromObject(schema), CancellationToken.None), timeoutMs);
+            return Run(ct => new HotReloadTool().ExecuteAsync(JObject.FromObject(schema), ct), timeoutMs);
         }
 
         [CliCommand("pause_point_enable", "Harmony-inject a source file:line pause point and capture variables")]
@@ -64,7 +64,7 @@ namespace Pi.UnityHarness.Editor.Capabilities.PipelineCommands
                 Persist = persist,
                 SnapshotTiming = string.IsNullOrEmpty(snapshotTiming) ? "pre-line" : snapshotTiming
             };
-            return Run(() => new EnablePausePointTool().ExecuteAsync(JObject.FromObject(schema), CancellationToken.None), timeoutMs);
+            return Run(ct => new EnablePausePointTool().ExecuteAsync(JObject.FromObject(schema), ct), timeoutMs);
         }
 
         [CliCommand("pause_point_clear", "Clear one pause point by id, or all when all=true")]
@@ -78,7 +78,7 @@ namespace Pi.UnityHarness.Editor.Capabilities.PipelineCommands
                 Id = id ?? string.Empty,
                 All = all
             };
-            return Run(() => new ClearPausePointTool().ExecuteAsync(JObject.FromObject(schema), CancellationToken.None), timeoutMs);
+            return Run(ct => new ClearPausePointTool().ExecuteAsync(JObject.FromObject(schema), ct), timeoutMs);
         }
 
         [CliCommand("pause_point_status", "Read pause-point registry snapshots including captured variables")]
@@ -168,7 +168,7 @@ namespace Pi.UnityHarness.Editor.Capabilities.PipelineCommands
                 ["loop"] = loop,
                 ["showOverlay"] = showOverlay
             };
-            return Run(() => new ReplayInputTool().ExecuteAsync(token, CancellationToken.None), timeoutMs);
+            return Run(ct => new ReplayInputTool().ExecuteAsync(token, ct), timeoutMs);
         }
 
         [CliCommand("input_replay_stop", "Stop an in-progress input replay")]
@@ -176,7 +176,7 @@ namespace Pi.UnityHarness.Editor.Capabilities.PipelineCommands
             [CliArg("timeout_ms", "Timeout")] int timeoutMs = 15000)
         {
             var token = new JObject { ["action"] = "stop" };
-            return Run(() => new ReplayInputTool().ExecuteAsync(token, CancellationToken.None), timeoutMs);
+            return Run(ct => new ReplayInputTool().ExecuteAsync(token, ct), timeoutMs);
         }
 
         [CliCommand("input_replay_status", "Input replay status")]
@@ -184,7 +184,7 @@ namespace Pi.UnityHarness.Editor.Capabilities.PipelineCommands
             [CliArg("timeout_ms", "Timeout")] int timeoutMs = 15000)
         {
             var token = new JObject { ["action"] = "status" };
-            return Run(() => new ReplayInputTool().ExecuteAsync(token, CancellationToken.None), timeoutMs);
+            return Run(ct => new ReplayInputTool().ExecuteAsync(token, ct), timeoutMs);
         }
 
         [CliCommand("vision_annotate_raycast", "uloop clustered physics collider raycast annotations")]
@@ -195,7 +195,7 @@ namespace Pi.UnityHarness.Editor.Capabilities.PipelineCommands
             return RaycastAnnotationGlue.CollectJson(mask);
         }
 
-        private static Task<string> Run<T>(Func<Task<T>> action, int timeoutMs)
+        private static Task<string> Run<T>(Func<CancellationToken, Task<T>> action, int timeoutMs)
         {
             return PiUloopToolRunner.Run(action, timeoutMs);
         }

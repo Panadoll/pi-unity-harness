@@ -1,29 +1,40 @@
 #if PI_UNITY_PIPELINE
 using System;
+using System.Threading;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 
 namespace Pi.UnityHarness.Editor.Capabilities.PipelineCommands
 {
     internal static class PiUloopToolRunner
     {
-        public static async Task<string> Run<T>(Func<Task<T>> action, int timeoutMs)
+        public static async Task<string> Run<T>(Func<CancellationToken, Task<T>> action, int timeoutMs)
         {
-            Task<T> task = action();
-            Task completed = await Task.WhenAny(task, Task.Delay(Math.Max(1, timeoutMs)));
+            using var innerCts = new CancellationTokenSource();
+            using var delayCts = new CancellationTokenSource();
+
+            Task<T> task = action(innerCts.Token);
+            Task delayTask = Task.Delay(Math.Max(1, timeoutMs), delayCts.Token);
+
+            Task completed = await Task.WhenAny(task, delayTask);
             if (completed != task)
-                return JsonConvert.SerializeObject(new { success = false, message = "Timed out." });
-            try
             {
-                return JsonConvert.SerializeObject(await task);
+                innerCts.Cancel();
+                task.ContinueWith(t => { _ = t.Exception; }, TaskContinuationOptions.OnlyOnFaulted);
+
+                var timeoutResponse = new JObject
+                {
+                    ["Success"] = false,
+                    ["Message"] = "Timed out.",
+                    ["success"] = false,
+                    ["message"] = "Timed out."
+                };
+                return timeoutResponse.ToString(Formatting.None);
             }
-            catch (Exception ex)
-            {
-                string msg = ex is AggregateException agg && agg.InnerException != null
-                    ? agg.InnerException.Message
-                    : ex.Message;
-                return JsonConvert.SerializeObject(new { success = false, message = msg });
-            }
+
+            delayCts.Cancel();
+            return JsonConvert.SerializeObject(await task);
         }
     }
 }
