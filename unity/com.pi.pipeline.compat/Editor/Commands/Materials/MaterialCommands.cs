@@ -29,10 +29,11 @@ namespace Unity.Pipeline.Editor.Commands.Materials
     /// Material CREATION already exists in <c>create_asset</c> (CLI-221); this command set is the
     /// read/write surface on top of an existing material.
     /// </summary>
-    public static class MaterialCommands
+    static class MaterialCommands
     {
         [CliCommand("get_material_properties",
-            "Read a material's shader, render queue, enabled keywords, and all shader properties with their current values (Color as [r,g,b,a], Vector as [x,y,z,w], Texture as an object reference).")]
+            "Read a material's shader, render queue, enabled keywords, and all shader properties with their current values (Color as [r,g,b,a], Vector as [x,y,z,w], Texture as an object reference).",
+            Tags = new[] { "materials" })]
         public static MaterialPropertiesResult GetMaterialProperties(
             [CliArg("material", "Reference to the .mat asset (or a loaded material) to read (path / guid / globalId / instanceId).", Required = true)] ObjectRef material)
         {
@@ -45,7 +46,7 @@ namespace Unity.Pipeline.Editor.Commands.Materials
                 // rawRenderQueue is -1 when the material inherits from the shader and a positive
                 // integer when explicitly overridden — returning the raw value preserves the
                 // round-trip contract with set_material_properties renderQueue:-1 (inherit).
-                RenderQueue = mat.renderQueue,
+                RenderQueue = mat.rawRenderQueue,
                 EnabledKeywords = GetEnabledKeywords(mat),
             };
 
@@ -85,7 +86,8 @@ namespace Unity.Pipeline.Editor.Commands.Materials
         }
 
         [CliCommand("set_material_properties",
-            "Set shader properties on a material (Float/Range/Int=number; Color=[r,g,b,a] or \"#RRGGBBAA\" hex; Vector=[x,y,z,w]; Texture=an object reference or null to clear), optionally reassign the shader, set the render queue, and toggle keywords. Unknown names / type mismatches are reported in unknown[].")]
+            "Set shader properties on a material (Float/Range/Int=number; Color=[r,g,b,a] or \"#RRGGBBAA\" hex; Vector=[x,y,z,w]; Texture=an object reference or null to clear), optionally reassign the shader, set the render queue, and toggle keywords. Unknown names / type mismatches are reported in unknown[].",
+            Tags = new[] { "materials" })]
         public static SetMaterialPropertiesResult SetMaterialProperties(
             [CliArg("material", "Reference to the .mat asset (or a loaded material) to edit (path / guid / globalId / instanceId).", Required = true)] ObjectRef material,
             [CliArg("shader", "Reassign the material's shader by name (e.g. \"Standard\", \"Universal Render Pipeline/Lit\", or a Shader Graph shader name). Applied before properties so new property names resolve against the new shader.")] string shader = null,
@@ -387,7 +389,7 @@ namespace Unity.Pipeline.Editor.Commands.Materials
     /// stable <c>shader_not_found</c> code (also prefixed onto the message, since the server propagates
     /// only the exception message over the wire) so a client can distinguish it from other failures.
     /// </summary>
-    public sealed class ShaderNotFoundException : Exception
+    sealed class ShaderNotFoundException : Exception
     {
         public const string CodeValue = "shader_not_found";
 

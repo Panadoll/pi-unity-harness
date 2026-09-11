@@ -22,12 +22,12 @@ namespace Unity.Pipeline.Runtime.Commands
     /// Reads only the in-memory buffer (no Unity main-thread APIs), so it is marked
     /// <c>MainThreadRequired = false</c> for fast polling.
     /// </summary>
-    public static class ConsoleCommand
+    static class ConsoleCommand
     {
         /// <summary>Default number of entries returned when <c>tail</c> is not supplied.</summary>
         public const int DefaultTail = 100;
 
-        [CliCommand("console", "Get captured Unity console output (Editor or Player; supports tail, level filtering, and follow via a cursor)", MainThreadRequired = false)]
+        [CliCommand("console", "Get captured Unity console output (Editor or Player; supports tail, level filtering, and follow via a cursor)", MainThreadRequired = false, Tags = new[] { "observability/console" })]
         public static ConsoleLogResponse GetConsole(
             [CliArg("tail", "Maximum number of most-recent entries to return")] int tail = DefaultTail,
             [CliArg("level", "Minimum severity to include: log | warn | error")] string level = ConsoleLogBuffer.LevelLog,

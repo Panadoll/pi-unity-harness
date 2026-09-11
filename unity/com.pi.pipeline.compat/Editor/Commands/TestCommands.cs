@@ -5,24 +5,21 @@ using System.Threading.Tasks;
 using Unity.Pipeline.Commands;
 using Unity.Pipeline.Editor.Testing;
 using Unity.Pipeline.Models;
-using UnityEditor;
-using UnityEditor.SceneManagement;
 using UnityEditor.TestTools.TestRunner.Api;
 using UnityEngine;
-using UnityEngine.SceneManagement;
 
 namespace Unity.Pipeline.Editor.Commands
 {
     /// <summary>
     /// Commands for running Unity tests programmatically
     /// </summary>
-    public static class TestCommands
+    static class TestCommands
     {
         /// <summary>
         /// Execute Unity tests with filtering options.
         /// Synchronous by default (blocks until completion), async mode available with --async-tests flag.
         /// </summary>
-        [CliCommand("run_tests", "Execute Unity tests with filtering options", MainThreadRequired = true)]
+        [CliCommand("run_tests", "Execute Unity tests with filtering options", MainThreadRequired = true, Tags = new[] { "tests" })]
         public static async Task<TestExecutionResponse> RunTests(
             [CliArg("mode", "Test mode: all, editor, playmode (default: all)")] string mode = "all",
             [CliArg("filter", "Test name filter pattern (case-insensitive partial match)")] string filter = "",
@@ -30,26 +27,15 @@ namespace Unity.Pipeline.Editor.Commands
             [CliArg("include_explicit", "Include tests marked with [Explicit] attribute")] bool includeExplicit = false,
             [CliArg("async_tests", "Run asynchronously - return immediately, poll /test-status for results")] bool asyncTests = false,
             [CliArg("timeout", "Test execution timeout in seconds (default: 300)")] int timeout = 300,
-            [CliArg("dirty_action", "Dirty scene policy before running tests: save / discard / abort (default abort)")] string dirtyAction = "abort")
+            [CliArg("dirty_action", "Action for dirty scenes: 'prompt', 'save', 'discard', 'fail'", Required = false)] string dirty_action = "fail")
         {
-            // 启动测试前应用 dirtyAction 脏场景策略（与 harness 的 DirtyScenePolicy 语义一致；
-            // compat 为独立 fork，无法引用 harness 程序集，此处实现最小等价逻辑）。
-            string policyError = ApplyDirtyScenePolicy(dirtyAction);
-            if (policyError != null)
-            {
-                return new TestExecutionResponse
-                {
-                    Success = false,
-                    Command = "run_tests",
-                    Error = policyError,
-                    ExecutedAt = DateTime.UtcNow
-                };
-            }
-
             // Return the full structured response (including failures and the Error field on a
             // failed run) rather than throwing: the server now awaits this Task and serializes the
             // unwrapped response, so the client receives complete, structured reporting. Throwing
             // would only surface an opaque message and discard the per-test results.
+            ApplyDirtyScenePolicy(dirty_action);
+            PipelineTestRunner.TryLoadEditorTestAssemblies();
+
             return await PipelineTestRunner.ExecuteTestsAsync(
                 mode,
                 filter,
@@ -63,7 +49,7 @@ namespace Unity.Pipeline.Editor.Commands
         /// List all available tests without executing any of them.
         /// Enumerates the test tree via TestRunnerApi.RetrieveTestList for the requested mode(s).
         /// </summary>
-        [CliCommand("list_tests", "List all available tests (EditMode and/or PlayMode) without running them", MainThreadRequired = true)]
+        [CliCommand("list_tests", "List all available tests (EditMode and/or PlayMode) without running them", MainThreadRequired = true, Tags = new[] { "tests" })]
         public static async Task<TestListResponse> ListTests(
             [CliArg("mode", "Test mode: all, editor, playmode (default: all)")] string mode = "all")
         {
@@ -114,7 +100,7 @@ namespace Unity.Pipeline.Editor.Commands
         /// <summary>
         /// Get current test status for async test execution
         /// </summary>
-        [CliCommand("test_status", "Get status of running async test execution", MainThreadRequired = false)]
+        [CliCommand("test_status", "Get status of running async test execution", MainThreadRequired = false, Tags = new[] { "tests" })]
         public static string GetTestStatus()
         {
             var status = PipelineTestRunner.GetTestStatus();
@@ -124,56 +110,10 @@ namespace Unity.Pipeline.Editor.Commands
         /// <summary>
         /// Cancel running test execution
         /// </summary>
-        [CliCommand("cancel_tests", "Cancel running test execution", MainThreadRequired = true)]
+        [CliCommand("cancel_tests", "Cancel running test execution", MainThreadRequired = true, Tags = new[] { "tests" })]
         public static object CancelTests()
         {
             return PipelineTestRunner.CancelTests();
-        }
-
-        /// <summary>
-        /// 解析 dirtyAction 参数并对当前所有已打开场景应用策略（run_tests 专用）。
-        /// 语义与 harness DirtyScenePolicy 一致：abort=有脏场景即报错（默认）、save=先保存
-        /// （untitled 场景无法保存则报错）、discard=静默丢弃后继续。
-        /// 返回 null 表示可继续；返回非 null 为错误信息。
-        /// </summary>
-        private static string ApplyDirtyScenePolicy(string dirtyAction)
-        {
-            if (string.IsNullOrEmpty(dirtyAction))
-                dirtyAction = "abort";
-            dirtyAction = dirtyAction.Trim().ToLowerInvariant();
-            if (dirtyAction != "abort" && dirtyAction != "save" && dirtyAction != "discard")
-                return $"dirtyAction \"{dirtyAction}\" 无效（run_tests）。可选值：save / discard / abort（默认 abort）。";
-
-            var openScenes = new List<Scene>();
-            for (int i = 0; i < SceneManager.sceneCount; i++)
-                openScenes.Add(SceneManager.GetSceneAt(i));
-            var dirtyScenes = openScenes.Where(s => s.IsValid() && s.isDirty).ToList();
-            if (dirtyScenes.Count == 0)
-                return null;
-
-            if (dirtyAction == "discard")
-                return null; // 脚本化操作会静默丢弃未保存修改，不弹模态对话框
-
-            if (dirtyAction == "abort")
-            {
-                var names = string.Join(", ", dirtyScenes.Select(s => "场景 '" + s.name + "'"));
-                return $"{names} 有未保存修改，abort 策略拒绝执行 run_tests。请先保存场景，或指定 dirtyAction=save / discard。";
-            }
-
-            // save：先保存脏场景再继续；untitled 场景无法保存，按 abort 处理并报错
-            var untitled = dirtyScenes.Where(s => string.IsNullOrEmpty(s.path)).ToList();
-            if (untitled.Count > 0)
-            {
-                var names = string.Join(", ", untitled.Select(s => "场景 '" + s.name + "'（untitled）"));
-                return $"无法以 save 策略处理 run_tests：{names} 从未保存（无路径）。请先保存或改用 discard。";
-            }
-
-            foreach (var scene in dirtyScenes)
-            {
-                if (!EditorSceneManager.SaveScene(scene))
-                    return $"保存场景失败（run_tests）：{scene.name} ({scene.path})。";
-            }
-            return null;
         }
 
         /// <summary>
@@ -210,7 +150,6 @@ namespace Unity.Pipeline.Editor.Commands
         {
             var api = ScriptableObject.CreateInstance<TestRunnerApi>();
             var tcs = new TaskCompletionSource<List<TestListItem>>();
-            PipelineTestRunner.TryLoadEditorTestAssemblies();
 
             api.RetrieveTestList(testMode, root =>
             {
@@ -262,7 +201,7 @@ namespace Unity.Pipeline.Editor.Commands
     /// Response for the list_tests command: the available tests, without execution results.
     /// </summary>
     [Serializable]
-    public class TestListResponse : CommandExecutionResponse
+    class TestListResponse : CommandExecutionResponse
     {
         public string Mode { get; set; }       // EditMode, PlayMode, or All
         public int Count { get; set; }
@@ -273,7 +212,7 @@ namespace Unity.Pipeline.Editor.Commands
     /// A single available test (no run state / outcome — this is a listing, not a result).
     /// </summary>
     [Serializable]
-    public class TestListItem
+    class TestListItem
     {
         public string FullName { get; set; }
         public string Mode { get; set; }
@@ -281,4 +220,22 @@ namespace Unity.Pipeline.Editor.Commands
         public List<string> Categories { get; set; } = new List<string>();
         public bool Explicit { get; set; }
     }
+        private static void ApplyDirtyScenePolicy(string policy)
+        {
+            if (string.IsNullOrEmpty(policy) || policy.Equals("fail", StringComparison.OrdinalIgnoreCase))
+                return;
+
+            if (policy.Equals("save", StringComparison.OrdinalIgnoreCase))
+            {
+                UnityEditor.SceneManagement.EditorSceneManager.SaveOpenScenes();
+                return;
+            }
+
+            if (policy.Equals("discard", StringComparison.OrdinalIgnoreCase))
+            {
+                var setup = UnityEditor.SceneManagement.EditorSceneManager.GetSceneManagerSetup();
+                UnityEditor.SceneManagement.EditorSceneManager.RestoreSceneManagerSetup(setup);
+            }
+        }
+
 }

@@ -9,14 +9,14 @@ namespace Unity.Pipeline.Editor.Commands.ProjectSettings
     /// Get/set the project Time settings (CLI-202): fixed timestep, maximum allowed timestep, and the
     /// time scale.
     /// </summary>
-    public static class TimeSettingsCommands
+    static class TimeSettingsCommands
     {
         const string Group = "time";
 
-        [CliCommand("get_time_settings", "Read Time settings (fixedDeltaTime, maximumDeltaTime, timeScale).", MainThreadRequired = true)]
+        [CliCommand("get_time_settings", "Read Time settings (fixedDeltaTime, maximumDeltaTime, timeScale).", MainThreadRequired = true, Tags = new[] { "settings/time" })]
         public static ProjectSettingsResponse Get() => ProjectSettingsCommand.Get(Group, Read);
 
-        [CliCommand("set_time_settings", "Change Time settings. Requires confirm=true; use dry_run to preview. Not undoable via Ctrl+Z.", MainThreadRequired = true)]
+        [CliCommand("set_time_settings", "Change Time settings. Requires confirm=true; use dry_run to preview. Not undoable via Ctrl+Z.", MainThreadRequired = true, Tags = new[] { "settings/time" })]
         public static ProjectSettingsResponse Set(
             [CliArg("settings", "Fields to change; omitted fields are left unchanged.")] TimeSettingsInput settings = null,
             [CliArg("confirm", "Apply the change. Without it the call is refused.")] bool confirm = false,
@@ -66,7 +66,7 @@ namespace Unity.Pipeline.Editor.Commands.ProjectSettings
     }
 
     /// <summary>Time settings to change. Null/omitted fields are left unchanged.</summary>
-    public class TimeSettingsInput : IStructuredCommandInput
+    class TimeSettingsInput : IStructuredCommandInput
     {
         [CliArg("fixedDeltaTime", "Fixed timestep in seconds (e.g. 0.02).")]
         public float? FixedDeltaTime { get; set; }

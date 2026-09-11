@@ -4,6 +4,9 @@ using Newtonsoft.Json;
 using Unity.Pipeline.Commands;
 using UnityEditor;
 using UnityEngine;
+#if UNITY_6000_5_OR_NEWER
+using Unity.Scripting.LifecycleManagement;
+#endif
 
 namespace Unity.Pipeline.Editor.Commands.Baking
 {
@@ -18,7 +21,10 @@ namespace Unity.Pipeline.Editor.Commands.Baking
     /// static fields and reconciled against a Temp/ status file across domain reloads.
     /// </summary>
     [InitializeOnLoad]
-    public static class OcclusionBakeCommands
+#if UNITY_6000_5_OR_NEWER
+    [NoAutoStaticsCleanup]
+#endif
+    static class OcclusionBakeCommands
     {
         const string StatusFile = "Temp/pipeline_occlusion_bake_status.json";
 
@@ -40,7 +46,7 @@ namespace Unity.Pipeline.Editor.Commands.Baking
 
         #region bake_occlusion_culling
 
-        [CliCommand("bake_occlusion_culling", "Trigger an async occlusion-culling bake of the open scene(s) via StaticOcclusionCulling.GenerateInBackground(). Returns immediately; poll occlusion_bake_status until completed.")]
+        [CliCommand("bake_occlusion_culling", "Trigger an async occlusion-culling bake of the open scene(s) via StaticOcclusionCulling.GenerateInBackground(). Returns immediately; poll occlusion_bake_status until completed.", Tags = new[] { "baking/occlusion" })]
         public static object BakeOcclusionCulling(
             [CliArg("smallest_occluder", "Smallest object that will occlude others (meters). Defaults to Unity's current value.")] float smallestOccluder = Unset,
             [CliArg("smallest_hole", "Smallest gap geometry can have that the view can see through (meters). Defaults to Unity's current value.")] float smallestHole = Unset,
@@ -106,7 +112,7 @@ namespace Unity.Pipeline.Editor.Commands.Baking
             return new { status = "baking", bakeId };
         }
 
-        [CliCommand("occlusion_bake_status", "Get the status of the last occlusion bake: idle | baking | completed.", MainThreadRequired = false)]
+        [CliCommand("occlusion_bake_status", "Get the status of the last occlusion bake: idle | baking | completed.", MainThreadRequired = false, Tags = new[] { "baking/occlusion" })]
         public static string OcclusionBakeStatus()
         {
             if (File.Exists(StatusFile))
@@ -114,7 +120,7 @@ namespace Unity.Pipeline.Editor.Commands.Baking
             return "{\"status\":\"idle\"}";
         }
 
-        [CliCommand("cancel_occlusion_bake", "Cancel an in-progress occlusion bake (StaticOcclusionCulling.Cancel()).")]
+        [CliCommand("cancel_occlusion_bake", "Cancel an in-progress occlusion bake (StaticOcclusionCulling.Cancel()).", Tags = new[] { "baking/occlusion" })]
         public static object CancelOcclusionBake()
         {
             var wasRunning = StaticOcclusionCulling.isRunning;
@@ -140,7 +146,7 @@ namespace Unity.Pipeline.Editor.Commands.Baking
             return new { cancelled = wasRunning };
         }
 
-        [CliCommand("clear_occlusion_culling", "Clear baked occlusion-culling data for the open scene(s). Destructive: requires confirm=true.")]
+        [CliCommand("clear_occlusion_culling", "Clear baked occlusion-culling data for the open scene(s). Destructive: requires confirm=true.", Tags = new[] { "baking/occlusion" })]
         public static object ClearOcclusionCulling(
             [CliArg("confirm", "Must be true to actually clear (destructive, not undoable via Unity's Undo).")] bool confirm = false,
             [CliArg("dry_run", "If true, report what would be cleared without clearing.")] bool dryRun = false)
@@ -234,7 +240,7 @@ namespace Unity.Pipeline.Editor.Commands.Baking
 
     /// <summary>Status/result payload for <c>bake_occlusion_culling</c> / <c>occlusion_bake_status</c>.</summary>
     [Serializable]
-    public class OcclusionBakeStatus
+    class OcclusionBakeStatus
     {
         [JsonProperty("status")]
         public string Status { get; set; }
@@ -257,7 +263,7 @@ namespace Unity.Pipeline.Editor.Commands.Baking
 
     /// <summary>Post-bake occlusion statistics (umbra data size in bytes).</summary>
     [Serializable]
-    public class OcclusionBakeStats
+    class OcclusionBakeStats
     {
         [JsonProperty("umbraDataSizeBytes")]
         public long UmbraDataSizeBytes { get; set; }

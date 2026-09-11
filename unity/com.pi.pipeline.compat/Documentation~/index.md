@@ -1,8 +1,7 @@
 # Pipeline Documentation
 
 `com.unity.pipeline` lets a client — CLI, CI, or an agent — drive a running Unity Editor (or a
-development Player) over a local HTTP API by executing registered commands. This is the documentation
-index; the [README](../README.md) has the full narrative overview, install steps, and CLI walkthrough.
+development Player) over a local HTTP API by executing registered commands.
 
 ## Guides
 
@@ -12,9 +11,10 @@ index; the [README](../README.md) has the full narrative overview, install steps
 | [Creating authoring commands](authoring-commands.md) | Building content-authoring commands: the authoring root sandbox, `ObjectRef` in / `AuthoringResult` out, and undo grouping — with a worked example for a new content type. |
 | [Safety & mutations](safety-and-mutations.md) | Conventions shared by state-changing commands: the `confirm`/`dry_run` gate, Undo grouping via `AuthoringUndoScope`, and the path sandbox. |
 | [Connectivity](connectivity.md) | How servers bind localhost, the port ranges, the port/descriptor file, and the bearer-token auth workflow. |
-| [Runtime connection & setup](runtime-setup.md) | Running the server in a development Player via `RuntimePipelineManager` and the dev-build gating. |
+| [Runtime connection & setup](runtime-setup.md) | Running the server in a development Player via Project Settings → Pipeline → Runtime and the dev-build gating. |
 | [Hot reload](hot-reload.md) | The two hot-reload flavors (in-place and override) with examples, plus the Roslyn / in-memory-assembly architecture. |
 | [Tests architecture](testing.md) | Writing command tests via `PipelineClient` (over HTTP) and via direct command calls. |
+| [Analytics](analytics.md) | The three usage events the Editor server reports, what each field means, and what is deliberately not collected. |
 
 ## Command reference
 
@@ -24,7 +24,7 @@ index; the [README](../README.md) has the full narrative overview, install steps
 | [Scene commands](commands/scenes.md) | Create / open / save scenes, build-settings list, hierarchy, active scene. |
 | [GameObject & component commands](commands/gameobjects-and-components.md) | Create / find / transform / parent / tag / layer GameObjects; add / remove / read / set components. |
 | [Prefab commands](commands/prefabs.md) | Create, instantiate, variant, apply / revert overrides, unpack, edit prefab contents. |
-| [Script commands](commands/scripts.md) | Create and attach scripts; get / set serialized fields. |
+| [Script commands](commands/scripts.md) | Create and attach scripts; get / set serialized fields; compile and run project entry points in memory (`run_script`). |
 | [Animation commands](commands/animation.md) | Create AnimationClips (+ curves), AnimatorControllers (parameters / layers / states / transitions), and Timeline assets. |
 | [Material & shader commands](commands/materials.md) | Read / set material shader properties and keywords; list and introspect shaders. |
 | [Baking commands](commands/baking.md) | Bake / clear lighting, NavMesh, and occlusion culling (async — poll the matching `*_bake_status`). |
@@ -110,6 +110,7 @@ Every available command, grouped by area. Each name links to its full reference 
 | [`attach_script`](commands/scripts.md#attach_script) | Attach a MonoBehaviour by type / asset. |
 | [`set_serialized_field`](commands/scripts.md#set_serialized_field) | Set a serialized field on a component / asset. |
 | [`get_serialized_fields`](commands/scripts.md#get_serialized_fields) | Read serialized fields. |
+| [`run_script`](commands/scripts.md#run_script) | Compile a project `.cs` file in memory (no domain reload) and run a named static entry point — the builder-pattern path for bulk construction. |
 
 ### Animation commands
 
@@ -235,7 +236,7 @@ Every available command, grouped by area. Each name links to its full reference 
 |---------|-------------|
 | [`editor_play`](commands/editor-lifecycle-and-observability.md#editor_play) | Enter play mode. |
 | [`editor_stop`](commands/editor-lifecycle-and-observability.md#editor_stop) | Exit play mode. |
-| [`editor_pause`](commands/editor-lifecycle-and-observability.md#editor_pause) | Pause play mode. |
+| [`editor_pause`](commands/editor-lifecycle-and-observability.md#editor_pause) | Toggle play mode pause. |
 | [`editor_status`](commands/editor-lifecycle-and-observability.md#editor_status) | Detailed Editor status. |
 | [`editor_focus`](commands/editor-lifecycle-and-observability.md#editor_focus) | Bring the Editor to the foreground. |
 | [`menu`](commands/editor-lifecycle-and-observability.md#menu) | Execute (or list) Editor menu items. |
@@ -244,6 +245,9 @@ Every available command, grouped by area. Each name links to its full reference 
 | [`get_console_logs`](commands/editor-lifecycle-and-observability.md#get_console_logs) | Read captured Editor console logs. |
 | [`clear_console`](commands/editor-lifecycle-and-observability.md#clear_console) | Clear the console / log buffer. |
 | [`get_performance_stats`](commands/editor-lifecycle-and-observability.md#get_performance_stats) | Read render / memory / frame stats. |
+| [`audit`](commands/editor-lifecycle-and-observability.md#audit) | Run a Project Auditor scan, producing a CSV of issues. |
+| [`audit_status`](commands/editor-lifecycle-and-observability.md#audit_status) | Poll the audit scan; returns the CSV path + issue count. |
+| [`report_evals`](commands/editor-lifecycle-and-observability.md#report_evals) | Ranked report of local eval-usage telemetry + command-coverage suggestions. |
 | [`get_authoring_root`](commands/editor-lifecycle-and-observability.md#get_authoring_root) | Get the authoring-root folder. |
 | [`set_authoring_root`](commands/editor-lifecycle-and-observability.md#set_authoring_root) | Set the authoring-root folder. |
 
@@ -262,6 +266,7 @@ Every available command, grouped by area. Each name links to its full reference 
 | [`eval`](commands/runtime.md#eval) | Evaluate C# via Roslyn. |
 | [`eval_file`](commands/runtime.md#eval_file) | Evaluate C# from a .cs file. |
 | [`reload_file`](commands/runtime.md#reload_file) | Apply in-place [HotReload] edits from a file. |
+| [`reload_file_editor_interpreter`](commands/runtime.md#reload_file_editor_interpreter) | Same, on the IlInterpreter backend (IL2CPP-safe). |
 | [`reload_file_override`](commands/runtime.md#reload_file_override) | Compile & apply override hot reload. |
 | [`hotreload_status`](commands/runtime.md#hotreload_status) | Hot reload registry status. |
 | [`cleanup_hotreload`](commands/runtime.md#cleanup_hotreload) | Clear old hot reload DLLs / registry. |

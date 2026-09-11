@@ -4,6 +4,9 @@ using Newtonsoft.Json;
 using Unity.Pipeline.Commands;
 using UnityEditor;
 using UnityEngine;
+#if UNITY_6000_5_OR_NEWER
+using Unity.Scripting.LifecycleManagement;
+#endif
 
 namespace Unity.Pipeline.Editor.Commands.Build
 {
@@ -21,7 +24,10 @@ namespace Unity.Pipeline.Editor.Commands.Build
     /// so it keeps answering while the switch holds the main thread.
     /// </summary>
     [InitializeOnLoad]
-    public static class SwitchBuildTargetCommand
+#if UNITY_6000_5_OR_NEWER
+    [NoAutoStaticsCleanup]
+#endif
+    static class SwitchBuildTargetCommand
     {
         const string StatusFile = "Temp/pipeline_switch_target_status.json";
 
@@ -40,7 +46,8 @@ namespace Unity.Pipeline.Editor.Commands.Build
         [CliCommand("switch_build_target",
             "Switch the active build target (destructive, long-running: triggers a full reimport + domain " +
             "reload). Requires confirm=true. Returns immediately; poll switch_build_target_status.",
-            MainThreadRequired = false)]
+            MainThreadRequired = false,
+            Tags = new[] { "build/targets" })]
         public static object SwitchBuildTarget(
             [CliArg("target", "BuildTarget name to switch to (must be installed; see list_build_targets).", Required = true)] string target = "",
             [CliArg("confirm", "Apply the switch. Without it the call is refused.")] bool confirm = false)
@@ -98,7 +105,8 @@ namespace Unity.Pipeline.Editor.Commands.Build
 
         [CliCommand("switch_build_target_status",
             "Status of the last target switch: idle | switching | completed (with success + activeBuildTarget).",
-            MainThreadRequired = false)]
+            MainThreadRequired = false,
+            Tags = new[] { "build/targets" })]
         public static string SwitchBuildTargetStatus()
         {
             if (File.Exists(StatusFile))

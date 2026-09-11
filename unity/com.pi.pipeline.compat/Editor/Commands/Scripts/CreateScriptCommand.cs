@@ -25,7 +25,7 @@ namespace Unity.Pipeline.Editor.Commands.Scripts
     /// identity. It does not trigger a recompile itself — the agent owns that step so it can batch
     /// multiple authoring writes before paying the domain-reload cost once.
     /// </summary>
-    public static class CreateScriptCommand
+    static class CreateScriptCommand
     {
         /// <summary>
         /// Default class body (the Start/Update stubs) written inside the generated class, matching
@@ -44,7 +44,8 @@ namespace Unity.Pipeline.Editor.Commands.Scripts
 
         [CliCommand("create_script",
             "Create a new C# script (default base class MonoBehaviour) from a template under the authoring root. " +
-            "NOTE: the type does not exist until a recompile completes — to attach it, call recompile, poll recompile_status, then attach_script.")]
+            "NOTE: the type does not exist until a recompile completes — to attach it, call recompile, poll recompile_status, then attach_script.",
+            Tags = new[] { "scripts" })]
         public static AuthoringResult CreateScript(
             [CliArg("name", "Class/file name without extension, e.g. PlayerController. Must be a valid C# identifier.", Required = true)] string name,
             [CliArg("path", "Folder (relative to the authoring root; the Assets/ prefix is optional) to write the .cs into. Defaults to the authoring root.")] string path = null,

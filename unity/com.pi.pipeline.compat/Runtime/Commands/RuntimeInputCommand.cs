@@ -24,14 +24,15 @@ namespace Unity.Pipeline.Runtime.Commands
     /// "unavailable" result rather than silently no-op'ing.</para>
     ///
     /// <para><b>Safety:</b> these are write/destructive commands. The package has no safety-policy gate yet
-    /// (the safety policy is not implemented), so they follow the existing unguarded write-command model (cf.
-    /// <c>set_target_framerate</c>). TODO: route input commands through the safety policy when it
+    /// (CAT-2509 is not implemented), so they follow the existing unguarded write-command model (cf.
+    /// <c>set_target_framerate</c>). TODO(CAT-2509): route input commands through the safety policy when it
     /// lands.</para>
     /// </summary>
-    public static class RuntimeInputCommand
+    static class RuntimeInputCommand
     {
         [CliCommand("simulate_key", "Simulate a keyboard key event (Input System). Drives the running app.",
-            MainThreadRequired = true, RuntimeOnly = true)]
+            MainThreadRequired = true, RuntimeOnly = true,
+            Tags = new[] { "runtime/input" })]
         public static InputSimulationResponse SimulateKey(
             [CliArg("key", "Input System Key name, e.g. Space, W, Enter, LeftArrow", Required = true)] string key,
             [CliArg("action", "down | up | press (down+up). Default: press")] string action = "press")
@@ -71,7 +72,8 @@ namespace Unity.Pipeline.Runtime.Commands
         }
 
         [CliCommand("simulate_pointer", "Simulate a mouse/pointer event at screen coordinates (Input System).",
-            MainThreadRequired = true, RuntimeOnly = true)]
+            MainThreadRequired = true, RuntimeOnly = true,
+            Tags = new[] { "runtime/input" })]
         public static InputSimulationResponse SimulatePointer(
             [CliArg("x", "Screen X in pixels (origin bottom-left)", Required = true)] float x,
             [CliArg("y", "Screen Y in pixels (origin bottom-left)", Required = true)] float y,
@@ -155,7 +157,7 @@ namespace Unity.Pipeline.Runtime.Commands
     /// human-readable detail (or an error / unavailable reason).
     /// </summary>
     [Serializable]
-    public class InputSimulationResponse
+    class InputSimulationResponse
     {
         public bool Success { get; set; }
         public string Command { get; set; }

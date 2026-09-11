@@ -6,6 +6,9 @@ using Unity.Pipeline.Commands;
 using UnityEditor;
 using UnityEditor.Build;
 using UnityEngine;
+#if UNITY_6000_5_OR_NEWER
+using Unity.Scripting.LifecycleManagement;
+#endif
 
 namespace Unity.Pipeline.Editor.Commands.Build
 {
@@ -15,11 +18,15 @@ namespace Unity.Pipeline.Editor.Commands.Build
     /// target switching are intentionally elsewhere (<c>add_scene_to_build</c>/<c>remove_scene_from_build</c>
     /// from CLI-189, and <c>switch_build_target</c>).
     /// </summary>
-    public static class BuildConfigCommands
+#if UNITY_6000_5_OR_NEWER
+    [NoAutoStaticsCleanup]
+#endif
+    static class BuildConfigCommands
     {
         [CliCommand("list_build_targets",
             "List the known BuildTarget values with their group and whether build support is installed.",
-            MainThreadRequired = true)]
+            MainThreadRequired = true,
+            Tags = new[] { "build/targets" })]
         public static object ListBuildTargets()
         {
             var targets = new List<BuildTargetInfo>();
@@ -61,7 +68,8 @@ namespace Unity.Pipeline.Editor.Commands.Build
 
         [CliCommand("get_build_settings",
             "Read the current build configuration from EditorUserBuildSettings / EditorBuildSettings.",
-            MainThreadRequired = true)]
+            MainThreadRequired = true,
+            Tags = new[] { "build/settings" })]
         public static object GetBuildSettings()
         {
             var target = EditorUserBuildSettings.activeBuildTarget;
@@ -89,7 +97,8 @@ namespace Unity.Pipeline.Editor.Commands.Build
         [CliCommand("set_build_settings",
             "Set mutable EditorUserBuildSettings fields. Does NOT manage scenes (use add_scene_to_build / " +
             "remove_scene_from_build) or switch target (use switch_build_target). Use dry_run to preview.",
-            MainThreadRequired = true)]
+            MainThreadRequired = true,
+            Tags = new[] { "build/settings" })]
         public static object SetBuildSettings(
             [CliArg("settings", "Fields to change; omitted fields are left unchanged.")] SetBuildSettingsInput settings = null,
             [CliArg("confirm", "Apply the changes. Without it the call is refused.")] bool confirm = false,
@@ -143,7 +152,8 @@ namespace Unity.Pipeline.Editor.Commands.Build
 
         [CliCommand("list_build_profiles",
             "List Build Profile assets in the project (Unity 6 only). Returns feature_unavailable on earlier versions.",
-            MainThreadRequired = true)]
+            MainThreadRequired = true,
+            Tags = new[] { "build/settings" })]
         public static object ListBuildProfiles()
         {
             if (!BuildProfiles.IsSupported)

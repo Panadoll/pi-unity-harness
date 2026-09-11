@@ -7,9 +7,9 @@ namespace Unity.Pipeline.Runtime.Commands
     /// Runtime logging commands for Unity Player builds.
     /// Provides console logging capabilities from CLI.
     /// </summary>
-    public static class RuntimeLogCommand
+    static class RuntimeLogCommand
     {
-        [CliCommand("log", "Write a message to Unity console", MainThreadRequired = true, RuntimeOnly = true)]
+        [CliCommand("log", "Write a message to Unity console", MainThreadRequired = true, RuntimeOnly = true, Tags = new[] { "observability/console" })]
         public static string LogMessage(
             [CliArg("message", "Message to log to console", Required = true)] string message,
             [CliArg("level", "Log level: info, warning, error")] string level = "info")

@@ -26,12 +26,13 @@ namespace Unity.Pipeline.Editor.Commands.Scripts
     /// The component add is wrapped in an <see cref="AuthoringUndoScope"/> and registered with the
     /// Undo system so it reverts as one step and the owning object/prefab is marked dirty.
     /// </summary>
-    public static class AttachScriptCommand
+    static class AttachScriptCommand
     {
         [CliCommand("attach_script",
             "Add a MonoBehaviour to a GameObject by its (compiled) type name OR by its script asset path. " +
             "Provide exactly one of 'type' or 'script'. " +
-            "If the type isn't compiled yet, returns a recoverable error: recompile, poll recompile_status, then retry.")]
+            "If the type isn't compiled yet, returns a recoverable error: recompile, poll recompile_status, then retry.",
+            Tags = new[] { "scripts" })]
         public static AuthoringResult AttachScript(
             [CliArg("target", "Reference to the GameObject to add the component to (globalId/path/guid/instanceId/hierarchyPath).", Required = true)] ObjectRef target,
             [CliArg("type", "Component type name to add, e.g. PlayerController or Game.Player.PlayerController. Must already be compiled. Mutually exclusive with 'script'.")] string type = null,

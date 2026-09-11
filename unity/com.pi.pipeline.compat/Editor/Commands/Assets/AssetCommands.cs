@@ -26,9 +26,9 @@ namespace Unity.Pipeline.Editor.Commands.Assets
     /// not wrapped in an undo scope, and destructive/overwriting operations instead require an explicit
     /// <c>confirm</c> argument (and support <c>dry_run</c>) so an agent cannot silently lose data.
     /// </summary>
-    public static class AssetCommands
+    static class AssetCommands
     {
-        [CliCommand("create_asset", "Create a new ScriptableObject (or other UnityEngine.Object) asset of the given type at a path under the authoring root.")]
+        [CliCommand("create_asset", "Create a new ScriptableObject (or other UnityEngine.Object) asset of the given type at a path under the authoring root.", Tags = new[] { "assets" })]
         public static AuthoringResult CreateAsset(
             [CliArg("path", "Asset path relative to the authoring root, including extension (e.g. Data/Config.asset or Materials/Wall.mat). The Assets/ prefix is optional.", Required = true)] string path,
             [CliArg("type", "Fully-qualified or short type name to instantiate (e.g. UnityEngine.Material, MyGame.GameConfig). Must derive from UnityEngine.Object and be creatable.", Required = true)] string type,
@@ -49,11 +49,11 @@ namespace Unity.Pipeline.Editor.Commands.Assets
             if (!typeof(Object).IsAssignableFrom(resolvedType))
                 throw new ArgumentException($"Type '{resolvedType.FullName}' does not derive from UnityEngine.Object.");
 
-            // CLI-222: Unity 6 renamed PhysicMaterial -> PhysicMaterial, but the on-disk asset
+            // CLI-222: Unity 6 renamed PhysicMaterial -> PhysicsMaterial, but the on-disk asset
             // extension is still ".physicMaterial". AssetDatabase.CreateAsset rejects a
             // ".physicsMaterial" file ("should not be used to create a file of type 'physicsMaterial'"),
             // so accept either spelling from the agent and normalize to the extension Unity writes.
-            if (typeof(PhysicMaterial).IsAssignableFrom(resolvedType) &&
+            if (typeof(PhysicsMaterial).IsAssignableFrom(resolvedType) &&
                 normalized.EndsWith(".physicsMaterial", StringComparison.OrdinalIgnoreCase))
             {
                 normalized = normalized.Substring(0, normalized.Length - ".physicsMaterial".Length) + ".physicMaterial";
@@ -87,11 +87,11 @@ namespace Unity.Pipeline.Editor.Commands.Assets
                 // every other type.
                 asset = new Material(materialShader);
             }
-            else if (typeof(PhysicMaterial).IsAssignableFrom(resolvedType))
+            else if (typeof(PhysicsMaterial).IsAssignableFrom(resolvedType))
             {
-                // CLI-222: PhysicMaterial has a public parameterless ctor, but create it explicitly so
+                // CLI-222: PhysicsMaterial has a public parameterless ctor, but create it explicitly so
                 // we can stamp the documented sensible defaults rather than relying on engine defaults.
-                asset = new PhysicMaterial
+                asset = new PhysicsMaterial
                 {
                     dynamicFriction = 0.6f,
                     staticFriction = 0.6f,
@@ -132,7 +132,7 @@ namespace Unity.Pipeline.Editor.Commands.Assets
             return result;
         }
 
-        [CliCommand("import_asset", "Import an external file (e.g. a texture, model, audio clip) into the project by copying it to a path under the authoring root, then importing it.")]
+        [CliCommand("import_asset", "Import an external file (e.g. a texture, model, audio clip) into the project by copying it to a path under the authoring root, then importing it.", Tags = new[] { "assets/import" })]
         public static AuthoringResult ImportAsset(
             [CliArg("source", "Absolute filesystem path to the external file to import.", Required = true)] string source,
             [CliArg("path", "Destination asset path relative to the authoring root, including extension. The Assets/ prefix is optional.", Required = true)] string path,
@@ -165,7 +165,7 @@ namespace Unity.Pipeline.Editor.Commands.Assets
             return result;
         }
 
-        [CliCommand("move_asset", "Move (or rename via a new path) an asset to a new location under the authoring root. Preserves the asset's GUID.")]
+        [CliCommand("move_asset", "Move (or rename via a new path) an asset to a new location under the authoring root. Preserves the asset's GUID.", Tags = new[] { "assets" })]
         public static AuthoringResult MoveAsset(
             [CliArg("asset", "Reference to the asset to move (path / guid / globalId).", Required = true)] ObjectRef asset,
             [CliArg("destination", "Destination asset path relative to the authoring root, including extension. The Assets/ prefix is optional.", Required = true)] string destination,
@@ -201,7 +201,7 @@ namespace Unity.Pipeline.Editor.Commands.Assets
             return result;
         }
 
-        [CliCommand("copy_asset", "Copy an asset to a new path under the authoring root. The copy gets a fresh GUID.")]
+        [CliCommand("copy_asset", "Copy an asset to a new path under the authoring root. The copy gets a fresh GUID.", Tags = new[] { "assets" })]
         public static AuthoringResult CopyAsset(
             [CliArg("asset", "Reference to the asset to copy (path / guid / globalId).", Required = true)] ObjectRef asset,
             [CliArg("destination", "Destination asset path relative to the authoring root, including extension. The Assets/ prefix is optional.", Required = true)] string destination,
@@ -237,7 +237,7 @@ namespace Unity.Pipeline.Editor.Commands.Assets
             return result;
         }
 
-        [CliCommand("rename_asset", "Rename an asset in place (keeps it in the same folder, keeps its GUID).")]
+        [CliCommand("rename_asset", "Rename an asset in place (keeps it in the same folder, keeps its GUID).", Tags = new[] { "assets" })]
         public static AuthoringResult RenameAsset(
             [CliArg("asset", "Reference to the asset to rename (path / guid / globalId).", Required = true)] ObjectRef asset,
             [CliArg("new_name", "New file name WITHOUT a folder path. The extension is preserved if omitted.", Required = true)] string newName,
@@ -272,7 +272,7 @@ namespace Unity.Pipeline.Editor.Commands.Assets
             return result;
         }
 
-        [CliCommand("delete_asset", "Delete an asset from the project. Destructive: requires confirm=true.")]
+        [CliCommand("delete_asset", "Delete an asset from the project. Destructive: requires confirm=true.", Tags = new[] { "assets" })]
         public static AuthoringResult DeleteAsset(
             [CliArg("asset", "Reference to the asset to delete (path / guid / globalId).", Required = true)] ObjectRef asset,
             [CliArg("confirm", "Must be true to actually delete. Without it the command refuses (destructive guard).")] bool confirm = false,
@@ -297,7 +297,7 @@ namespace Unity.Pipeline.Editor.Commands.Assets
             return result;
         }
 
-        [CliCommand("find_assets", "Find assets by type and/or name and/or label, returning their path, GUID and type. At least one filter is required.")]
+        [CliCommand("find_assets", "Find assets by type and/or name and/or label, returning their path, GUID and type. At least one filter is required.", Tags = new[] { "assets" })]
         public static FindAssetsResult FindAssets(
             [CliArg("type", "Type name to filter by (e.g. Material, GameObject, ScriptableObject, MyGame.GameConfig). Resolved to a System.Type and matched against each asset's actual main type.")] string type = null,
             [CliArg("name", "Name substring to filter by (AssetDatabase name filter).")] string name = null,
@@ -534,15 +534,15 @@ namespace Unity.Pipeline.Editor.Commands.Assets
             // type and rejected for another.
             typeName = typeName.Trim();
 
-            // CLI-222: in Unity 6 the type is UnityEngine.PhysicMaterial (renamed from PhysicMaterial).
-            // A short name "PhysicMaterial" resolves fine, but the legacy short name "PhysicMaterial"
+            // CLI-222: in Unity 6 the type is UnityEngine.PhysicsMaterial (renamed from PhysicMaterial).
+            // A short name "PhysicsMaterial" resolves fine, but the legacy short name "PhysicMaterial"
             // matches the obsolete forwarder/alias inconsistently across versions — normalize BOTH the
             // current and legacy names (short or fully-qualified) to the real type up front so callers
             // can use either spelling.
-            if (typeName == "PhysicMaterial" || typeName == "PhysicMaterial"
-                || typeName == "UnityEngine.PhysicMaterial" || typeName == "UnityEngine.PhysicMaterial")
+            if (typeName == "PhysicsMaterial" || typeName == "PhysicMaterial"
+                || typeName == "UnityEngine.PhysicsMaterial" || typeName == "UnityEngine.PhysicMaterial")
             {
-                return typeof(PhysicMaterial);
+                return typeof(PhysicsMaterial);
             }
 
             var direct = Type.GetType(typeName, throwOnError: false);
