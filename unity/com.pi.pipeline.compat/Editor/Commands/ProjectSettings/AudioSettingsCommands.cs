@@ -10,7 +10,7 @@ namespace Unity.Pipeline.Editor.Commands.ProjectSettings
     /// reads/writes its serialized properties (global volume, rolloff scale, doppler factor) via
     /// <see cref="ProjectSettingsAsset"/>. Properties absent in a given Unity version are skipped.
     /// </summary>
-    public static class AudioSettingsCommands
+    static class AudioSettingsCommands
     {
         const string Group = "audio";
         const string AssetPath = "ProjectSettings/AudioManager.asset";
@@ -20,10 +20,10 @@ namespace Unity.Pipeline.Editor.Commands.ProjectSettings
         const string RolloffProp = "Rolloff Scale";
         const string DopplerProp = "Doppler Factor";
 
-        [CliCommand("get_audio_settings", "Read project Audio settings (volume, rolloff scale, doppler factor).", MainThreadRequired = true)]
+        [CliCommand("get_audio_settings", "Read project Audio settings (volume, rolloff scale, doppler factor).", MainThreadRequired = true, Tags = new[] { "settings/audio" })]
         public static ProjectSettingsResponse Get() => ProjectSettingsCommand.Get(Group, Read);
 
-        [CliCommand("set_audio_settings", "Change project Audio settings. Requires confirm=true; use dry_run to preview. Not undoable via Ctrl+Z.", MainThreadRequired = true)]
+        [CliCommand("set_audio_settings", "Change project Audio settings. Requires confirm=true; use dry_run to preview. Not undoable via Ctrl+Z.", MainThreadRequired = true, Tags = new[] { "settings/audio" })]
         public static ProjectSettingsResponse Set(
             [CliArg("settings", "Fields to change; omitted fields are left unchanged.")] AudioSettingsInput settings = null,
             [CliArg("confirm", "Apply the change. Without it the call is refused.")] bool confirm = false,
@@ -102,7 +102,7 @@ namespace Unity.Pipeline.Editor.Commands.ProjectSettings
     }
 
     /// <summary>Audio settings to change. Null/omitted fields are left unchanged.</summary>
-    public class AudioSettingsInput : IStructuredCommandInput
+    class AudioSettingsInput : IStructuredCommandInput
     {
         [CliArg("volume", "Global audio volume (0..1).")]
         public float? Volume { get; set; }

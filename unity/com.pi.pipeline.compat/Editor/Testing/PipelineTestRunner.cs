@@ -2,14 +2,15 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using UnityEditor;
-using UnityEditor.Compilation;
 using UnityEditor.TestTools.TestRunner.Api;
 using UnityEngine;
 using Newtonsoft.Json;
+#if UNITY_6000_5_OR_NEWER
+using Unity.Scripting.LifecycleManagement;
+#endif
 
 namespace Unity.Pipeline.Editor.Testing
 {
@@ -17,7 +18,10 @@ namespace Unity.Pipeline.Editor.Testing
     /// Core test execution engine supporting both synchronous and asynchronous execution modes.
     /// Adapted from unity-tools with domain reload handling and dual mode support.
     /// </summary>
-    public static class PipelineTestRunner
+#if UNITY_6000_5_OR_NEWER
+    [NoAutoStaticsCleanup]
+#endif
+    static class PipelineTestRunner
     {
         private const string TestRequestFile = "Temp/pipeline_test_request.json";
         private const string TestStatusFile = "Temp/pipeline_test_status.json";
@@ -28,6 +32,13 @@ namespace Unity.Pipeline.Editor.Testing
         /// <summary>
         /// Execute tests with the given parameters
         /// </summary>
+        /// <param name="mode">"editor"/"editmode", "playmode"/"play", or "all".</param>
+        /// <param name="filter">Filter value to match against, per <paramref name="filterType"/>.</param>
+        /// <param name="filterType">"testname", "assembly", or "category".</param>
+        /// <param name="includeExplicit">Whether to include tests/fixtures marked [Explicit].</param>
+        /// <param name="asyncMode">Run asynchronously, returning immediately with a status path to poll.</param>
+        /// <param name="timeoutSeconds">Timeout for synchronous execution.</param>
+        /// <returns>The test execution response.</returns>
         public static async Task<TestExecutionResponse> ExecuteTestsAsync(
             string mode,
             string filter,
@@ -141,7 +152,8 @@ namespace Unity.Pipeline.Editor.Testing
                     Result = "playmode_running",
                     StatusPath = playmodeStart.StatusPath,
                     Message = $"EditMode complete: {editorResponse.Summary.Passed}/{editorResponse.Summary.Total} passed. " +
-                              "PlayMode tests started asynchronously — poll the test_status command for their results."
+                              "PlayMode tests started asynchronously — poll the test_status command for their results.",
+                    ExecutedAt = DateTime.UtcNow
                 };
             }
             catch (Exception ex)
@@ -216,7 +228,8 @@ namespace Unity.Pipeline.Editor.Testing
                             Skipped = resultAdaptor.SkipCount,
                             Inconclusive = resultAdaptor.InconclusiveCount
                         } : new TestSummary(),
-                        Results = collector.Results
+                        Results = collector.Results,
+                        ExecutedAt = DateTime.UtcNow
                     };
 
                     // Clean up PlayMode request file
@@ -233,6 +246,10 @@ namespace Unity.Pipeline.Editor.Testing
                     Debug.LogError($"[PipelineTestRunner] Sync execution error: {ex.Message}");
                     CleanupRequestFile();
                     return CreateErrorResponse($"Test execution failed: {ex.Message}");
+                }
+                finally
+                {
+                    UnregisterCollector(api, collector);
                 }
             }
         }
@@ -281,7 +298,8 @@ namespace Unity.Pipeline.Editor.Testing
                     StatusPath = TestStatusFile,
                     Mode = testMode.ToString(),
                     FilterApplied = string.IsNullOrEmpty(filter) ? null : $"{filterType}: {filter}",
-                    Message = "Tests started in async mode. Poll /test-status for results."
+                    Message = "Tests started in async mode. Poll /test-status for results.",
+                    ExecutedAt = DateTime.UtcNow
                 });
             }
             catch (Exception ex)
@@ -303,7 +321,6 @@ namespace Unity.Pipeline.Editor.Testing
             bool includeExplicit)
         {
             var tcs = new TaskCompletionSource<ITestResultAdaptor>();
-            TryLoadEditorTestAssemblies();
 
             // Retrieve test list and filter
             api.RetrieveTestList(testMode, (ITestAdaptor rootTest) =>
@@ -352,10 +369,12 @@ namespace Unity.Pipeline.Editor.Testing
         /// </summary>
         private static void StartAsyncTestExecution(TestMode testMode, string filter, string filterType, bool includeExplicit)
         {
+            TestRunnerApi api = null;
+            TestResultCollector collector = null;
             try
             {
-                var api = ScriptableObject.CreateInstance<TestRunnerApi>();
-                var collector = new TestResultCollector();
+                api = ScriptableObject.CreateInstance<TestRunnerApi>();
+                collector = new TestResultCollector();
 
                 m_ActiveApi = api;
                 m_ActiveCollector = collector;
@@ -366,8 +385,7 @@ namespace Unity.Pipeline.Editor.Testing
                     WriteCompletedResults(collector);
                     RestoreLiveServerIfDisrupted(); // B2: self-heal if a test broke the live server.
                     CleanupRequestFile();
-                    m_ActiveApi = null;
-                    m_ActiveCollector = null;
+                    UnregisterCollector(api, collector);
                 };
 
                 api.RetrieveTestList(testMode, (ITestAdaptor rootTest) =>
@@ -386,8 +404,7 @@ namespace Unity.Pipeline.Editor.Testing
                                 results = new object[0]
                             });
                             CleanupRequestFile();
-                            m_ActiveApi = null;
-                            m_ActiveCollector = null;
+                            UnregisterCollector(api, collector);
                             return;
                         }
 
@@ -403,8 +420,7 @@ namespace Unity.Pipeline.Editor.Testing
                         Debug.LogError($"[PipelineTestRunner] Async run setup error: {ex.Message}");
                         WriteStatusFile(new { status = "error", message = ex.Message });
                         CleanupRequestFile();
-                        m_ActiveApi = null;
-                        m_ActiveCollector = null;
+                        UnregisterCollector(api, collector);
                     }
                 });
             }
@@ -413,8 +429,7 @@ namespace Unity.Pipeline.Editor.Testing
                 Debug.LogError($"[PipelineTestRunner] Async execution error: {ex.Message}");
                 WriteStatusFile(new { status = "error", message = ex.Message });
                 CleanupRequestFile();
-                m_ActiveApi = null;
-                m_ActiveCollector = null;
+                UnregisterCollector(api, collector);
             }
         }
 
@@ -430,10 +445,12 @@ namespace Unity.Pipeline.Editor.Testing
         /// </summary>
         private static void ReattachResultCollector()
         {
+            TestRunnerApi api = null;
+            TestResultCollector collector = null;
             try
             {
-                var api = ScriptableObject.CreateInstance<TestRunnerApi>();
-                var collector = new TestResultCollector();
+                api = ScriptableObject.CreateInstance<TestRunnerApi>();
+                collector = new TestResultCollector();
 
                 m_ActiveApi = api;
                 m_ActiveCollector = collector;
@@ -443,8 +460,7 @@ namespace Unity.Pipeline.Editor.Testing
                     WriteCompletedResults(collector);
                     RestoreLiveServerIfDisrupted();
                     CleanupRequestFile();
-                    m_ActiveApi = null;
-                    m_ActiveCollector = null;
+                    UnregisterCollector(api, collector);
                 };
 
                 api.RegisterCallbacks(collector);
@@ -454,8 +470,7 @@ namespace Unity.Pipeline.Editor.Testing
                 Debug.LogError($"[PipelineTestRunner] Failed to reattach result collector: {ex.Message}");
                 WriteStatusFile(new { status = "error", message = ex.Message });
                 CleanupRequestFile();
-                m_ActiveApi = null;
-                m_ActiveCollector = null;
+                UnregisterCollector(api, collector);
             }
         }
 
@@ -471,6 +486,7 @@ namespace Unity.Pipeline.Editor.Testing
             }
         }
 
+        /// <summary>Resume any test run that was in flight before a domain reload dropped it.</summary>
         public static void CheckForPendingTests()
         {
             if (!File.Exists(TestRequestFile)) return;
@@ -626,21 +642,31 @@ namespace Unity.Pipeline.Editor.Testing
             if (m_ActiveCollector != null)
             {
                 m_ActiveCollector.Cancel();
-
-                if (m_ActiveApi != null)
-                {
-                    try { m_ActiveApi.UnregisterCallbacks(m_ActiveCollector); }
-                    catch (Exception ex)
-                    {
-                        Debug.LogWarning($"[PipelineTestRunner] Could not unregister old collector: {ex.Message}");
-                    }
-                }
-
+                UnregisterCollector(m_ActiveApi, m_ActiveCollector);
                 Debug.Log("[PipelineTestRunner] Invalidated previous test run");
             }
+        }
 
-            m_ActiveApi = null;
-            m_ActiveCollector = null;
+        /// <summary>
+        /// Unregisters a collector from Unity's TestRunnerApi callback registry (process-wide, not
+        /// per-instance) and clears the active-run fields if they still point at it.
+        /// </summary>
+        private static void UnregisterCollector(TestRunnerApi api, TestResultCollector collector)
+        {
+            if (api != null && collector != null)
+            {
+                try { api.UnregisterCallbacks(collector); }
+                catch (Exception ex)
+                {
+                    Debug.LogWarning($"[PipelineTestRunner] Could not unregister collector: {ex.Message}");
+                }
+            }
+
+            if (ReferenceEquals(m_ActiveCollector, collector))
+            {
+                m_ActiveApi = null;
+                m_ActiveCollector = null;
+            }
         }
 
         private static TestExecutionResponse CreateErrorResponse(string message)
@@ -651,7 +677,8 @@ namespace Unity.Pipeline.Editor.Testing
                 Command = "run_tests",
                 Error = message,
                 Results = new List<TestResult>(),
-                Summary = new TestSummary()
+                Summary = new TestSummary(),
+                ExecutedAt = DateTime.UtcNow
             };
         }
 
@@ -749,6 +776,7 @@ namespace Unity.Pipeline.Editor.Testing
         /// <summary>
         /// Get current test status (for async mode polling)
         /// </summary>
+        /// <returns>The status file's JSON contents, "running" if a request is pending, or null if there's no run.</returns>
         public static string GetTestStatus()
         {
             if (File.Exists(TestStatusFile))
@@ -761,6 +789,7 @@ namespace Unity.Pipeline.Editor.Testing
         /// <summary>
         /// Cancel running tests
         /// </summary>
+        /// <returns>A status payload confirming cancellation (or that there was nothing to cancel).</returns>
         public static object CancelTests()
         {
             if (m_ActiveCollector == null && !File.Exists(TestRequestFile) && !File.Exists(TestStatusFile))
@@ -793,48 +822,6 @@ namespace Unity.Pipeline.Editor.Testing
 
         #endregion
 
-        internal static void TryLoadEditorTestAssemblies()
-        {
-            UnityEditor.Compilation.Assembly[] assemblies;
-            try
-            {
-                assemblies = CompilationPipeline.GetAssemblies(AssembliesType.Editor);
-            }
-            catch (Exception ex)
-            {
-                Debug.LogWarning("[PipelineTestRunner] CompilationPipeline.GetAssemblies failed: " + ex.Message);
-                return;
-            }
-
-            foreach (UnityEditor.Compilation.Assembly assembly in assemblies)
-            {
-                if (assembly == null || string.IsNullOrEmpty(assembly.outputPath) || !IsEditorTestAssembly(assembly))
-                    continue;
-                try
-                {
-                    if (AppDomain.CurrentDomain.GetAssemblies().Any(a => a.GetName().Name == assembly.name))
-                        continue;
-                    string path = Path.GetFullPath(assembly.outputPath);
-                    if (!File.Exists(path))
-                        continue;
-                    System.Reflection.Assembly.LoadFrom(path);
-                }
-                catch (Exception ex)
-                {
-                    Debug.LogWarning("[PipelineTestRunner] Failed to load test assembly " + assembly.name + ": " + ex.Message);
-                }
-            }
-        }
-
-        private static bool IsEditorTestAssembly(UnityEditor.Compilation.Assembly assembly)
-        {
-            if (!string.IsNullOrEmpty(assembly.name) &&
-                assembly.name.IndexOf("Tests", StringComparison.OrdinalIgnoreCase) >= 0)
-                return true;
-            string[] defines = assembly.defines;
-            return defines != null && defines.Contains("UNITY_INCLUDE_TESTS");
-        }
-
         [Serializable]
         private class TestRequest
         {
@@ -845,5 +832,38 @@ namespace Unity.Pipeline.Editor.Testing
             public bool isSync;
         }
     }
-}
+        public static void TryLoadEditorTestAssemblies()
+        {
+            try
+            {
+                var compilationAssemblies = UnityEditor.Compilation.CompilationPipeline.GetAssemblies(UnityEditor.Compilation.AssembliesType.Editor);
+                var loadedAssemblies = System.AppDomain.CurrentDomain.GetAssemblies();
+                var loadedNames = new System.Collections.Generic.HashSet<string>(System.Linq.Enumerable.Select(loadedAssemblies, a => a.GetName().Name), System.StringComparer.OrdinalIgnoreCase);
 
+                foreach (var asm in compilationAssemblies)
+                {
+                    if (asm.name.EndsWith(".Tests", System.StringComparison.OrdinalIgnoreCase) ||
+                        asm.name.EndsWith(".Editor.Tests", System.StringComparison.OrdinalIgnoreCase) ||
+                        asm.name.Contains(".Tests."))
+                    {
+                        if (!loadedNames.Contains(asm.name))
+                        {
+                            try
+                            {
+                                System.Reflection.Assembly.Load(asm.name);
+                            }
+                            catch
+                            {
+                                // Best effort
+                            }
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                // Best effort
+            }
+        }
+
+}

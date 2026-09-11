@@ -1,8 +1,8 @@
 # com.unity.pipeline 集成设计与开发计划
 
 > 状态：实现稿 v1（Phase 0-3 已落地，Phase 4 可选未排期）
-> 目标包版本：`com.unity.pipeline@0.4.0-exp.1`（experimental，API 可能变动；asmdef 兼容范围 `[0.2.0-exp.2,0.5.0)`）
-> 验证项目：本地 Unity 工程（Unity 6000.5.0f1，已安装 embedded `com.unity.pipeline@0.4.0-exp.1`）
+> 目标包版本：`com.unity.pipeline@0.6.0-exp.1`（experimental，API 可能变动；asmdef 兼容范围 `[0.2.0-exp.2,0.7.0)`）
+> 验证项目：本地 Unity 工程（Unity 6000.5.0f1，已安装 embedded `com.unity.pipeline@0.6.0-exp.1`）
 
 ## 1. 背景与目标
 
@@ -15,10 +15,10 @@
 | 命令体系 | `[CliCommand]` 属性 + TypeCache 自动发现 + 参数 schema | 硬编码 switch（eval / recompile / status / ping） |
 | 独有能力 | 测试运行、play mode 控制、热重载（in-place ILPostProcessor + override）、dev Player 控制 | 阻塞式跨重载 recompile、后台消息泵唤醒、主线程 eval + validate + coroutine pump |
 
-> **compat fork**：`unity/com.pi.pipeline.compat` 派生自 `com.unity.pipeline@0.4.0-exp.1`（Companion License）。
+> **compat fork**：`unity/com.pi.pipeline.compat` 派生自 `com.unity.pipeline@0.6.0-exp.1`（Companion License）。
 > `/unity-install` 按工程 Unity 主版本选择：`>=6000` → 官方；否则 → 把 compat 复制为 embedded `Packages/com.unity.pipeline`
 > （Unity 2022 的 versionDefines 只认 embedded/registry 包，不认 file: 指向工程外的 local 包）。
-> 两包程序集名同为 `Unity.Pipeline`，**不可同装**。compat 去掉 Roslyn eval / HotReload CodeGen；命令面（含 `uitree_*`）可用。
+> 两包程序集名同为 `Unity.Pipeline`，**不可同装**。compat 在 Unity 6+ 完整保留官方全部特性（含 Roslyn eval / `run_script`、In-place HotReload、ILPostProcessor CodeGen、IlInterpreter 等）；在 Unity 2021.3/2022.x 下通过条件编译抹平 API 差异并提供兼容降级。
 
 > ⚠️ **平台边界**：harness 当前仅支持 **Windows x64 Editor**——native broker 为
 > Windows 条件编译（`native/src/lib.rs` `#[cfg(windows)]`），插件仅提供
@@ -34,7 +34,7 @@ pi 扩展做统一门面**。pipeline 作为可选增强：检测到就桥接，
 - 不替代 pipeline 的 HTTP server（外部 CI/CLI 用户仍可走 HTTP）
 - dev Player（运行中的 development build）控制不在前三阶段范围内——broker 只活在 Editor 进程
 
-**例外（已落地）**：为非 Unity 6 维护 `com.pi.pipeline.compat` fork（派生自 0.4.0-exp.1），仅用于 2021.3/2022 命令面；再分发需自行合规 Companion License。
+**例外（已落地）**：为非 Unity 6 维护 `com.pi.pipeline.compat` fork（派生自 0.6.0-exp.1），仅用于 2021.3/2022 命令面；再分发需自行合规 Companion License。
 
 ## 2. 架构总览
 
@@ -85,7 +85,7 @@ harness 必须在**未安装** pipeline 的项目（含 2021.3）继续工作，
   "versionDefines": [
     // 注意：裸版本 "0.2" 在 Unity 版本表达式里意为 >= 0.2.0，会匹配未来 0.3/1.0，
     // 重新暴露 exp API 破坏风险。用半开区间锁定到已验证的版本线：
-    { "name": "com.unity.pipeline", "expression": "[0.2.0-exp.2,0.5.0)", "define": "PI_UNITY_PIPELINE" }
+    { "name": "com.unity.pipeline", "expression": "[0.2.0-exp.2,0.7.0)", "define": "PI_UNITY_PIPELINE" }
   ]
 }
 ```
@@ -311,7 +311,7 @@ supported for 'all' mode"）。coordinator 统一走 async 包装，因此：
    行为降级），并在 `setActiveTools()` 可用的宿主上将其移出活跃集
 6. **安装辅助**：`/unity-install` 增加可选步骤——检测项目 Unity 版本 ≥ 6000.0 且
    未安装 pipeline 时，**询问用户**是否向 `Packages/manifest.json` 添加
-   `com.unity.pipeline@0.4.0-exp.1`（固定版本，exp 包 API 不稳定；asmdef 用半开区间 `[0.2.0-exp.2,0.5.0)` 兼容 0.2/0.3/0.4 线）
+   `com.unity.pipeline@0.6.0-exp.1`（固定版本，exp 包 API 不稳定；asmdef 用半开区间 `[0.2.0-exp.2,0.7.0)` 兼容 0.2/0.3/0.4/0.5/0.6 线）
 
 ### 3.7 与官方 HTTP server 的共存
 
@@ -398,7 +398,7 @@ play mode 能收到失败响应（`cancelled`/`error` 终态）而非超时。
 
 | 风险 | 影响 | 缓解 |
 |---|---|---|
-| pipeline 是 exp 包，`CommandRegistry`/`CommandInfo` API 可能破坏性变更 | 升级即编译错误 | 默认安装固定 `0.4.0-exp.1`；所有引用集中在单一 executor 文件；versionDefines expression 锁定 `[0.2.0-exp.2,0.5.0)`（§3.1） |
+| pipeline 是 exp 包，`CommandRegistry`/`CommandInfo` API 可能破坏性变更 | 升级即编译错误 | 默认安装固定 `0.6.0-exp.1`；所有引用集中在单一 executor 文件；versionDefines expression 锁定 `[0.2.0-exp.2,0.7.0)`（§3.1） |
 | asmdef 迁移破坏 evaluator 的 `Mono.CSharp` 解析 | Phase 0 阻塞 | 预留反射方案兜底（见 Phase 0 风险） |
 | pipeline 命令内部假设 HTTP/`Dispatcher` 上下文 | 个别命令行为异常 | Phase 1 验收逐命令冒烟；异常命令加入路由黑名单 |
 | 所有命令（含 `MainThreadRequired=false`）都在主线程执行（§3.3 第 4 点） | 重 CPU 自定义命令阻塞 Editor update | 先接受简化模型；确有需求再为 `MainThreadRequired=false` 命令加 `Task.Run` 通道 |

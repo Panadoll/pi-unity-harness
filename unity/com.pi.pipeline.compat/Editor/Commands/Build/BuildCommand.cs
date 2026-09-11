@@ -10,6 +10,9 @@ using UnityEditor;
 using UnityEditor.Build;
 using UnityEditor.Build.Reporting;
 using UnityEngine;
+#if UNITY_6000_5_OR_NEWER
+using Unity.Scripting.LifecycleManagement;
+#endif
 
 namespace Unity.Pipeline.Editor.Commands.Build
 {
@@ -32,7 +35,10 @@ namespace Unity.Pipeline.Editor.Commands.Build
     /// survives the domain reload a build can incur, so the last report is retained until the next build.
     /// </summary>
     [InitializeOnLoad]
-    public static class BuildCommand
+#if UNITY_6000_5_OR_NEWER
+    [NoAutoStaticsCleanup]
+#endif
+    static class BuildCommand
     {
         const string StatusFile = "Temp/pipeline_build_status.json";
 
@@ -78,7 +84,8 @@ namespace Unity.Pipeline.Editor.Commands.Build
             "Trigger an async Player build and report the full BuildReport. Returns immediately (queued); " +
             "poll build_status until status is 'completed'. DetailedBuildReport is included by default unless " +
             "'options' is supplied. Use dry_run to validate without building.",
-            MainThreadRequired = false)]
+            MainThreadRequired = false,
+            Tags = new[] { "build" })]
         public static object Build(
             [CliArg("target", "BuildTarget name (e.g. StandaloneWindows64). Defaults to the active target. Must be installed.")] string target = "",
             [CliArg("outputPath", "Output path (absolute, or relative to the project root). Defaults to the last/auto path.")] string outputPath = "",
@@ -210,7 +217,8 @@ namespace Unity.Pipeline.Editor.Commands.Build
         [CliCommand("build_status",
             "Status of the current/most recent build: idle | queued | building | completed, with the full " +
             "BuildReport (files, packedAssets, buildSteps, errors, warnings) once completed. Retained until the next build.",
-            MainThreadRequired = false)]
+            MainThreadRequired = false,
+            Tags = new[] { "build" })]
         public static string BuildStatus()
         {
             if (!File.Exists(StatusFile))

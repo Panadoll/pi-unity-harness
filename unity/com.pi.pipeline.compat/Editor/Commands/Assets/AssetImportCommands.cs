@@ -6,6 +6,9 @@ using Unity.Pipeline.Commands;
 using Unity.Pipeline.Editor.Authoring;
 using Unity.Pipeline.Models;
 using UnityEditor;
+#if UNITY_6000_5_OR_NEWER
+using Unity.Scripting.LifecycleManagement;
+#endif
 
 namespace Unity.Pipeline.Editor.Commands.Assets
 {
@@ -39,7 +42,10 @@ namespace Unity.Pipeline.Editor.Commands.Assets
     /// source file, so no <c>confirm</c> is required.
     /// </para>
     /// </summary>
-    public static class AssetImportCommands
+#if UNITY_6000_5_OR_NEWER
+    [NoAutoStaticsCleanup]
+#endif
+    static class AssetImportCommands
     {
         // Caller-facing platform names accepted by both commands. "Default" means the default platform
         // (top-level importer properties / default sample settings); the rest are real build platforms.
@@ -48,7 +54,7 @@ namespace Unity.Pipeline.Editor.Commands.Assets
             "Default", "Standalone", "iOS", "Android", "WebGL", "tvOS"
         };
 
-        [CliCommand("set_import_settings", "Set import settings on an asset's AssetImporter (default platform top-level properties, or a texture/audio per-platform override) and re-import it.")]
+        [CliCommand("set_import_settings", "Set import settings on an asset's AssetImporter (default platform top-level properties, or a texture/audio per-platform override) and re-import it.", Tags = new[] { "assets/import" })]
         public static SetImportSettingsResult SetImportSettings(
             [CliArg("asset", "Reference to the asset whose importer to edit (path / guid / globalId).", Required = true)] ObjectRef asset,
             [CliArg("settings", "JSON object of importer property/field names to values, e.g. {\"isReadable\": true, \"textureType\": \"NormalMap\"}. For platform != Default on a texture/audio importer, keys map onto the platform-settings struct (e.g. maxTextureSize, format, compressionFormat, quality, and overridden).", Required = true)] JObject settings,
@@ -118,7 +124,7 @@ namespace Unity.Pipeline.Editor.Commands.Assets
             return result;
         }
 
-        [CliCommand("get_import_settings", "Read an asset's import settings, structured by importer type (texture/model/audio), including the default-platform fields and (for textures/audio) one platform override block.")]
+        [CliCommand("get_import_settings", "Read an asset's import settings, structured by importer type (texture/model/audio), including the default-platform fields and (for textures/audio) one platform override block.", Tags = new[] { "assets/import" })]
         public static GetImportSettingsResult GetImportSettings(
             [CliArg("asset", "Reference to the asset whose importer to read (path / guid / globalId).", Required = true)] ObjectRef asset,
             [CliArg("platform", "Platform whose override to read: Default | Standalone | iOS | Android | WebGL | tvOS. Defaults to Default.")] string platform = "Default")
@@ -599,7 +605,7 @@ namespace Unity.Pipeline.Editor.Commands.Assets
     /// Result of <c>set_import_settings</c>: target platform plus which keys were applied vs. unknown.
     /// </summary>
     [Serializable]
-    public class SetImportSettingsResult
+    class SetImportSettingsResult
     {
         [Newtonsoft.Json.JsonProperty("assetPath")]
         public string AssetPath { get; set; }
@@ -623,7 +629,7 @@ namespace Unity.Pipeline.Editor.Commands.Assets
     /// non-import assets.
     /// </summary>
     [Serializable]
-    public class GetImportSettingsResult
+    class GetImportSettingsResult
     {
         [Newtonsoft.Json.JsonProperty("assetPath")]
         public string AssetPath { get; set; }
@@ -643,7 +649,7 @@ namespace Unity.Pipeline.Editor.Commands.Assets
 
     /// <summary>Structured error payload serialized into the thrown ArgumentException message.</summary>
     [Serializable]
-    public class ErrorResult
+    class ErrorResult
     {
         [Newtonsoft.Json.JsonProperty("code")]
         public string Code { get; set; }

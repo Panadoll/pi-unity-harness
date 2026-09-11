@@ -27,11 +27,12 @@ namespace Unity.Pipeline.Editor.Commands.Animation
     /// Out of scope (v1): BlendTree authoring (assigning an EXISTING BlendTree as a state motion is
     /// allowed), StateMachineBehaviours, sub-state machines, and humanoid/avatar configuration.
     /// </summary>
-    public static class AnimatorControllerCommands
+    static class AnimatorControllerCommands
     {
         [CliCommand("create_animator_controller",
             "Create an .controller AnimatorController asset (with a default Base Layer) under the authoring root.",
-            MainThreadRequired = true)]
+            MainThreadRequired = true,
+            Tags = new[] { "animation/animator" })]
         public static AuthoringResult CreateAnimatorController(
             [CliArg("path", "Asset path ending in .controller, relative to the authoring root. The Assets/ prefix is optional.", Required = true)] string path,
             [CliArg("confirm", "Required (true) only when overwriting an existing asset at the path.")] bool confirm = false,
@@ -69,7 +70,8 @@ namespace Unity.Pipeline.Editor.Commands.Animation
 
         [CliCommand("add_animator_parameter",
             "Add a parameter (Float | Int | Bool | Trigger) to an AnimatorController. A duplicate name returns code 'duplicate_parameter'.",
-            MainThreadRequired = true)]
+            MainThreadRequired = true,
+            Tags = new[] { "animation/animator" })]
         public static object AddAnimatorParameter(
             [CliArg("controller", "Reference to the AnimatorController to edit (path / guid / globalId).", Required = true)] ObjectRef controller,
             [CliArg("name", "Parameter name.", Required = true)] string name,
@@ -135,7 +137,8 @@ namespace Unity.Pipeline.Editor.Commands.Animation
 
         [CliCommand("add_animator_layer",
             "Add a layer to an AnimatorController.",
-            MainThreadRequired = true)]
+            MainThreadRequired = true,
+            Tags = new[] { "animation/animator" })]
         public static object AddAnimatorLayer(
             [CliArg("controller", "Reference to the AnimatorController to edit (path / guid / globalId).", Required = true)] ObjectRef controller,
             [CliArg("name", "Layer name.", Required = true)] string name,
@@ -178,7 +181,8 @@ namespace Unity.Pipeline.Editor.Commands.Animation
         [CliCommand("add_animator_state",
             "Add a state to a layer, optionally with a motion (AnimationClip or BlendTree) and as the layer default. " +
             "A layer name with no match returns code 'layer_not_found'.",
-            MainThreadRequired = true)]
+            MainThreadRequired = true,
+            Tags = new[] { "animation/animator" })]
         public static object AddAnimatorState(
             [CliArg("controller", "Reference to the AnimatorController to edit (path / guid / globalId).", Required = true)] ObjectRef controller,
             [CliArg("layer", "Layer index (int) or name (string). Default 0 (Base Layer).")] JToken layer = null,
@@ -254,7 +258,8 @@ namespace Unity.Pipeline.Editor.Commands.Animation
         [CliCommand("add_animator_transition",
             "Add a transition between two states (or from AnyState/Entry, to Exit) on a layer, with optional conditions. " +
             "Validates that the states exist and each condition's parameter exists and its mode matches the parameter type.",
-            MainThreadRequired = true)]
+            MainThreadRequired = true,
+            Tags = new[] { "animation/animator" })]
         public static object AddAnimatorTransition(
             [CliArg("controller", "Reference to the AnimatorController to edit (path / guid / globalId).", Required = true)] ObjectRef controller,
             [CliArg("layer", "Layer index (int) or name (string). Default 0 (Base Layer).")] JToken layer = null,
@@ -379,7 +384,8 @@ namespace Unity.Pipeline.Editor.Commands.Animation
 
         [CliCommand("get_animator_controller",
             "Read an AnimatorController's full structure: parameters, layers, states (with motion / default), and transitions (with conditions).",
-            MainThreadRequired = true)]
+            MainThreadRequired = true,
+            Tags = new[] { "animation/animator" })]
         public static AnimatorControllerInfo GetAnimatorController(
             [CliArg("controller", "Reference to the AnimatorController to read (path / guid / globalId).", Required = true)] ObjectRef controller)
         {
@@ -712,7 +718,7 @@ namespace Unity.Pipeline.Editor.Commands.Animation
 
     /// <summary>A structured, non-throwing error envelope ({ error, code }) returned at HTTP 200.</summary>
     [Serializable]
-    public class ErrorResult
+    class ErrorResult
     {
         [JsonProperty("error")]
         public string Error { get; set; }
@@ -724,7 +730,7 @@ namespace Unity.Pipeline.Editor.Commands.Animation
     }
 
     [Serializable]
-    public class ParameterInfo
+    class ParameterInfo
     {
         [JsonProperty("name")]
         public string Name { get; set; }
@@ -737,14 +743,14 @@ namespace Unity.Pipeline.Editor.Commands.Animation
     }
 
     [Serializable]
-    public class AddParameterResult : AuthoringResult
+    class AddParameterResult : AuthoringResult
     {
         [JsonProperty("parameter")]
         public ParameterInfo Parameter { get; set; }
     }
 
     [Serializable]
-    public class LayerSummary
+    class LayerSummary
     {
         [JsonProperty("name")]
         public string Name { get; set; }
@@ -757,14 +763,14 @@ namespace Unity.Pipeline.Editor.Commands.Animation
     }
 
     [Serializable]
-    public class AddLayerResult : AuthoringResult
+    class AddLayerResult : AuthoringResult
     {
         [JsonProperty("layer")]
         public LayerSummary Layer { get; set; }
     }
 
     [Serializable]
-    public class StateSummary
+    class StateSummary
     {
         [JsonProperty("name")]
         public string Name { get; set; }
@@ -780,14 +786,14 @@ namespace Unity.Pipeline.Editor.Commands.Animation
     }
 
     [Serializable]
-    public class AddStateResult : AuthoringResult
+    class AddStateResult : AuthoringResult
     {
         [JsonProperty("state")]
         public StateSummary State { get; set; }
     }
 
     [Serializable]
-    public class TransitionSummary
+    class TransitionSummary
     {
         [JsonProperty("from")]
         public string From { get; set; }
@@ -800,14 +806,14 @@ namespace Unity.Pipeline.Editor.Commands.Animation
     }
 
     [Serializable]
-    public class AddTransitionResult : AuthoringResult
+    class AddTransitionResult : AuthoringResult
     {
         [JsonProperty("transition")]
         public TransitionSummary Transition { get; set; }
     }
 
     [Serializable]
-    public class AnimatorControllerInfo
+    class AnimatorControllerInfo
     {
         [JsonProperty("assetPath")]
         public string AssetPath { get; set; }
@@ -820,7 +826,7 @@ namespace Unity.Pipeline.Editor.Commands.Animation
     }
 
     [Serializable]
-    public class LayerInfo
+    class LayerInfo
     {
         [JsonProperty("name")]
         public string Name { get; set; }
@@ -839,7 +845,7 @@ namespace Unity.Pipeline.Editor.Commands.Animation
     }
 
     [Serializable]
-    public class StateInfo
+    class StateInfo
     {
         [JsonProperty("name")]
         public string Name { get; set; }
@@ -852,7 +858,7 @@ namespace Unity.Pipeline.Editor.Commands.Animation
     }
 
     [Serializable]
-    public class TransitionInfo
+    class TransitionInfo
     {
         [JsonProperty("from")]
         public string From { get; set; }
@@ -871,7 +877,7 @@ namespace Unity.Pipeline.Editor.Commands.Animation
     }
 
     [Serializable]
-    public class ConditionInfo
+    class ConditionInfo
     {
         [JsonProperty("parameter")]
         public string Parameter { get; set; }

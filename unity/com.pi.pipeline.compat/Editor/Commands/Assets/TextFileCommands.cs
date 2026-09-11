@@ -20,9 +20,9 @@ namespace Unity.Pipeline.Editor.Commands.Assets
     /// existing file requires an explicit <c>confirm</c> argument; <c>dry_run</c> is supported.
     /// Filesystem writes are not part of Unity's Undo system.
     /// </summary>
-    public static class TextFileCommands
+    static class TextFileCommands
     {
-        [CliCommand("read_text_file", "Read a UTF-8 text file under the authoring root and return its contents.", MainThreadRequired = true)]
+        [CliCommand("read_text_file", "Read a UTF-8 text file under the authoring root and return its contents.", MainThreadRequired = true, Tags = new[] { "assets/text" })]
         public static ReadTextFileResult ReadTextFile(
             [CliArg("path", "Text file path relative to the authoring root. The Assets/ prefix is optional.", Required = true)] string path,
             [CliArg("max_bytes", "Reject files larger than this many bytes (default 1048576 = 1 MiB) to avoid huge payloads.")] int maxBytes = 1024 * 1024)
@@ -47,7 +47,7 @@ namespace Unity.Pipeline.Editor.Commands.Assets
             };
         }
 
-        [CliCommand("write_text_file", "Write UTF-8 text to a file under the authoring root, then import it. Overwriting an existing file requires confirm=true.")]
+        [CliCommand("write_text_file", "Write UTF-8 text to a file under the authoring root, then import it. Overwriting an existing file requires confirm=true.", Tags = new[] { "assets/text" })]
         public static AuthoringResult WriteTextFile(
             [CliArg("path", "Text file path relative to the authoring root, including extension. The Assets/ prefix is optional.", Required = true)] string path,
             [CliArg("contents", "The full text content to write (replaces the file).", Required = true)] string contents,
@@ -112,7 +112,7 @@ namespace Unity.Pipeline.Editor.Commands.Assets
 
     /// <summary>Result of <c>read_text_file</c>: the file contents plus its identity and size.</summary>
     [Serializable]
-    public class ReadTextFileResult
+    class ReadTextFileResult
     {
         [JsonProperty("assetPath")]
         public string AssetPath { get; set; }

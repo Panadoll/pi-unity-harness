@@ -10,17 +10,17 @@ namespace Unity.Pipeline.Editor.Commands.ProjectSettings
     /// <see cref="InternalEditorUtility"/> add/remove API; user layers (indices 8..31; 0..7 are
     /// reserved) are assigned via the TagManager's serialized <c>layers</c> array.
     /// </summary>
-    public static class TagsLayersCommands
+    static class TagsLayersCommands
     {
         const string Group = "tags_layers";
         const string TagManagerPath = "ProjectSettings/TagManager.asset";
         const int FirstUserLayer = 8;
         const int LastUserLayer = 31;
 
-        [CliCommand("get_tags_layers", "Read the project's tags and (named) layers.", MainThreadRequired = true)]
+        [CliCommand("get_tags_layers", "Read the project's tags and (named) layers.", MainThreadRequired = true, Tags = new[] { "settings/tags_layers" })]
         public static ProjectSettingsResponse Get() => ProjectSettingsCommand.Get(Group, Read);
 
-        [CliCommand("set_tags_layers", "Add/remove tags and assign user layer names (index 8-31). Requires confirm=true; use dry_run to preview. Not undoable via Ctrl+Z.", MainThreadRequired = true)]
+        [CliCommand("set_tags_layers", "Add/remove tags and assign user layer names (index 8-31). Requires confirm=true; use dry_run to preview. Not undoable via Ctrl+Z.", MainThreadRequired = true, Tags = new[] { "settings/tags_layers" })]
         public static ProjectSettingsResponse Set(
             [CliArg("settings", "Tag/layer changes to make.")] TagsLayersInput settings = null,
             [CliArg("confirm", "Apply the change. Without it the call is refused.")] bool confirm = false,
@@ -119,7 +119,7 @@ namespace Unity.Pipeline.Editor.Commands.ProjectSettings
     }
 
     /// <summary>Tag/layer changes. All fields optional; omitted ones make no change.</summary>
-    public class TagsLayersInput : IStructuredCommandInput
+    class TagsLayersInput : IStructuredCommandInput
     {
         [CliArg("addTags", "Tag names to add.")]
         public string[] AddTags { get; set; }
@@ -132,7 +132,7 @@ namespace Unity.Pipeline.Editor.Commands.ProjectSettings
     }
 
     /// <summary>Assigns a name to a single user layer slot.</summary>
-    public class LayerAssignment : IStructuredCommandInput
+    class LayerAssignment : IStructuredCommandInput
     {
         [CliArg("index", "Layer index (8-31 for user layers).", Required = true)]
         public int Index { get; set; }

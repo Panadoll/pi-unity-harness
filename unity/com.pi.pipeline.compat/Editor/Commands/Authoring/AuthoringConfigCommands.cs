@@ -8,15 +8,15 @@ namespace Unity.Pipeline.Editor.Commands.Authoring
     /// bare authoring paths resolve against and that authoring writes are confined to. Persisted
     /// per project; the default is "Assets" (full Assets access).
     /// </summary>
-    public static class AuthoringConfigCommands
+    static class AuthoringConfigCommands
     {
-        [CliCommand("get_authoring_root", "Get the base folder (under Assets/) that bare authoring paths resolve against.")]
+        [CliCommand("get_authoring_root", "Get the base folder (under Assets/) that bare authoring paths resolve against.", Tags = new[] { "authoring" })]
         public static object GetAuthoringRoot()
         {
             return new { root = ProjectPaths.AuthoringRoot };
         }
 
-        [CliCommand("set_authoring_root", "Set the base folder (under Assets/) that bare authoring paths resolve against and are confined to. Use 'Assets' for full project access.")]
+        [CliCommand("set_authoring_root", "Set the base folder (under Assets/) that bare authoring paths resolve against and are confined to. Use 'Assets' for full project access.", Tags = new[] { "authoring" })]
         public static object SetAuthoringRoot(
             [CliArg("root", "Project-relative folder under Assets/, e.g. Assets/AgentWork. Use 'Assets' to allow the whole project.", Required = true)] string root)
         {

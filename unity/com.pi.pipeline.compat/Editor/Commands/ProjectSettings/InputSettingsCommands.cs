@@ -15,15 +15,15 @@ namespace Unity.Pipeline.Editor.Commands.ProjectSettings
     /// always present, so it is the portable target. Projects on the new Input System package store
     /// their config in a separate input-actions asset, which would be a follow-up.
     /// </summary>
-    public static class InputSettingsCommands
+    static class InputSettingsCommands
     {
         const string Group = "input";
         const string AssetPath = "ProjectSettings/InputManager.asset";
 
-        [CliCommand("get_input_settings", "Read the legacy Input Manager axes (names and count).", MainThreadRequired = true)]
+        [CliCommand("get_input_settings", "Read the legacy Input Manager axes (names and count).", MainThreadRequired = true, Tags = new[] { "settings/input" })]
         public static ProjectSettingsResponse Get() => ProjectSettingsCommand.Get(Group, Read);
 
-        [CliCommand("set_input_settings", "Tune a legacy Input Manager axis (sensitivity/gravity/dead) by name. Requires confirm=true; use dry_run to preview. Not undoable via Ctrl+Z.", MainThreadRequired = true)]
+        [CliCommand("set_input_settings", "Tune a legacy Input Manager axis (sensitivity/gravity/dead) by name. Requires confirm=true; use dry_run to preview. Not undoable via Ctrl+Z.", MainThreadRequired = true, Tags = new[] { "settings/input" })]
         public static ProjectSettingsResponse Set(
             [CliArg("settings", "Axis change. 'axis' selects the axis by name; omitted numeric fields are left unchanged.")] InputAxisInput settings = null,
             [CliArg("confirm", "Apply the change. Without it the call is refused.")] bool confirm = false,
@@ -133,7 +133,7 @@ namespace Unity.Pipeline.Editor.Commands.ProjectSettings
     }
 
     /// <summary>Selects a legacy input axis by name and the numeric fields to change (omitted = unchanged).</summary>
-    public class InputAxisInput : IStructuredCommandInput
+    class InputAxisInput : IStructuredCommandInput
     {
         [CliArg("axis", "Name of the axis to modify (e.g. 'Horizontal').", Required = true)]
         public string Axis { get; set; }

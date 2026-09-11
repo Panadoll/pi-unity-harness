@@ -16,7 +16,7 @@ namespace Unity.Pipeline.Editor.Authoring
     ///   default root ("Assets") that means full Assets access; set a sub-folder to confine an agent.
     /// - "../" traversal and writes outside the project root are always rejected.
     ///
-    /// NOTE: minimal seed for the shared safety policy.
+    /// NOTE: minimal seed for the shared safety policy (CAT-2509).
     /// </summary>
     public static class ProjectPaths
     {
@@ -58,6 +58,9 @@ namespace Unity.Pipeline.Editor.Authoring
         /// "Assets/..." paths and absolute paths under the project are honored. Returns null with an
         /// <paramref name="error"/> when the path escapes the root or the project.
         /// </summary>
+        /// <param name="path">The agent-supplied path to resolve.</param>
+        /// <param name="error">A human-readable reason on failure, or null on success.</param>
+        /// <returns>The normalized, project-relative path, or null on failure.</returns>
         public static string Resolve(string path, out string error)
         {
             error = null;

@@ -10,14 +10,14 @@ namespace Unity.Pipeline.Editor.Commands.ProjectSettings
     /// representative per-level toggles (vSync, anti-aliasing). Level changes apply expensive changes
     /// so the switch takes full effect.
     /// </summary>
-    public static class QualitySettingsCommands
+    static class QualitySettingsCommands
     {
         const string Group = "quality";
 
-        [CliCommand("get_quality_settings", "Read QualitySettings (current level, level names, vSync, anti-aliasing).", MainThreadRequired = true)]
+        [CliCommand("get_quality_settings", "Read QualitySettings (current level, level names, vSync, anti-aliasing).", MainThreadRequired = true, Tags = new[] { "settings/quality" })]
         public static ProjectSettingsResponse Get() => ProjectSettingsCommand.Get(Group, Read);
 
-        [CliCommand("set_quality_settings", "Change QualitySettings. Requires confirm=true; use dry_run to preview. Not undoable via Ctrl+Z.", MainThreadRequired = true)]
+        [CliCommand("set_quality_settings", "Change QualitySettings. Requires confirm=true; use dry_run to preview. Not undoable via Ctrl+Z.", MainThreadRequired = true, Tags = new[] { "settings/quality" })]
         public static ProjectSettingsResponse Set(
             [CliArg("settings", "Fields to change; omitted fields are left unchanged.")] QualitySettingsInput settings = null,
             [CliArg("confirm", "Apply the change. Without it the call is refused.")] bool confirm = false,
@@ -81,7 +81,7 @@ namespace Unity.Pipeline.Editor.Commands.ProjectSettings
     }
 
     /// <summary>Quality settings to change. Null/omitted fields are left unchanged.</summary>
-    public class QualitySettingsInput : IStructuredCommandInput
+    class QualitySettingsInput : IStructuredCommandInput
     {
         [CliArg("level", "Quality level index (see levelNames from get_quality_settings).")]
         public int? Level { get; set; }
