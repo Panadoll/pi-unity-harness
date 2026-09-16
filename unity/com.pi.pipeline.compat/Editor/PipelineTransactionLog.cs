@@ -11,6 +11,10 @@ using Unity.Scripting.LifecycleManagement;
 #endif
 
 [assembly: InternalsVisibleTo("Unity.Pipeline.Tests.Editor")]
+// Lets the pi-unity harness bridge (a separate package) drive TestCommands / PipelineTestRunner
+// and read their internal response models. Exercised only under #if PI_UNITY_PIPELINE.
+[assembly: InternalsVisibleTo("Pi.UnityHarness.Editor")]
+[assembly: InternalsVisibleTo("Pi.UnityHarness.Editor.Tests")]
 
 namespace Unity.Pipeline.Editor
 {

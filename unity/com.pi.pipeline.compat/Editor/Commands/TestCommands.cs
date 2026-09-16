@@ -195,6 +195,24 @@ namespace Unity.Pipeline.Editor.Commands
                     CollectLeafTests(child, testMode, items);
             }
         }
+
+        private static void ApplyDirtyScenePolicy(string policy)
+        {
+            if (string.IsNullOrEmpty(policy) || policy.Equals("fail", StringComparison.OrdinalIgnoreCase))
+                return;
+
+            if (policy.Equals("save", StringComparison.OrdinalIgnoreCase))
+            {
+                UnityEditor.SceneManagement.EditorSceneManager.SaveOpenScenes();
+                return;
+            }
+
+            if (policy.Equals("discard", StringComparison.OrdinalIgnoreCase))
+            {
+                var setup = UnityEditor.SceneManagement.EditorSceneManager.GetSceneManagerSetup();
+                UnityEditor.SceneManagement.EditorSceneManager.RestoreSceneManagerSetup(setup);
+            }
+        }
     }
 
     /// <summary>
@@ -220,22 +238,4 @@ namespace Unity.Pipeline.Editor.Commands
         public List<string> Categories { get; set; } = new List<string>();
         public bool Explicit { get; set; }
     }
-        private static void ApplyDirtyScenePolicy(string policy)
-        {
-            if (string.IsNullOrEmpty(policy) || policy.Equals("fail", StringComparison.OrdinalIgnoreCase))
-                return;
-
-            if (policy.Equals("save", StringComparison.OrdinalIgnoreCase))
-            {
-                UnityEditor.SceneManagement.EditorSceneManager.SaveOpenScenes();
-                return;
-            }
-
-            if (policy.Equals("discard", StringComparison.OrdinalIgnoreCase))
-            {
-                var setup = UnityEditor.SceneManagement.EditorSceneManager.GetSceneManagerSetup();
-                UnityEditor.SceneManagement.EditorSceneManager.RestoreSceneManagerSetup(setup);
-            }
-        }
-
 }

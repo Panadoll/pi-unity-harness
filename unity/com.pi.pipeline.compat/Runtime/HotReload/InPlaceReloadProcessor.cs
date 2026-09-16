@@ -32,7 +32,7 @@ namespace Unity.Pipeline.HotReload
             return Task.FromResult(new InPlaceReloadResult
             {
                 Success = false,
-                Error = "In-place hot reload requires Unity 6000.0 or newer."
+                ErrorMessage = "In-place hot reload requires Unity 6000.0 or newer."
             });
 #else
             // Runs synchronously on the calling (main) thread; returns a completed Task.

@@ -831,7 +831,7 @@ namespace Unity.Pipeline.Editor.Testing
             public bool includeExplicit;
             public bool isSync;
         }
-    }
+
         public static void TryLoadEditorTestAssemblies()
         {
             try
@@ -866,4 +866,5 @@ namespace Unity.Pipeline.Editor.Testing
             }
         }
 
+    }
 }
