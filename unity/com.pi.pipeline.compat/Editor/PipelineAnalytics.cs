@@ -11,6 +11,10 @@ using UnityEngine.Analytics;
 using Unity.Scripting.LifecycleManagement;
 #endif
 
+// Unity 6 的 IAnalytic / AnalyticInfoAttribute / EditorAnalytics.SendAnalytic 在 Unity 2021.3–2022.x
+// 不存在，因此本文件在旧版本上整体走 #else 分支（遥测关闭，但保持同名 API，调用方无需条件编译）。
+#if UNITY_6000_0_OR_NEWER
+
 namespace Unity.Pipeline.Editor
 {
     /// <summary>
@@ -365,3 +369,23 @@ namespace Unity.Pipeline.Editor
         }
     }
 }
+#else
+namespace Unity.Pipeline.Editor
+{
+    /// <summary>
+    /// Unity 2021.3 / 2022.x 上 IAnalytic、AnalyticInfoAttribute 与 EditorAnalytics.SendAnalytic
+    /// 都不存在，遥测整体关闭。这里提供同签名的空实现，使 EditorPipelineServer /
+    /// EditorPipelineStartup 的调用点无需改动。
+    /// </summary>
+    internal static class PipelineAnalytics
+    {
+        internal static void RecordCommandExecuted(in CommandExecutionInfo info)
+        {
+        }
+
+        internal static void SendSessionStoppedIfStarted()
+        {
+        }
+    }
+}
+#endif

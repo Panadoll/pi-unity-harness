@@ -8,6 +8,14 @@ using UnityEditor;
 using UnityEngine;
 using Object = UnityEngine.Object;
 
+// Unity 6 renamed PhysicMaterial to PhysicsMaterial. Keep writing the type name PhysicsMaterial
+// below on every version by aliasing it to whichever type actually exists.
+#if UNITY_6000_0_OR_NEWER
+using PhysicsMaterial = UnityEngine.PhysicsMaterial;
+#else
+using PhysicsMaterial = UnityEngine.PhysicMaterial;
+#endif
+
 namespace Unity.Pipeline.Editor.Commands.Assets
 {
     /// <summary>

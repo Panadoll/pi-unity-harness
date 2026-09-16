@@ -43,10 +43,16 @@ namespace Unity.Pipeline.Editor.Commands.Materials
             {
                 AssetPath = assetPath,
                 Shader = mat.shader != null ? mat.shader.name : null,
-                // rawRenderQueue is -1 when the material inherits from the shader and a positive
+                // The raw value is -1 when the material inherits from the shader and a positive
                 // integer when explicitly overridden — returning the raw value preserves the
                 // round-trip contract with set_material_properties renderQueue:-1 (inherit).
+                // Unity 6 exposes it as Material.rawRenderQueue; older versions resolve
+                // renderQueue against the shader, so read the serialized field instead.
+#if UNITY_6000_0_OR_NEWER
                 RenderQueue = mat.rawRenderQueue,
+#else
+                RenderQueue = GetRawRenderQueue(mat),
+#endif
                 EnabledKeywords = GetEnabledKeywords(mat),
             };
 
@@ -84,6 +90,19 @@ namespace Unity.Pipeline.Editor.Commands.Materials
 
             return result;
         }
+
+#if !UNITY_6000_0_OR_NEWER
+        /// <summary>
+        /// Unity 2021.3 / 2022.x has no Material.rawRenderQueue: renderQueue resolves the queue
+        /// against the shader, so read the serialized m_CustomRenderQueue field directly
+        /// (-1 = inherit from the shader) to preserve the read/write round-trip contract.
+        /// </summary>
+        private static int GetRawRenderQueue(Material material)
+        {
+            var property = new SerializedObject(material).FindProperty("m_CustomRenderQueue");
+            return property != null ? property.intValue : -1;
+        }
+#endif
 
         [CliCommand("set_material_properties",
             "Set shader properties on a material (Float/Range/Int=number; Color=[r,g,b,a] or \"#RRGGBBAA\" hex; Vector=[x,y,z,w]; Texture=an object reference or null to clear), optionally reassign the shader, set the render queue, and toggle keywords. Unknown names / type mismatches are reported in unknown[].",
