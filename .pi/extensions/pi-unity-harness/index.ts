@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { execFile, spawn, type ChildProcess } from "node:child_process";
-import { existsSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { execFile, execFileSync, spawn, type ChildProcess } from "node:child_process";
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
@@ -49,6 +49,259 @@ When changing Unity scripts, scenes, assets, or runtime behavior, close the loop
 
 Prefer unity_eval_file over unity_eval for multi-line or non-trivial C# (write a .repl under Temp/PiUnityHarness/AgentScratch/, then pass that path). Never call AssetDatabase.Refresh or other Domain Reload triggers inside eval — use unity_recompile instead.
 `.trim();
+
+export const HARNESS_PACKAGE_NAME = "com.pi.unity-harness";
+export const PIPELINE_PACKAGE_NAME = "com.unity.pipeline";
+export const PIPELINE_PACKAGE_VERSION = "0.6.0-exp.1";
+export const PIPELINE_COMPAT_PACKAGE_NAME = "com.pi.pipeline.compat";
+export const PIPELINE_COMPAT_INPUTSYSTEM_VERSION = "1.7.0";
+
+export interface UnityInstance {
+  projectPath: string;
+  pid: number;
+  bridgeReady: boolean;
+  bridgeInfo?: { pipe?: string; token?: string; statePlaneName?: string };
+}
+
+export function discoverUnityInstances(): UnityInstance[] {
+  if (process.platform !== "win32") return [];
+
+  try {
+    const output = execFileSync(
+      "powershell.exe",
+      [
+        "-NoProfile", "-NonInteractive", "-Command",
+        `Get-CimInstance Win32_Process -Filter "name='Unity.exe'" | ForEach-Object { $procId = $_.ProcessId; $cmd = if ($_.CommandLine) { $_.CommandLine } else { '' }; Write-Output "PID:$procId"; Write-Output "CMD:$cmd"; Write-Output "---" }`,
+      ],
+      { encoding: "utf8", timeout: 15000, stdio: ["ignore", "pipe", "ignore"] },
+    );
+
+    const instances: UnityInstance[] = [];
+    const blocks = output.split("---").map((b) => b.trim()).filter(Boolean);
+
+    for (const block of blocks) {
+      const pidMatch = block.match(/PID:(\d+)/);
+      const cmdMatch = block.match(/CMD:(.*)/s);
+      if (!pidMatch) continue;
+
+      const pid = parseInt(pidMatch[1], 10);
+      const cmdLine = cmdMatch ? cmdMatch[1].trim() : "";
+
+      if (/AssetImportWorker|-adb2|(^|\s)-batchMode(\s|$)/i.test(cmdLine)) continue;
+
+      const ppMatch = cmdLine.match(/-projectPath[\s"]+"?([^"\s]+)/i) ??
+        cmdLine.match(/-createproject[\s"]+"?([^"\s]+)/i);
+      const projectPath = ppMatch ? resolve(ppMatch[1]) : null;
+      if (!projectPath) continue;
+
+      if (instances.some((i) => i.projectPath === projectPath)) continue;
+
+      const bridgePath = join(projectPath, "Library", "PiUnityHarness", "bridge.json");
+      let bridgeReady = false;
+      let bridgeInfo: any = undefined;
+
+      if (existsSync(bridgePath)) {
+        try {
+          let text = readFileSync(bridgePath, "utf8");
+          if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
+          const raw = JSON.parse(text);
+          if (raw.pipe && raw.token) {
+            bridgeReady = true;
+            bridgeInfo = raw;
+          }
+        } catch {}
+      }
+
+      instances.push({ projectPath, pid, bridgeReady, bridgeInfo });
+    }
+
+    return instances;
+  } catch {
+    return [];
+  }
+}
+
+function readManifest(projectPath: string): any | null {
+  const manifestPath = join(projectPath, "Packages", "manifest.json");
+  if (!existsSync(manifestPath)) return null;
+  try {
+    let text = readFileSync(manifestPath, "utf8");
+    if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+export function readProjectUnityVersion(projectPath: string): string | undefined {
+  const versionPath = join(projectPath, "ProjectSettings", "ProjectVersion.txt");
+  if (!existsSync(versionPath)) return undefined;
+  try {
+    const text = readFileSync(versionPath, "utf8");
+    return text.match(/m_EditorVersion:\s*([^\r\n]+)/)?.[1]?.trim();
+  } catch {
+    return undefined;
+  }
+}
+
+export function parseUnityMajorVersion(versionString: string | undefined): number | undefined {
+  if (!versionString) return undefined;
+  const m = versionString.match(/^(\d+)/);
+  return m ? parseInt(m[1], 10) : undefined;
+}
+
+export interface PipelineInstallStatus {
+  installed: boolean;
+  packageName?: string;
+  flavor?: "official" | "compat";
+  version?: string;
+  source?: "embedded" | "local" | "registry";
+}
+
+export function getPipelineInstallStatus(projectPath: string): PipelineInstallStatus {
+  const manifest = readManifest(projectPath);
+  const deps = manifest?.dependencies ?? {};
+
+  const pipelineManifest = deps[PIPELINE_PACKAGE_NAME];
+  const embeddedPackageJson = join(projectPath, "Packages", PIPELINE_PACKAGE_NAME, "package.json");
+  let embeddedVersion: string | undefined;
+  let embeddedDisplay: string | undefined;
+
+  if (existsSync(embeddedPackageJson)) {
+    try {
+      let text = readFileSync(embeddedPackageJson, "utf8");
+      if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
+      const pkg = JSON.parse(text);
+      embeddedVersion = pkg.version;
+      embeddedDisplay = pkg.displayName;
+    } catch {}
+  }
+
+  if (embeddedVersion !== undefined || pipelineManifest) {
+    const manifestValue = String(pipelineManifest ?? "");
+    const isCompat =
+      (embeddedDisplay ?? "").toLowerCase().includes("compat") ||
+      manifestValue.toLowerCase().includes("compat") ||
+      manifestValue.toLowerCase().includes("pi.pipeline.compat");
+    return {
+      installed: true,
+      packageName: PIPELINE_PACKAGE_NAME,
+      flavor: isCompat ? "compat" : "official",
+      version: embeddedVersion ?? manifestValue,
+      source: embeddedVersion !== undefined ? "embedded" : manifestValue.startsWith("file:") ? "local" : "registry",
+    };
+  }
+
+  return { installed: false };
+}
+
+function resolvePackageRepoDir(subpath: string): string | undefined {
+  const candidates = [
+    resolve(__dirname, "../../../", subpath),
+    resolve(process.cwd(), subpath),
+    resolve(process.cwd(), "..", "pi-unity-harness", subpath),
+  ];
+  for (const dir of candidates) {
+    if (existsSync(join(dir, "package.json"))) return dir;
+  }
+  return undefined;
+}
+
+export function installPiUnityHarness(projectPath: string, packageSourceDir?: string): { ok: boolean; message: string } {
+  const manifestPath = join(projectPath, "Packages", "manifest.json");
+  if (!existsSync(manifestPath)) {
+    return { ok: false, message: `Cannot find Packages/manifest.json: ${projectPath} may not be a Unity project` };
+  }
+
+  const manifest = readManifest(projectPath);
+  if (!manifest) {
+    return { ok: false, message: `Failed to parse Packages/manifest.json: ${manifestPath}` };
+  }
+  if (!manifest.dependencies) manifest.dependencies = {};
+
+  if (manifest.dependencies[HARNESS_PACKAGE_NAME]) {
+    return { ok: true, message: `${HARNESS_PACKAGE_NAME} is already installed (${manifest.dependencies[HARNESS_PACKAGE_NAME]})` };
+  }
+
+  const pkgDir = packageSourceDir ? resolve(packageSourceDir) : resolvePackageRepoDir("unity/com.pi.unity-harness");
+  if (!pkgDir || !existsSync(join(pkgDir, "package.json"))) {
+    return { ok: false, message: `Cannot find ${HARNESS_PACKAGE_NAME} directory. Expected in unity/com.pi.unity-harness` };
+  }
+
+  let relPath = relative(dirname(manifestPath), pkgDir).replace(/\\/g, "/");
+  if (!relPath.startsWith(".")) relPath = "./" + relPath;
+
+  manifest.dependencies[HARNESS_PACKAGE_NAME] = `file:${relPath}`;
+
+  try {
+    writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n", "utf8");
+    return { ok: true, message: `Installed ${HARNESS_PACKAGE_NAME} -> "file:${relPath}". Unity Editor will compile and load the bridge.` };
+  } catch (err: any) {
+    return { ok: false, message: `Failed to write manifest.json: ${err.message}` };
+  }
+}
+
+export function installOfficialUnityPipeline(projectPath: string): { ok: boolean; message: string } {
+  const manifestPath = join(projectPath, "Packages", "manifest.json");
+  const manifest = readManifest(projectPath);
+  if (!manifest) {
+    return { ok: false, message: `Cannot find or parse Packages/manifest.json: ${projectPath}` };
+  }
+  manifest.dependencies ??= {};
+  manifest.dependencies[PIPELINE_PACKAGE_NAME] = PIPELINE_PACKAGE_VERSION;
+  try {
+    writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n", "utf8");
+    return { ok: true, message: `Added ${PIPELINE_PACKAGE_NAME}@${PIPELINE_PACKAGE_VERSION}. Unity Editor will resolve the package.` };
+  } catch (err: any) {
+    return { ok: false, message: `Failed to write manifest.json: ${err.message}` };
+  }
+}
+
+export function installCompatUnityPipeline(projectPath: string): { ok: boolean; message: string } {
+  const manifestPath = join(projectPath, "Packages", "manifest.json");
+  const manifest = readManifest(projectPath);
+  if (!manifest) {
+    return { ok: false, message: `Cannot find or parse Packages/manifest.json: ${projectPath}` };
+  }
+  const compatDir = resolvePackageRepoDir("unity/com.pi.pipeline.compat");
+  if (!compatDir) {
+    return { ok: false, message: `Cannot find compat package directory (expected unity/com.pi.pipeline.compat)` };
+  }
+
+  manifest.dependencies ??= {};
+  delete manifest.dependencies[PIPELINE_COMPAT_PACKAGE_NAME];
+
+  try {
+    const targetDir = join(projectPath, "Packages", PIPELINE_PACKAGE_NAME);
+    rmSync(targetDir, { recursive: true, force: true });
+    cpSync(compatDir, targetDir, { recursive: true, force: true });
+    manifest.dependencies[PIPELINE_PACKAGE_NAME] = "file:com.unity.pipeline";
+    if (!manifest.dependencies["com.unity.inputsystem"]) {
+      manifest.dependencies["com.unity.inputsystem"] = PIPELINE_COMPAT_INPUTSYSTEM_VERSION;
+    }
+    writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n", "utf8");
+    return {
+      ok: true,
+      message:
+        `Copied compat fork as embedded package ${PIPELINE_PACKAGE_NAME} (Packages/com.unity.pipeline)` +
+        ` and ensured com.unity.inputsystem@${PIPELINE_COMPAT_INPUTSYSTEM_VERSION}. Unity Editor will resolve it.`,
+    };
+  } catch (err: any) {
+    return { ok: false, message: `Failed to write manifest / copy compat package: ${err.message}` };
+  }
+}
+
+export function installUnityPipelineForProject(
+  projectPath: string,
+  unityMajor: number | undefined,
+): { ok: boolean; message: string; flavor?: "official" | "compat" } {
+  if (unityMajor !== undefined && unityMajor >= 6000) {
+    const r = installOfficialUnityPipeline(projectPath);
+    return { ...r, flavor: "official" };
+  }
+  const r = installCompatUnityPipeline(projectPath);
+  return { ...r, flavor: "compat" };
+}
 
 /** Find pi-unity CLI binary path */
 export function findPiUnityBinary(): string {
@@ -194,13 +447,22 @@ export class MuxClient {
   private startedOnce = false;
   private readonly queue: MuxJob[] = [];
   private inflight: MuxJob | null = null;
+  private readonly bin: string;
+  private readonly projectPath?: string;
+  private readonly spawnImpl: typeof spawn;
+  private readonly cwd?: string;
 
   constructor(
-    private readonly bin: string,
-    private readonly projectPath?: string,
-    private readonly spawnImpl: typeof spawn = spawn,
-    private readonly cwd?: string,
-  ) {}
+    bin: string,
+    projectPath?: string,
+    spawnImpl: typeof spawn = spawn,
+    cwd?: string,
+  ) {
+    this.bin = bin;
+    this.projectPath = projectPath;
+    this.spawnImpl = spawnImpl;
+    this.cwd = cwd;
+  }
 
   get alive(): boolean {
     return !this.closed && this.child !== null && this.child.exitCode === null;
@@ -737,6 +999,44 @@ export default function (pi: ExtensionAPI) {
   let settings = loadUnityHarnessSettings();
   const dynamicallyRegisteredTools = new Set<string>();
   let sessionMux: MuxClient | null = null;
+  let activeProjectPath: string | undefined = process.env.UNITY_PROJECT_PATH?.trim() || undefined;
+
+  async function switchProject(newPath: string | undefined, ctx?: { cwd?: string }) {
+    activeProjectPath = newPath ? resolve(newPath) : undefined;
+    if (activeProjectPath) {
+      process.env.UNITY_PROJECT_PATH = activeProjectPath;
+    } else {
+      delete process.env.UNITY_PROJECT_PATH;
+    }
+    await stopSessionMux();
+    if (settings.enabled) {
+      startSessionMux(ctx?.cwd ?? process.cwd(), activeProjectPath);
+      void refreshDynamicPipelineTools();
+    }
+  }
+
+  async function autoConnectUnity(ctx: { ui: any; cwd: string }) {
+    if (!ctx?.ui) return;
+    const instances = discoverUnityInstances();
+    if (instances.length === 0) {
+      ctx.ui?.setStatus?.("pi-unity", "enabled, no Unity detected (/unity-discover)");
+      return;
+    }
+    const readyInstances = instances.filter((i) => i.bridgeReady);
+    if (readyInstances.length === 1) {
+      const target = readyInstances[0].projectPath;
+      await switchProject(target, ctx);
+      const name = basename(target);
+      ctx.ui?.setStatus?.("pi-unity", `unity bridge: ${name}`);
+      ctx.ui?.notify?.(`Connected to Unity: ${name}`, "info");
+    } else if (readyInstances.length > 1) {
+      ctx.ui?.setStatus?.("pi-unity", `multiple Unity instances (${readyInstances.length}) (/unity-discover)`);
+      ctx.ui?.notify?.(`Found ${readyInstances.length} running Unity instances. Use /unity-discover to choose one.`, "info");
+    } else {
+      ctx.ui?.setStatus?.("pi-unity", `found ${instances.length} Unity, bridge not installed (/unity-install)`);
+      ctx.ui?.notify?.(`Found ${instances.length} Unity instance(s) without bridge installed. Run /unity-install to install.`, "warn");
+    }
+  }
 
   function assertEnabled() {
     settings = loadUnityHarnessSettings();
@@ -769,8 +1069,8 @@ export default function (pi: ExtensionAPI) {
     if (mux) await mux.shutdown();
   }
 
-  function startSessionMux(cwd: string) {
-    const projectPath = process.env.UNITY_PROJECT_PATH?.trim() || undefined;
+  function startSessionMux(cwd: string, explicitProjectPath?: string) {
+    const projectPath = explicitProjectPath ?? (activeProjectPath || process.env.UNITY_PROJECT_PATH?.trim() || undefined);
     sessionMux = new MuxClient(findPiUnityBinary(), projectPath, spawn, cwd);
     setActiveMux(sessionMux);
     void sessionMux.start();
@@ -811,8 +1111,9 @@ export default function (pi: ExtensionAPI) {
     settings = loadUnityHarnessSettings();
     await stopSessionMux();
     if (settings.enabled) {
-      startSessionMux(ctx.cwd);
+      startSessionMux(ctx.cwd, activeProjectPath);
       void refreshDynamicPipelineTools();
+      void autoConnectUnity(ctx);
     }
   });
 
@@ -827,25 +1128,260 @@ export default function (pi: ExtensionAPI) {
     await stopSessionMux();
   });
 
-  // ---- /unity-harness-settings command ----
+  // ---- Slash Commands ----
+
+  const harnessCommandHandler = async (args: string, ctx: { ui: any; cwd: string }) => {
+    const raw = (args || "").trim();
+    const tokens = raw.split(/\s+/).filter(Boolean);
+    const action = tokens[0]?.toLowerCase();
+    const persistScope = tokens.some((t) => t === "--project") ? "project" : "global";
+
+    if (!action || action === "status") {
+      const info = inspectUnityHarnessSettings(ctx.cwd);
+      const lines = [
+        `runtime enabled: ${settings.enabled ? "on" : "off"}`,
+        `active project: ${activeProjectPath ?? "(auto-detect)"}`,
+        `dynamically registered pipeline tools: ${dynamicallyRegisteredTools.size}`,
+        `global settings: ${info.globalPath} (exists=${info.globalExists})`,
+        `project settings: ${info.projectPath ?? "(none)"} (exists=${info.projectExists})`,
+        `env PI_UNITY_HARNESS_ENABLED: ${info.env ?? "(unset)"}`,
+        "",
+        "Usage:",
+        "  /unity-harness status",
+        "  /unity-harness on | off              (this session)",
+        "  /unity-harness on --persist          (session + ~/.pi/agent/settings.json)",
+        "  /unity-harness off --persist",
+        "  /unity-harness on --project          (session + <cwd>/.pi/settings.json)",
+        "  /unity-harness off --project",
+      ];
+      ctx.ui?.notify?.(lines.join("\n"), "info");
+      return;
+    }
+
+    const enable = coerceEnabled(action);
+    if (enable === undefined) {
+      ctx.ui?.notify?.(`Unknown action: "${action}". Use status | on | off [--persist|--project]`, "warn");
+      return;
+    }
+
+    if (tokens.some((t) => t.startsWith("--"))) {
+      persistEnabled(enable, persistScope, ctx.cwd);
+    }
+    settings = loadUnityHarnessSettings(ctx.cwd);
+    settings.enabled = enable;
+
+    if (!enable) {
+      await stopSessionMux();
+      ctx.ui?.setStatus?.("pi-unity", "disabled (/unity-harness on)");
+      ctx.ui?.notify?.("pi-unity-harness disabled.", "info");
+    } else {
+      await stopSessionMux();
+      startSessionMux(ctx.cwd, activeProjectPath);
+      void refreshDynamicPipelineTools();
+      ctx.ui?.notify?.("pi-unity-harness enabled.", "info");
+      await autoConnectUnity(ctx);
+    }
+  };
+
+  pi.registerCommand("unity-harness", {
+    description: "Inspect or toggle pi-unity-harness settings (status | on | off [--persist|--project])",
+    handler: harnessCommandHandler,
+  });
+
   pi.registerCommand("unity-harness-settings", {
-    description: "Inspect or toggle pi-unity-harness settings (enabled/disabled)",
+    description: "Inspect or toggle pi-unity-harness settings (alias for /unity-harness)",
+    handler: harnessCommandHandler,
+  });
+
+  const discoverCommandHandler = async (args: string, ctx: { ui: any; cwd: string }) => {
+    if (!settings.enabled) {
+      ctx.ui?.notify?.("pi-unity-harness is disabled. Use /unity-harness on first.", "warn");
+      return;
+    }
+
+    const explicit = args?.trim();
+    if (explicit) {
+      await switchProject(explicit, ctx);
+      ctx.ui?.notify?.(`Connected: ${basename(explicit)}`, "info");
+      ctx.ui?.setStatus?.("pi-unity", `unity bridge: ${basename(explicit)}`);
+      return;
+    }
+
+    const instances = discoverUnityInstances();
+    if (instances.length === 0) {
+      ctx.ui?.notify?.("No running Unity Editor detected", "warn");
+      return;
+    }
+
+    const readyInstances = instances.filter((i) => i.bridgeReady);
+    const notReady = instances.filter((i) => !i.bridgeReady);
+
+    const choices: { label: string; value: string; hint?: string }[] = [];
+    for (const inst of readyInstances) {
+      const name = basename(inst.projectPath);
+      choices.push({ label: `[ready] ${name}`, value: inst.projectPath, hint: `PID ${inst.pid}` });
+    }
+    for (const inst of notReady) {
+      const name = basename(inst.projectPath);
+      choices.push({ label: `[no bridge] ${name}`, value: inst.projectPath, hint: `PID ${inst.pid}` });
+    }
+
+    if (choices.length === 1) {
+      const target = choices[0].value;
+      await switchProject(target, ctx);
+      if (readyInstances.length === 1) {
+        ctx.ui?.notify?.(`Connected: ${basename(target)}`, "info");
+        ctx.ui?.setStatus?.("pi-unity", `unity bridge: ${basename(target)}`);
+      } else {
+        ctx.ui?.notify?.(`Project set: ${basename(target)} (bridge not ready; install with /unity-install)`, "warn");
+        ctx.ui?.setStatus?.("pi-unity", `unity: ${basename(target)} (no bridge)`);
+      }
+      return;
+    }
+
+    const chosen = await ctx.ui?.select?.(
+      "Choose a Unity instance to connect:",
+      choices.map((c) => ({ label: c.label, value: c.value, hint: c.hint })),
+    );
+
+    if (chosen) {
+      const inst = instances.find((i) => i.projectPath === chosen);
+      await switchProject(chosen, ctx);
+      if (inst?.bridgeReady) {
+        ctx.ui?.notify?.(`Connected: ${basename(chosen)}`, "info");
+        ctx.ui?.setStatus?.("pi-unity", `unity bridge: ${basename(chosen)}`);
+      } else {
+        ctx.ui?.notify?.(`Project set: ${basename(chosen)} (bridge not ready; install with /unity-install)`, "warn");
+        ctx.ui?.setStatus?.("pi-unity", `unity: ${basename(chosen)} (no bridge)`);
+      }
+    }
+  };
+
+  pi.registerCommand("unity-discover", {
+    description: "Scan running Unity Editor instances and choose one to connect",
+    handler: discoverCommandHandler,
+  });
+
+  pi.registerCommand("unity-connect", {
+    description: "Connect to a running Unity Editor instance (alias for /unity-discover)",
+    handler: discoverCommandHandler,
+  });
+
+  pi.registerCommand("unity-install", {
+    description: "Install the com.pi.unity-harness package and optional pipeline into a Unity project",
     handler: async (args, ctx) => {
-      const enable = coerceEnabled(args.trim());
-      if (enable === undefined) {
-        ctx.ui.notify(JSON.stringify(inspectUnityHarnessSettings(), null, 2), "info");
+      if (!settings.enabled) {
+        ctx.ui?.notify?.("pi-unity-harness is disabled. Use /unity-harness on first.", "warn");
         return;
       }
-      persistEnabled(enable, "global", ctx.cwd);
-      settings = loadUnityHarnessSettings(ctx.cwd);
-      if (!enable) {
-        await stopSessionMux();
-      } else {
-        await stopSessionMux();
-        startSessionMux(ctx.cwd);
-        void refreshDynamicPipelineTools();
+
+      let projectPath = args?.trim();
+
+      if (!projectPath) {
+        const instances = discoverUnityInstances();
+        const notReady = instances.filter((i) => !i.bridgeReady);
+
+        if (notReady.length === 0) {
+          ctx.ui?.notify?.(
+            instances.length > 0
+              ? "All running Unity instances already have the bridge installed"
+              : "No running Unity detected. Specify a project path: /unity-install <path>",
+            "warn",
+          );
+          return;
+        }
+
+        if (notReady.length === 1) {
+          projectPath = notReady[0].projectPath;
+        } else {
+          const chosen = await ctx.ui?.select?.(
+            "Choose a project to install:",
+            notReady.map((i) => ({
+              label: basename(i.projectPath),
+              value: i.projectPath,
+              hint: `PID ${i.pid}`,
+            })),
+          );
+          if (!chosen) return;
+          projectPath = chosen;
+        }
       }
-      ctx.ui.notify(`pi-unity-harness ${enable ? "enabled" : "disabled"}.`, "info");
+
+      const resolvedProject = resolve(projectPath);
+      const harnessResult = installPiUnityHarness(resolvedProject);
+      if (harnessResult.ok) {
+        ctx.ui?.notify?.(harnessResult.message, "info");
+      } else {
+        ctx.ui?.notify?.(harnessResult.message, "error");
+        return;
+      }
+
+      const unityVersion = readProjectUnityVersion(resolvedProject);
+      const major = parseUnityMajorVersion(unityVersion);
+      const pipelineStatus = getPipelineInstallStatus(resolvedProject);
+      if (!pipelineStatus.installed) {
+        const isUnity6 = major !== undefined && major >= 6000;
+        const title = isUnity6 ? "Install com.unity.pipeline?" : "Install the pipeline compat fork?";
+        const detail = isUnity6
+          ? `Project Unity version is ${unityVersion ?? "unknown"} (Unity 6+). Add the official ${PIPELINE_PACKAGE_NAME}@${PIPELINE_PACKAGE_VERSION}?`
+          : `Project Unity version is ${unityVersion ?? "unknown"} (pre-Unity 6). Add ${PIPELINE_PACKAGE_NAME} (compat fork for 2021.3/2022) as the command surface?`;
+        const ok = await ctx.ui?.confirm?.(title, detail);
+        if (ok) {
+          const pipelineResult = installUnityPipelineForProject(resolvedProject, major);
+          ctx.ui?.notify?.(pipelineResult.message, pipelineResult.ok ? "info" : "error");
+        }
+      } else {
+        ctx.ui?.notify?.(
+          `pipeline already present: ${pipelineStatus.packageName}@${pipelineStatus.version} (${pipelineStatus.flavor})`,
+          "info",
+        );
+      }
+    },
+  });
+
+  // ---- unity_discover ----
+  pi.registerTool({
+    name: "unity_discover",
+    label: "Unity Discover",
+    description: "Scan running Unity Editor instances, list connectable projects, and optionally connect.",
+    promptSnippet: "Use unity_discover to scan for running Unity Editors and connect to one.",
+    promptGuidelines: [
+      "Use unity_discover when you need to find available Unity instances or switch targets.",
+      "Call this before other unity_* tools if you are unsure which Unity project is connected.",
+    ],
+    parameters: toolSchema({
+      projectPath: Type.String({ description: "Optional project path to connect to. If omitted, scans and selects the first ready instance." }),
+      ...VIEW_FIELDS,
+    }),
+    async execute(_toolCallId, params) {
+      assertEnabled();
+      const instances = discoverUnityInstances();
+      const readyInstances = instances.filter((i) => i.bridgeReady);
+
+      if (params.projectPath) {
+        await switchProject(params.projectPath);
+      } else if (readyInstances.length > 0 && !activeProjectPath) {
+        await switchProject(readyInstances[0].projectPath);
+      }
+
+      const current = activeProjectPath ?? null;
+      const result = {
+        current,
+        instances: instances.map((i) => ({
+          projectPath: i.projectPath,
+          pid: i.pid,
+          bridgeReady: i.bridgeReady,
+          selected: current ? resolve(i.projectPath) === resolve(current) : false,
+        })),
+        hint: readyInstances.length === 0 && instances.length > 0
+          ? `Detected ${instances.length} running Unity instance(s), but none have the bridge installed. Run /unity-install to install.`
+          : undefined,
+      };
+
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        details: result,
+      };
     },
   });
 
