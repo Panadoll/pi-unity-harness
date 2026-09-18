@@ -82,6 +82,7 @@ namespace Pi.UnityHarness.PlayMode.Tests.Vision
             Assert.That(json, Is.Not.Null);
             StringAssert.Contains("\"status\":\"succeeded\"", json);
             StringAssert.Contains("\"schema\":\"harness.vision.observe.v1\"", json);
+            AssertNoEmbeddedImage(json);
             StringAssert.Contains("\"changed\":true", json, "旋转 cube 的连续帧必须检测到变化");
             StringAssert.Contains("\"captured_count\":3", json);
             StringAssert.Contains("\"fingerprint\":\"", json);
@@ -107,6 +108,7 @@ namespace Pi.UnityHarness.PlayMode.Tests.Vision
 
             Assert.That(json, Is.Not.Null);
             StringAssert.Contains("\"status\":\"succeeded\"", json);
+            AssertNoEmbeddedImage(json);
             StringAssert.Contains("\"changed\":false", json, "静止场景的连续帧不应判定为变化");
             StringAssert.Contains("\"timeline\":null", json);
             // 精确去重：静止纯色场景 3 帧字节相同，去重后只保留 1 个唯一文件
@@ -132,6 +134,7 @@ namespace Pi.UnityHarness.PlayMode.Tests.Vision
 
                 Assert.That(json, Is.Not.Null);
                 StringAssert.Contains("\"status\":\"succeeded\"", json);
+                AssertNoEmbeddedImage(json);
                 StringAssert.Contains("\"changed\":false", json);
                 StringAssert.Contains("\"timed_out\":false", json);
             }
@@ -154,6 +157,7 @@ namespace Pi.UnityHarness.PlayMode.Tests.Vision
 
             Assert.That(json, Is.Not.Null);
             StringAssert.Contains("\"status\":\"succeeded\"", json);
+            AssertNoEmbeddedImage(json);
             StringAssert.Contains("\"schema\":\"harness.vision.capture_after.v1\"", json);
             StringAssert.Contains("\"mode\":\"short\"", json);
             StringAssert.Contains("\"sheet\":\"", json);
@@ -173,9 +177,17 @@ namespace Pi.UnityHarness.PlayMode.Tests.Vision
 
             Assert.That(json, Is.Not.Null);
             StringAssert.Contains("\"status\":\"succeeded\"", json);
+            AssertNoEmbeddedImage(json);
             StringAssert.Contains("\"mode\":\"burst\"", json);
             StringAssert.Contains("\"captured_count\":24", json);
             StringAssert.Contains("\"sheet\":\"", json);
+        }
+
+        private static void AssertNoEmbeddedImage(string json)
+        {
+            StringAssert.Contains("\"embed\":false", json);
+            StringAssert.DoesNotContain("data:image", json);
+            StringAssert.DoesNotContain("base64", json);
         }
     }
 }

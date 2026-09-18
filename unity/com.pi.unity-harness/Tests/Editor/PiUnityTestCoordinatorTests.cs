@@ -24,6 +24,8 @@ namespace Pi.UnityHarness.Editor.Tests
             "PiUnityHarness_CurrentTestSegment",
             "PiUnityHarness_EditorTestSegmentResultJson",
             "PiUnityHarness_TestDeadlineUtcTicks",
+            "PiUnityHarness_LastCompletedTestRequestId",
+            "PiUnityHarness_LastCompletedTestResponse",
         };
 
         private readonly Dictionary<string, string> _savedSession = new Dictionary<string, string>();

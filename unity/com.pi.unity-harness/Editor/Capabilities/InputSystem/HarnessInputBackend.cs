@@ -283,6 +283,7 @@ namespace Pi.UnityHarness.Editor.Capabilities.Input
         {
             if (s_inputUpdateHooked) return;
             InputSystem.onBeforeUpdate += OnBeforeInputSystemUpdate;
+            InputSystem.onAfterUpdate += OnAfterInputSystemUpdate;
             EditorApplication.playModeStateChanged += OnPlayModeChanged;
             s_inputUpdateHooked = true;
         }
@@ -291,6 +292,14 @@ namespace Pi.UnityHarness.Editor.Capabilities.Input
         {
             if (HasSyntheticInput)
                 ReapplySyntheticState();
+        }
+
+        private static void OnAfterInputSystemUpdate()
+        {
+            // Hardware events may make the physical mouse current during this update.
+            // Keep the synthetic pointer authoritative only while a simulated button is held.
+            if (s_heldMouseButtons.Count > 0)
+                GetSyntheticMouseIfAvailable()?.MakeCurrent();
         }
 
         private static void ReapplySyntheticState()

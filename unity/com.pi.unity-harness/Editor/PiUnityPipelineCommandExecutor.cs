@@ -24,7 +24,7 @@ namespace Pi.UnityHarness.Editor
             "recompile_status",
         };
         private const int MaxCommandSuggestions = 5;
-        private const int MaxSuggestionTextLength = 128;
+        private const int MaxSuggestionTextLength = 96;
         // Pure in-memory state: not persisted across domain reloads. On beforeAssemblyReload each
         // request is answered with a timeout error and cleared, because managed Tasks cannot be
         // resumed after reload (contrast: PiUnityTestCoordinator uses SessionState across reloads).
@@ -205,7 +205,7 @@ namespace Pi.UnityHarness.Editor
             if (query.Length == 0 || commands == null)
                 return new List<string>();
 
-            int distanceThreshold = Math.Min(4, Math.Max(2, query.Length / 3));
+            int distanceThreshold = Math.Min(4, Math.Max(2, query.Length / 6));
             return commands
                 .Where(IsCommandVisible)
                 .Select(c => c.Name)

@@ -427,19 +427,16 @@ pub fn shape_run_tests(raw: &Value) -> Value {
         })
         .map(|r| json!({"name": pick_str_ci(r, &["name", "fullName", "testName"])}))
         .collect();
-    let mut out = json!({
+    let listed_failures = failures.len() as i64;
+    json!({
         "passed": passed,
         "failed": failed,
         "skipped": skipped,
-    });
-    if failures.is_empty() {
-        if let Some(obj) = out.as_object_mut() {
-            obj.insert("failures".into(), json!("0 个失败用例 found"));
-        }
-    } else if let Some(obj) = out.as_object_mut() {
-        obj.insert("failures".into(), Value::Array(failures));
-    }
-    out
+        "failures": failures,
+        // A summary can survive even when the bridge omits individual results.
+        // Keep that mismatch explicit instead of reporting a false empty list.
+        "failureListComplete": listed_failures == failed,
+    })
 }
 
 pub fn shape_observe(raw: &Value) -> Value {
@@ -633,7 +630,18 @@ mod tests {
         }));
         assert_eq!(out["passed"], 4);
         assert_eq!(out["skipped"], 1);
-        assert_eq!(out["failures"], "0 个失败用例 found");
+        assert!(out["failures"].as_array().unwrap().is_empty());
+        assert_eq!(out["failureListComplete"], true);
+    }
+
+    #[test]
+    fn run_tests_marks_missing_failure_rows_as_incomplete() {
+        let out = shape_run_tests(&json!({
+            "summary": {"passed": 2, "failed": 1, "skipped": 0}
+        }));
+        assert_eq!(out["failed"], 1);
+        assert!(out["failures"].as_array().unwrap().is_empty());
+        assert_eq!(out["failureListComplete"], false);
     }
 
     #[test]
