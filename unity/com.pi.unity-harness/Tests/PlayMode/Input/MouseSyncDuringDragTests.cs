@@ -1,4 +1,5 @@
 using System.Collections;
+using System.Collections.Generic;
 using NUnit.Framework;
 using Pi.UnityHarness.Editor.Capabilities.Input;
 using UnityEngine;
@@ -114,6 +115,84 @@ namespace Pi.UnityHarness.PlayMode.Tests.Input
             yield return RunToLastString(HarnessInput.DragEndJson(endX, center.y, 1), v => { });
         }
 
+        [UnityTest]
+        public IEnumerator DragDelta_IsSignedYFlippedInterpolatedAndClearedAtEnd()
+        {
+            var dragTarget = CreateDragTarget();
+            var handler = dragTarget.GetComponent<DragProbe>();
+            yield return null;
+
+            Vector2 center = ScreenCenter();
+            yield return RunToLastString(
+                HarnessInput.DragStartJson(center.x - 40f, center.y - 20f, "left"), v => { });
+            Assert.That(handler.PointerDownDeltas, Has.Count.EqualTo(1));
+            Assert.That(handler.PointerDownDeltas[0].sqrMagnitude, Is.EqualTo(0f).Within(0.0001f),
+                "initial positioning/press must start with zero delta");
+
+            yield return RunToLastString(
+                HarnessInput.DragMoveJson(center.x + 40f, center.y + 20f, 4), v => { });
+
+            Assert.That(handler.DragDeltas, Has.Count.EqualTo(4),
+                "manual EventSystem dispatch should emit exactly one drag per interpolation step");
+            foreach (Vector2 delta in handler.DragDeltas)
+            {
+                Assert.That(delta.x, Is.EqualTo(20f).Within(0.01f));
+                Assert.That(delta.y, Is.EqualTo(-10f).Within(0.01f),
+                    "screenshot Y increases downward, so Unity screen-space delta must be negative");
+            }
+            foreach (Vector2 delta in handler.InputSystemDeltas)
+            {
+                Assert.That(delta.x, Is.EqualTo(20f).Within(0.01f));
+                Assert.That(delta.y, Is.EqualTo(-10f).Within(0.01f));
+            }
+
+            yield return RunToLastString(
+                HarnessInput.DragEndJson(center.x + 40f, center.y + 20f, 1), v => { });
+
+            Assert.That(handler.DragDeltas, Has.Count.EqualTo(5));
+            Assert.That(handler.DragDeltas[4].sqrMagnitude, Is.EqualTo(0f).Within(0.0001f),
+                "a stationary final positioning must not reuse the previous movement");
+            Assert.That(handler.EndDelta.sqrMagnitude, Is.EqualTo(0f).Within(0.0001f),
+                "release/end must not expose stale movement");
+            Assert.That(handler.EndInputSystemDelta.sqrMagnitude, Is.EqualTo(0f).Within(0.0001f));
+
+            yield return RunToLastString(HarnessInput.DragStartJson(center.x, center.y, "left"), v => { });
+            Assert.That(handler.PointerDownDeltas, Has.Count.EqualTo(2));
+            Assert.That(handler.PointerDownDeltas[1].sqrMagnitude, Is.EqualTo(0f).Within(0.0001f),
+                "a new drag after cleanup must not inherit the prior drag delta");
+            HarnessInput.CancelDragJson();
+        }
+
+        [UnityTest]
+        public IEnumerator MouseDelta_WithoutEventSystem_IsSignedAndClearsWhenStationary()
+        {
+            // Previous tests destroy their EventSystem objects at end of frame.
+            yield return null;
+            Assert.That(EventSystem.current, Is.Null,
+                "this regression exercises the InputSystem fallback without manual EventSystem dispatch");
+
+            HarnessInputBackend.SetMousePosition(100f, 100f);
+            InputSystem.Update();
+            Assert.That(Mouse.current.delta.ReadValue().sqrMagnitude, Is.EqualTo(0f).Within(0.0001f));
+
+            HarnessInputBackend.SetMousePosition(125f, 140f);
+            InputSystem.Update();
+            Vector2 moved = Mouse.current.delta.ReadValue();
+            Assert.That(moved.x, Is.EqualTo(25f).Within(0.01f));
+            Assert.That(moved.y, Is.EqualTo(-40f).Within(0.01f));
+
+            HarnessInputBackend.SetMousePosition(125f, 140f);
+            InputSystem.Update();
+            Assert.That(Mouse.current.delta.ReadValue().sqrMagnitude, Is.EqualTo(0f).Within(0.0001f));
+
+            HarnessInputBackend.ClearAllInput();
+            yield return null;
+            HarnessInputBackend.SetMousePosition(200f, 200f);
+            InputSystem.Update();
+            Assert.That(Mouse.current.delta.ReadValue().sqrMagnitude, Is.EqualTo(0f).Within(0.0001f),
+                "cleanup must reset the previous-position baseline");
+        }
+
         private GameObject CreateDragTarget()
         {
             SetupCanvasAndEventSystem();
@@ -158,15 +237,31 @@ namespace Pi.UnityHarness.PlayMode.Tests.Input
             assign(lastResult as string);
         }
 
-        private sealed class DragProbe : MonoBehaviour, IBeginDragHandler, IDragHandler, IEndDragHandler
+        private sealed class DragProbe : MonoBehaviour, IPointerDownHandler, IBeginDragHandler, IDragHandler, IEndDragHandler
         {
             public int BeginDragCount;
             public int DragCount;
             public int EndDragCount;
+            public readonly List<Vector2> PointerDownDeltas = new List<Vector2>();
+            public readonly List<Vector2> DragDeltas = new List<Vector2>();
+            public readonly List<Vector2> InputSystemDeltas = new List<Vector2>();
+            public Vector2 EndDelta;
+            public Vector2 EndInputSystemDelta;
 
+            public void OnPointerDown(PointerEventData eventData) { PointerDownDeltas.Add(eventData.delta); }
             public void OnBeginDrag(PointerEventData eventData) { BeginDragCount++; }
-            public void OnDrag(PointerEventData eventData) { DragCount++; }
-            public void OnEndDrag(PointerEventData eventData) { EndDragCount++; }
+            public void OnDrag(PointerEventData eventData)
+            {
+                DragCount++;
+                DragDeltas.Add(eventData.delta);
+                InputSystemDeltas.Add(Mouse.current != null ? Mouse.current.delta.ReadValue() : Vector2.zero);
+            }
+            public void OnEndDrag(PointerEventData eventData)
+            {
+                EndDragCount++;
+                EndDelta = eventData.delta;
+                EndInputSystemDelta = Mouse.current != null ? Mouse.current.delta.ReadValue() : Vector2.zero;
+            }
         }
     }
 }

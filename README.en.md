@@ -9,14 +9,24 @@
 - `skills/` — One `pi-unity` Agent Skill (details in `references/`). `pi-unity skills install` copies the whole skill directory to `.agents/skills/` or `.claude/skills/`. A later install removes the old nine split skills when a directory contains only a matching `SKILL.md`
 - `.pi/extensions/pi-unity-harness/` — Thin wrapper providing typed tools for pi-coding-agent (shells out to `pi-unity` CLI)
 
+## pi Extension Mux
+
+The pi-coding-agent extension spawns the hidden `pi-unity mux` subcommand at `session_start`; tool calls go through stdin/stdout JSONL instead of spawning the CLI each time. Each reply carries `result` (condensed JSON) and `text` (Rust TOON of the same result). JSONL is IPC only; the model sees `text`.
+
+The mux holds one Unity named pipe, pinging every 5 s while connected (the broker drops idle connections after 15 s). The broker stays **single-client**: one Editor serves one client at a time and only the main session may drive it; subprocess / worktree subagents must use their own dedicated Editor. Other short-lived CLIs may see `Pipe busy` while the mux is alive — this is not a multi-agent channel, and slash UI is not restored.
+
+Requests are FIFO-queued on the extension side: at most one business frame is written to stdin at a time; queuing does not consume timeout. Cancelling a queued request only removes that one. On **unexpected mux exit**, queued requests that were never written (not dispatched) are resent once with the new mux process; on **timeout / abort / protocol damage** the whole queue fails without resend. **Dispatched (in-flight) requests are never replayed.** The `execFile` fallback applies only when the mux never started at all.
+
+Discovery precedence: explicit selection (`/unity-discover` / `--project-path`) wins, then session-cwd local discovery, then environment fallback (`UNITY_PROJECT_PATH`).
+
 ---
 
 ## Key Features
 
-- **Pure CLI Architecture (No-MCP)**: No Node.js runtime dependency, millisecond startup time, decoupled lifecycle, and process crash immunity.
+- **Pure CLI Architecture (No-MCP)**: No Node.js runtime dependency, low startup overhead, decoupled lifecycle, and process crash immunity.
 - **Dual-Mode Workflow**:
-  - **Speed Mode (Default)**: `snapshot` + `eval` + `uitree_*` white-box inspection, takes tens of milliseconds, no large images, saves tokens.
-  - **GUI Mode (On-Demand)**: `observe` + `capture` multi-frame capture and dHash change detection. Large images are saved to disk (`Temp/PiUnityHarness/Captures/`), never dumping Base64 to stdout.
+  - **Speed Mode (Default)**: For UI, start with `uitree_snapshot interactive_only=true`, then locate with `uitree_find` / `input_probe`, then act (drag in one `input_drag` call); for non-UI or custom state use `snapshot` + `eval`. Text-only white-box inspection, no large images, saves tokens.
+  - **GUI Mode (On-Demand)**: `observe` + `capture` multi-frame capture and dHash change detection, only for visual mismatches or custom-rendered UI. Large images are saved to disk (`Temp/PiUnityHarness/Captures/`), never dumping Base64 to stdout, no per-step image reads; `embed:false`-style markers are advisory only — hosts do not enforce inline prevention.
 - **Automatic Domain Reload Reconnection**: `pi-unity compile` manages connection drop and polls until `managedState == "ready"`.
 - **AXI output**: stdout defaults to TOON; `--json` opts into JSON. Bare `pi-unity` prints a live dashboard. Exit codes: `0` success (including idempotent no-ops), `1` error (including not connected / timeout), `2` usage.
 

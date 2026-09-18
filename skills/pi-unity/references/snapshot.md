@@ -10,13 +10,13 @@ pi-unity snapshot --fields childCount,tag
 pi-unity snapshot --full
 ```
 
-默认深度 3，错误日志 50 条。默认不含 components；`--full` 或 `--fields components` 才要。
+默认深度 3，错误日志 50 条。默认不含 components；`--full` 或 `--fields components` 才要。快照是活动场景的有界、可能不完整的层级树：运行时生成的对象、DontDestroyOnLoad 根、自绘 UI 可能不完整。树浅不代表场景空，这类状态用 eval 探针或 `uitree_*` 补查。
 
 默认字段：
 
-- `scene`、`selection`、`errors`
+- `scene`、`selection`、`errors`（错误摘要，随 log level 变化；字段形状以实际返回为准）
 - `nodes: N of M total`
 - `hierarchy`：path, name, active
 - `logs`：level, message
 
-树被截断时会给 `pi-unity snapshot --max-nodes <M> --full`。
+`--max-nodes` 默认 500 是有用的节点预算，别收到个位数；树被截断时按提示加大（`pi-unity snapshot --max-nodes <M> --full`）。

@@ -29,6 +29,7 @@ namespace Pi.UnityHarness.Editor.Capabilities.Vision
         private static readonly string[] CaptureImageFieldOrder =
         {
             "path",
+            "embed",
             "source",
             "width",
             "height",
@@ -76,6 +77,7 @@ namespace Pi.UnityHarness.Editor.Capabilities.Vision
             if (status == "succeeded")
             {
                 AppendStringField(sb, "path", path);
+                AppendBoolField(sb, "embed", false);
                 AppendStringField(sb, "source", source);
                 AppendIntField(sb, "width", width);
                 AppendIntField(sb, "height", height);
@@ -138,6 +140,7 @@ namespace Pi.UnityHarness.Editor.Capabilities.Vision
             AppendStringField(sb, "status", "succeeded", true);
             AppendStringField(sb, "schema", SchemaCaptureV1);
             AppendStringField(sb, "path", path);
+            AppendBoolField(sb, "embed", false);
             AppendStringField(sb, "source", source);
             AppendIntField(sb, "width", width);
             AppendIntField(sb, "height", height);
@@ -398,6 +401,12 @@ namespace Pi.UnityHarness.Editor.Capabilities.Vision
         {
             if (!isFirst) sb.Append(",");
             sb.Append("\"").Append(EscapeJson(name)).Append("\":").Append(value);
+        }
+
+        private static void AppendBoolField(StringBuilder sb, string name, bool value, bool isFirst = false)
+        {
+            if (!isFirst) sb.Append(",");
+            sb.Append("\"").Append(EscapeJson(name)).Append("\":").Append(value ? "true" : "false");
         }
 
         private static void AppendObjectField(StringBuilder sb, string name, string innerContent, bool isFirst = false)

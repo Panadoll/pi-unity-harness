@@ -1,5 +1,6 @@
 #if PI_UNITY_PIPELINE
 using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
 using Newtonsoft.Json.Linq;
 using NUnit.Framework;
@@ -65,6 +66,60 @@ namespace Pi.UnityHarness.Editor.Tests
 
             Assert.IsTrue(PiUnityPipelineCommandExecutor.IsCommandVisible(CreateCommand("list_tests", false)));
             Assert.IsNull(PiUnityPipelineCommandExecutor.GetForbiddenReason(CreateCommand("list_tests", false)));
+        }
+
+        [Test]
+        public void CommandSuggestions_RankDeterministicallyAndOnlyIncludeVisibleCommands()
+        {
+            var commands = new[]
+            {
+                CreateCommand("console_clear_logs", false),
+                CreateCommand("eval", false),
+                CreateCommand("console_clear_hidden", true),
+                CreateCommand("console_get_logs", false),
+                CreateCommand("assets_refresh", false),
+            };
+
+            List<string> forward = PiUnityPipelineCommandExecutor.GetCommandSuggestions("console_clear", commands);
+            List<string> reversed = PiUnityPipelineCommandExecutor.GetCommandSuggestions("console_clear", commands.Reverse());
+
+            CollectionAssert.AreEqual(new[] { "console_clear_logs" }, forward);
+            CollectionAssert.AreEqual(forward, reversed);
+            CollectionAssert.AreEqual(
+                new[] { "console_clear_logs" },
+                PiUnityPipelineCommandExecutor.GetCommandSuggestions("console_claer_logs", commands));
+            string message = PiUnityPipelineCommandExecutor.BuildCommandNotFoundMessage("console_clear", commands);
+            StringAssert.Contains("Did you mean: [console_clear_logs]?", message);
+            StringAssert.DoesNotContain("Available:", message);
+            StringAssert.DoesNotContain("eval", message);
+            StringAssert.DoesNotContain("console_clear_hidden", message);
+        }
+
+        [Test]
+        public void CommandSuggestions_ReturnAtMostFiveAndBoundLongUnknownInput()
+        {
+            var commands = Enumerable.Range(0, 8)
+                .Select(i => CreateCommand("scene_create_" + i, false))
+                .ToArray();
+
+            CollectionAssert.AreEqual(
+                new[] { "scene_create_0", "scene_create_1", "scene_create_2", "scene_create_3", "scene_create_4" },
+                PiUnityPipelineCommandExecutor.GetCommandSuggestions("scene_create", commands));
+
+            string longName = new string('x', 10000);
+            string message = PiUnityPipelineCommandExecutor.BuildCommandNotFoundMessage(longName, commands);
+            Assert.That(message.Length, Is.LessThan(200));
+            StringAssert.DoesNotContain("scene_create_0", message);
+            StringAssert.Contains("Use 'pi-unity list-commands'", message);
+
+            string longCommandName = "scene_" + new string('x', 512);
+            var longCommand = new[] { CreateCommand(longCommandName, false) };
+            CollectionAssert.AreEqual(new[] { longCommandName },
+                PiUnityPipelineCommandExecutor.GetCommandSuggestions("scene", longCommand));
+            string boundedSuggestionMessage =
+                PiUnityPipelineCommandExecutor.BuildCommandNotFoundMessage("scene", longCommand);
+            Assert.That(boundedSuggestionMessage.Length, Is.LessThan(200));
+            StringAssert.DoesNotContain(longCommandName, boundedSuggestionMessage);
         }
 
         private static CommandInfo CreateCommand(string name, bool runtimeOnly)

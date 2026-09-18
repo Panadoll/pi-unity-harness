@@ -107,7 +107,7 @@ pipe 名为 `pi_unity_` + 项目路径 SHA-256 前 6 字节（12 位 hex）；`s
 - 请求帧最大 1 MiB（`REQUEST_BUFFER_LIMIT`），超出响应 `request_too_large`
 - 客户端空闲 15 秒且无 in-flight 请求时，broker 主动断开（`CLIENT_HEARTBEAT_TIMEOUT_MS`）
 - 建议客户端在无请求时以 5 秒间隔发送 `ping` 保持连接（参考客户端行为）；broker 不强制 ping，但会因 15 秒静默断连
-- 客户端断开后重新连接即可继续使用；in-flight 请求不会恢复，需客户端自行重试
+- 客户端断开后重新连接即可继续使用；in-flight 请求不会恢复，客户端不得自动重放（重试边界见 5.3）
 
 ## 4. 请求类型
 
@@ -167,6 +167,10 @@ managed 处于 `initializing` / `reloading` / `quitting` 时，此类请求立�
 | `runtime_error` | 执行异常信息 |
 | `busy` | `coroutine queue full` |
 | `cancelled` | 异步 eval 被取消（域重载前清理等） |
+
+### 5.3 客户端重试边界
+
+broker 的拒绝语义不变：`managed_not_ready` / `managed_reloading` / `managed_quitting` 在 managed 未就绪时仍是立即失败帧。CLI 只允许对**显式、尚未派发（pre-dispatch）**的 `managed_not_ready` / `managed_reloading` 拒绝，在原始请求 deadline 内做有界重试；任意断连（pipe 关闭、超时、in-flight 丢失、协议损坏）不得自动重试或重放请求。
 
 ## 6. 结果负载
 

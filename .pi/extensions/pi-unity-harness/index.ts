@@ -48,6 +48,13 @@ When changing Unity scripts, scenes, assets, or runtime behavior, close the loop
 5. **Re-observe**: take a post-change unity_snapshot (or equivalent probe) and compare against the expected outcome.
 
 Prefer unity_eval_file over unity_eval for multi-line or non-trivial C# (write a .repl under Temp/PiUnityHarness/AgentScratch/, then pass that path). Never call AssetDatabase.Refresh or other Domain Reload triggers inside eval — use unity_recompile instead.
+
+### 观察顺序：速度模式优先，截图是升级不是默认
+- UI / 交互任务先走 uitree：unity_pipeline uitree_snapshot -p interactive_only=true 或 uitree_find；树对不上再升 unity_snapshot / unity_eval_file，最后才 unity_observe / unity_capture。
+- 不要默认每步截图：截图占用上下文，capture 结果里的 embed 元数据只是建议、宿主仍可能内联原图；只有画面/坐标/自绘 UI 确实需要核对时才截。
+- 拖拽优先 unity_pipeline input_drag（一次调用内部插值），不要手动拆 start/move/end 坐标步。
+- assets_refresh 是异步的且会触发导入/重载：调用后必须先 unity_recompile 再继续任何 managed 调用。
+- Unity 工具只从主会话调用：broker 单客户端，子代理 / 小模型并行不要直接调 unity_*。
 `.trim();
 
 export const HARNESS_PACKAGE_NAME = "com.pi.unity-harness";
@@ -329,6 +336,37 @@ export function findPiUnityBinary(): string {
   return binName;
 }
 
+/**
+ * 从 startDir 向上找最近的含 Library/PiUnityHarness/bridge.json 的工程目录。
+ * 只探测存在性（不读内容），避免依赖 / 泄露 bridge 里的 token。
+ */
+export function findNearestBridgeProject(startDir: string): string | undefined {
+  let dir = resolve(startDir);
+  for (;;) {
+    if (existsSync(join(dir, "Library", "PiUnityHarness", "bridge.json"))) return dir;
+    const parent = dirname(dir);
+    if (parent === dir) return undefined;
+    dir = parent;
+  }
+}
+
+/**
+ * 工程绑定优先级：显式选择（unity_discover）> 最近的本地 bridge 工程 > 继承的 UNITY_PROJECT_PATH。
+ * 相对显式路径按 cwd（会话工作目录）解析。
+ */
+export function resolveSessionProjectPath(
+  cwd: string,
+  explicit?: string,
+  envProject?: string,
+): string | undefined {
+  if (explicit) return resolve(cwd, explicit);
+  const nearest = findNearestBridgeProject(cwd);
+  if (nearest) return nearest;
+  const fromEnv = envProject?.trim();
+  // 相对 env 路径也统一按会话 cwd 解析（与显式选择一致）。
+  return fromEnv ? resolve(cwd, fromEnv) : undefined;
+}
+
 export interface CliExecutionResult {
   ok: boolean;
   result?: unknown;
@@ -343,6 +381,47 @@ export interface CliExecutionResult {
 
 const DEFAULT_MUX_TIMEOUT_MS = 120000;
 const MAX_MUX_STDOUT_CHARS = 32 * 1024 * 1024;
+const MAX_MUX_STDERR_TAIL_CHARS = 800;
+const MAX_DIAGNOSTIC_TAIL_CHARS = 600;
+/** 一次崩溃事件最多重启一次 mux 并重发未写入的排队请求。 */
+const MUX_RESTART_BUDGET = 1;
+/** 动态 pipeline 工具注册的最小间隔（成功触发的重试也要限速）。 */
+const DYNAMIC_TOOL_REFRESH_BACKOFF_MS = 3000;
+
+/**
+ * 诊断文本的 SAFE ALLOWLIST 汇总：绝不透传任意原文。stderr 尾部可能夹带未标签密钥、
+ * cookie、私钥、跨行切开的秘密片段、路径 / argv 行，黑名单删不干净。
+ * 因此只输出固定类别标签 + stderr 总字节数 / 行数等有界统计，未命中类别的内容一律丢弃。
+ */
+const DIAGNOSTIC_CATEGORY_PATTERNS: Array<[label: string, re: RegExp]> = [
+  ["panic", /\bpanic(?:ked|king)?\b/i],
+  ["fatal", /\bfatal\b/i],
+  ["segfault", /\bseg(?:mentation\s*)?fault\b|\bsigsegv\b/i],
+  ["sigabrt", /\bsigabrt\b|\babort(?:ed)?\b/i],
+  ["sigbus", /\bsigbus\b/i],
+  ["sigill", /\bsigill\b/i],
+  ["sigfpe", /\bsigfpe\b/i],
+  ["access-violation", /\baccess\s*violation\b|\baccessviolation\b/i],
+  ["stack-overflow", /\bstack\s*overflow\b/i],
+  ["out-of-memory", /\bout\s*of\s*memory\b|\boom\b/i],
+  ["assert-failed", /\bassert(?:ion)?\s+failed\b/i],
+  ["deadlock", /\bdeadlock\b/i],
+];
+
+export function sanitizeDiagnosticTail(text: string | undefined, maxChars = MAX_DIAGNOSTIC_TAIL_CHARS): string {
+  if (!text) return "";
+  const raw = String(text);
+  const bytes = Buffer.byteLength(raw, "utf8");
+  const lines = raw.split(/\r\n|\r|\n/).length;
+  const matched = DIAGNOSTIC_CATEGORY_PATTERNS.filter(([, re]) => re.test(raw)).map(([label]) => label);
+  let summary = `stderr=${bytes} bytes/${lines} lines`;
+  if (matched.length > 0) summary += `; matched: ${matched.join(", ")}`;
+  if (summary.length > maxChars) {
+    // 防御性封顶：类别词表固定，正常不可能触发。
+    summary = `${summary.slice(0, Math.max(0, maxChars - 12))}…[truncated]`;
+  }
+  return summary;
+}
 
 /** mux 调用结果。只有从未拉起成功时才允许 exec 回退。 */
 export type MuxCallResult =
@@ -451,6 +530,12 @@ export class MuxClient {
   private readonly projectPath?: string;
   private readonly spawnImpl: typeof spawn;
   private readonly cwd?: string;
+  /** 最近一次 mux 子进程意外退出的 exit code / signal（用于崩溃诊断，有界）。 */
+  private lastExit: { code: number | null; signal: string | null } | null = null;
+  /** 自最近一次成功业务回复以来已消耗的重启次数；成功回复后归零。 */
+  private restartsSinceStable = 0;
+  /** mux stderr 的有界尾部（脱敏后用于崩溃诊断）。 */
+  private stderrTail = "";
 
   constructor(
     bin: string,
@@ -470,6 +555,10 @@ export class MuxClient {
 
   get fixedProjectPath(): string | undefined {
     return this.projectPath;
+  }
+
+  get fixedCwd(): string | undefined {
+    return this.cwd;
   }
 
   async start(): Promise<boolean> {
@@ -516,7 +605,11 @@ export class MuxClient {
         if (this.child !== child) return;
         this.onStdout(chunk);
       });
-      child.stderr?.resume();
+      child.stderr?.setEncoding("utf8");
+      child.stderr?.on("data", (chunk: string) => {
+        if (this.child !== child) return;
+        this.stderrTail = (this.stderrTail + chunk).slice(-MAX_MUX_STDERR_TAIL_CHARS);
+      });
       const failStart = () => {
         if (this.child === child) this.child = null;
         this.buffer = "";
@@ -539,13 +632,14 @@ export class MuxClient {
         this.failTransport("mux 进程错误");
         finish(false);
       });
-      child.once("exit", () => {
+      child.once("exit", (code, signal) => {
         if (this.child !== child) return;
         if (!this.startedOnce) {
           failStart();
           return;
         }
-        this.failTransport("mux 进程退出");
+        // 意外退出：有界诊断 + 最多一次重启重发未写入的排队请求。
+        this.onUnexpectedExit(code, signal === undefined ? null : signal);
         finish(false);
       });
       child.stdin?.once("error", () => {
@@ -608,6 +702,8 @@ export class MuxClient {
       job.signal?.removeEventListener("abort", job.onAbort);
       job.onAbort = undefined;
     }
+    // 一次成功回复 = 通道恢复稳定，重启预算归零，后续崩溃还可再重启一次。
+    if (value.status === "completed") this.restartsSinceStable = 0;
     job.resolve(value);
   }
 
@@ -659,6 +755,94 @@ export class MuxClient {
       });
     }
     this.dropQueued("mux 未发送已终止");
+  }
+
+  /**
+   * 崩溃诊断：exitCode/signal + ALLOWLIST 汇总的 stderr + mux_crash 提示。
+   * state 描述重启结局（pending = 刚发起、结果未知），成功前不宣称已重启。
+   */
+  private crashResult(state: "pending" | "failed" | "skipped" = "pending"): CliExecutionResult {
+    const code = this.lastExit?.code ?? null;
+    const signal = this.lastExit?.signal ?? null;
+    const tail = sanitizeDiagnosticTail(this.stderrTail);
+    const restartText = state === "failed"
+      ? "重启失败，排队请求已放弃（已发出的请求不重放）"
+      : state === "skipped"
+        ? "未重启（无排队请求或重启预算已耗尽）；下一条业务调用会自动重连"
+        : "排队请求正等待一次重启尝试，结果尚未确定（已发出的请求不重放）";
+    return {
+      ok: false,
+      error: `mux 进程异常退出 (exitCode=${code}, signal=${signal})`,
+      error_type: "mux_crash",
+      exitCode: 1,
+      help: [
+        `mux_crash: mux 子进程异常退出 (exitCode=${code}, signal=${signal})；${restartText}`,
+        tail ? `stderr(已脱敏汇总): ${tail}` : "stderr: (无输出)",
+        "若反复 mux_crash，检查 ~/.pi-unity/logs 与控制台日志",
+      ],
+    };
+  }
+
+  /**
+   * mux 子进程意外退出：
+   * - 已写入的 in-flight 请求视为不确定副作用，绝不重放（in-flight-lost）。
+   * - 未写入的排队请求（unshift 回队首，保持 FIFO）可重启一次后重发。
+   * - abort / shutdown / 协议损坏 / 写入不确定都不走这里（killChild 已把 this.child 置空，退出事件被拦截）。
+   */
+  private onUnexpectedExit(code: number | null, signal: string | null): void {
+    this.lastExit = { code, signal };
+    this.buffer = "";
+    this.child = null;
+    if (this.closed) return; // shutdown/abort 的清理路径自己负责，不重启不重发
+
+    const current = this.inflight;
+    this.inflight = null;
+    if (current?.dispatched) {
+      // in-flight 已写入：副作用不确定，绝不重放（诊断先不宣称重启成功）。
+    } else if (current) {
+      // 未写入（dispatch 尚未写帧）：视为未触碰，回到队首保 FIFO。
+      this.queue.unshift(current);
+    }
+
+    // 先定重启决策再出诊断：无排队请求或预算耗尽时不会重启，文本不得宣称已重启。
+    const restartable = this.queue.length > 0 && this.restartsSinceStable < MUX_RESTART_BUDGET;
+    const state: "pending" | "skipped" = restartable ? "pending" : "skipped";
+    if (current?.dispatched) {
+      this.finishJob(current, {
+        status: "in-flight-lost",
+        written: true,
+        retryAllowed: false,
+        result: this.crashResult(state),
+      });
+    }
+
+    if (restartable) {
+      this.restartsSinceStable += 1;
+      void this.start().then((ok) => {
+        if (!ok || !this.alive) {
+          this.dropQueuedWithCrash(`mux 重启失败 (exitCode=${code}, signal=${signal})`, "failed");
+          return;
+        }
+        this.pump();
+      });
+      return;
+    }
+
+    if (current?.dispatched && this.queue.length === 0) return; // 无可重发项，下一条业务调用自然重连
+    this.dropQueuedWithCrash(this.crashResult(state).error, state);
+  }
+
+  private dropQueuedWithCrash(reason: string, state: "pending" | "failed" | "skipped"): void {
+    const queued = this.queue.splice(0);
+    const help = this.crashResult(state).help;
+    for (const job of queued) {
+      this.finishJob(job, {
+        status: "queue-dropped",
+        written: false,
+        retryAllowed: false,
+        result: { ok: false, error: reason, error_type: "mux_crash", exitCode: 1, help },
+      });
+    }
   }
 
   private pump(): void {
@@ -866,7 +1050,7 @@ export function getActiveMux(): MuxClient | null {
 
 async function execPiUnity(
   args: string[],
-  options: { projectPath?: string; timeoutMs?: number; signal?: AbortSignal } = {},
+  options: { projectPath?: string; timeoutMs?: number; signal?: AbortSignal; cwd?: string } = {},
 ): Promise<CliExecutionResult> {
   const bin = findPiUnityBinary();
   const cliArgs = [...args, "--json"];
@@ -880,6 +1064,7 @@ async function execPiUnity(
       maxBuffer: 32 * 1024 * 1024,
       windowsHide: true,
       signal: options.signal,
+      cwd: options.cwd,
       env: {
         ...process.env,
         PI_UNITY_CLIENT: "pi-ext",
@@ -898,11 +1083,20 @@ async function execPiUnity(
     if (stdout.trim()) {
       return parseCliJson(stdout);
     }
-    const stderr = typeof e.stderr === "string" ? e.stderr.trim() : Buffer.isBuffer(e.stderr) ? e.stderr.toString("utf8").trim() : "";
-    const message = err instanceof Error ? err.message : String(err);
+    const stderr = typeof e.stderr === "string" ? e.stderr : Buffer.isBuffer(e.stderr) ? e.stderr.toString("utf8") : "";
     const code = e.status ?? e.code;
     const exitCode = typeof code === "number" ? code : 1;
-    return { ok: false, error: stderr || message, exitCode };
+    // err.message 含完整命令行与原始输出，stderr 也可能夹带未标签密钥：一律不透传。
+    // 只回固定失败文案 + 退出码 + ALLOWLIST 汇总。
+    const summary = sanitizeDiagnosticTail(stderr);
+    const message = `pi-unity CLI 启动失败 (exitCode=${exitCode})`;
+    return {
+      ok: false,
+      error: message,
+      error_type: "cli_failed",
+      exitCode,
+      help: summary ? [message, `stderr(已脱敏汇总): ${summary}`] : [message],
+    };
   }
 }
 
@@ -933,7 +1127,14 @@ export async function runPiUnityCli(
       };
     }
     const call = await mux.request(args, options);
-    if (call.retryAllowed) return execPiUnity(args, options);
+    if (call.retryAllowed) {
+      // 回退 exec 必须与 mux 用完全相同的工程与 cwd，避免绑定漂移。
+      return execPiUnity(args, {
+        ...options,
+        projectPath: options.projectPath ?? mux.fixedProjectPath,
+        cwd: mux.fixedCwd,
+      });
+    }
     return call.result;
   }
   return execPiUnity(args, options);
@@ -995,14 +1196,50 @@ function toolSchema(fields: Record<string, any>, required: string[] = []): any {
   );
 }
 
-export default function (pi: ExtensionAPI) {
+export interface UnityHarnessExtensionOptions {
+  /** 测试注入：mux 二进制路径（默认 findPiUnityBinary()）。 */
+  muxBin?: string;
+  /** 测试注入：mux 子进程 spawn 实现。 */
+  muxSpawnImpl?: typeof spawn;
+  /** 测试注入：Unity 实例扫描（默认 discoverUnityInstances）。 */
+  discoverInstances?: () => UnityInstance[];
+  /** 测试注入：动态工具发现退避（默认 3000ms）。 */
+  dynamicToolRefreshBackoffMs?: number;
+}
+
+export default function (pi: ExtensionAPI, opts: UnityHarnessExtensionOptions = {}) {
   let settings = loadUnityHarnessSettings();
+  // 只继承扩展创建前的环境绑定；扩展自己写入 UNITY_PROJECT_PATH 的显式选择不得泄漏到新 cwd 会话。
+  const inheritedEnvProjectPath = process.env.UNITY_PROJECT_PATH?.trim() || undefined;
+  const dynamicToolRefreshBackoffMs = opts.dynamicToolRefreshBackoffMs ?? DYNAMIC_TOOL_REFRESH_BACKOFF_MS;
   const dynamicallyRegisteredTools = new Set<string>();
   let sessionMux: MuxClient | null = null;
-  let activeProjectPath: string | undefined = process.env.UNITY_PROJECT_PATH?.trim() || undefined;
+  let activeProjectPath: string | undefined;
+  // 用户显式选择的工程（仅 /unity-discover <path> 与 unity_discover(projectPath) 设置）；
+  // 会话换到新 cwd 时清空，不沿用到新会话。
+  let explicitProjectPath: string | undefined;
+  // 会话工作目录：工具 execute 拿不到 ctx，相对显式路径都按它解析。
+  let sessionCwd = process.cwd();
+  // 会话代数：mux 被 stop/切换/禁用时加一，动态工具不再注册进旧会话。
+  let sessionGeneration = 0;
+  // 动态工具刷新：成功加载后本会话不再重复 list-commands；
+  // 发现失败后下一个业务成功可立即补试（<3s 不限速）；stop/切换/禁用时全部重置。
+  let dynamicToolsLoaded = false;
+  // 启动发现失败只授予一次“首个成功业务立即补试”；该补试失败后恢复有界退避。
+  let dynamicImmediateRetryPending = false;
+  let dynamicRefreshInflight: { gen: number; promise: Promise<void> } | null = null;
+  let lastDynamicRefreshAttempt = 0;
+  // 扫描实现（默认真实扫描，测试注入）。
+  const discover = opts.discoverInstances ?? discoverUnityInstances;
 
-  async function switchProject(newPath: string | undefined, ctx?: { cwd?: string }) {
-    activeProjectPath = newPath ? resolve(newPath) : undefined;
+  async function switchProject(
+    newPath: string | undefined,
+    ctx?: { cwd?: string },
+    opts: { explicit?: boolean } = {},
+  ) {
+    // 相对显式路径按会话工作目录解析。
+    activeProjectPath = newPath ? resolve(ctx?.cwd ?? sessionCwd, newPath) : undefined;
+    if (opts.explicit) explicitProjectPath = activeProjectPath;
     if (activeProjectPath) {
       process.env.UNITY_PROJECT_PATH = activeProjectPath;
     } else {
@@ -1010,32 +1247,54 @@ export default function (pi: ExtensionAPI) {
     }
     await stopSessionMux();
     if (settings.enabled) {
-      startSessionMux(ctx?.cwd ?? process.cwd(), activeProjectPath);
+      startSessionMux(ctx?.cwd ?? sessionCwd, activeProjectPath);
       void refreshDynamicPipelineTools();
     }
   }
 
   async function autoConnectUnity(ctx: { ui: any; cwd: string }) {
     if (!ctx?.ui) return;
-    const instances = discoverUnityInstances();
+    const gen = sessionGeneration;
+    const instances = discover();
     if (instances.length === 0) {
       ctx.ui?.setStatus?.("pi-unity", "enabled, no Unity detected (/unity-discover)");
       return;
     }
     const readyInstances = instances.filter((i) => i.bridgeReady);
-    if (readyInstances.length === 1) {
-      const target = readyInstances[0].projectPath;
-      await switchProject(target, ctx);
-      const name = basename(target);
-      ctx.ui?.setStatus?.("pi-unity", `unity bridge: ${name}`);
-      ctx.ui?.notify?.(`Connected to Unity: ${name}`, "info");
-    } else if (readyInstances.length > 1) {
-      ctx.ui?.setStatus?.("pi-unity", `multiple Unity instances (${readyInstances.length}) (/unity-discover)`);
-      ctx.ui?.notify?.(`Found ${readyInstances.length} running Unity instances. Use /unity-discover to choose one.`, "info");
-    } else {
+    if (readyInstances.length === 0) {
       ctx.ui?.setStatus?.("pi-unity", `found ${instances.length} Unity, bridge not installed (/unity-install)`);
       ctx.ui?.notify?.(`Found ${instances.length} Unity instance(s) without bridge installed. Run /unity-install to install.`, "warn");
+      return;
     }
+    if (readyInstances.length > 1) {
+      ctx.ui?.setStatus?.("pi-unity", `multiple Unity instances (${readyInstances.length}) (/unity-discover)`);
+      ctx.ui?.notify?.(`Found ${readyInstances.length} running Unity instances. Use /unity-discover to choose one.`, "info");
+      return;
+    }
+    // 已有绑定（显式选择 / 最近本地 bridge / 继承 env）优先，扫描结果不覆盖。
+    const bound = sessionMux?.fixedProjectPath ?? activeProjectPath;
+    if (bound) {
+      ctx.ui?.setStatus?.("pi-unity", `unity bridge: ${basename(bound)}`);
+      return;
+    }
+    if (gen !== sessionGeneration || !settings.enabled) return; // 会话已变：本次自动连接作废
+    const target = readyInstances[0].projectPath;
+    activeProjectPath = resolve(ctx.cwd, target);
+    process.env.UNITY_PROJECT_PATH = activeProjectPath;
+    await stopSessionMux();
+    if (gen !== sessionGeneration - 1 || !settings.enabled) {
+      // 停止期间被 stop/切换/禁用（代数不止我们自己那一次 +1）：作废，不重建。
+      if (resolve(ctx.cwd, target) === activeProjectPath) {
+        activeProjectPath = undefined;
+        delete process.env.UNITY_PROJECT_PATH;
+      }
+      return;
+    }
+    startSessionMux(ctx.cwd, activeProjectPath);
+    void refreshDynamicPipelineTools();
+    const name = basename(target);
+    ctx.ui?.setStatus?.("pi-unity", `unity bridge: ${name}`);
+    ctx.ui?.notify?.(`Connected to Unity: ${name}`, "info");
   }
 
   function assertEnabled() {
@@ -1059,59 +1318,125 @@ export default function (pi: ExtensionAPI) {
     options?: { projectPath?: string; timeoutMs?: number; signal?: AbortSignal },
   ) {
     assertEnabled();
-    return formatResult(await runPiUnityCli(args, options));
+    const res = await runPiUnityCli(args, options);
+    // 首次成功业务响应后补做动态工具注册（启动期 Unity 未就绪也不丢）。
+    if (res.ok) void refreshDynamicPipelineTools(undefined, "business");
+    return formatResult(res);
   }
 
   async function stopSessionMux() {
+    sessionGeneration += 1;
+    // 动态工具状态随会话重置：停用/切换/禁用后重新发现，且不被旧会话限速。
+    dynamicToolsLoaded = false;
+    dynamicImmediateRetryPending = false;
+    lastDynamicRefreshAttempt = 0;
     const mux = sessionMux;
     sessionMux = null;
     if (getActiveMux() === mux) setActiveMux(null);
     if (mux) await mux.shutdown();
   }
 
-  function startSessionMux(cwd: string, explicitProjectPath?: string) {
-    const projectPath = explicitProjectPath ?? (activeProjectPath || process.env.UNITY_PROJECT_PATH?.trim() || undefined);
-    sessionMux = new MuxClient(findPiUnityBinary(), projectPath, spawn, cwd);
+  function startSessionMux(cwd: string, explicit?: string) {
+    // 优先级：显式选择 > 最近的本地 bridge 工程 > 继承的 UNITY_PROJECT_PATH。
+    const projectPath = resolveSessionProjectPath(cwd, explicit, inheritedEnvProjectPath);
+    sessionMux = new MuxClient(opts.muxBin ?? findPiUnityBinary(), projectPath, opts.muxSpawnImpl ?? spawn, cwd);
     setActiveMux(sessionMux);
     void sessionMux.start();
   }
 
-  async function refreshDynamicPipelineTools(signal?: AbortSignal) {
-    try {
-      const res = await runPiUnityCli(["list-commands", "--full"], { timeoutMs: 15000, signal });
-      if (!res.ok || !res.result) return;
-      const list = res.result as PipelineCommandList;
-      const filtered = filterPipelineCommands(list);
-
-      for (const cmd of filtered) {
-        const toolName = normalizePipelineToolName(cmd.name);
-        if (dynamicallyRegisteredTools.has(toolName)) continue;
-
-        try {
-          const schema = schemaToTypeBox(Type, cmd.schema, cmd.parameters);
-          pi.registerTool({
-            name: toolName,
-            label: `Unity ${cmd.name}`,
-            description: cmd.description || `Execute Unity Pipeline command: ${cmd.name}`,
-            promptSnippet: `Use ${toolName} to execute the ${cmd.name} pipeline command.`,
-            parameters: schema,
-            async execute(_toolCallId, params, signal) {
-              return runTool(["pipeline", cmd.name, "--params-json", JSON.stringify(params ?? {})], { signal });
-            },
-          });
-          dynamicallyRegisteredTools.add(toolName);
-        } catch {}
+  /** 动态工具发现：启动失败允许首个成功业务立即补试一次；之后按退避限速，同代去重、跨代隔离。 */
+  async function refreshDynamicPipelineTools(
+    signal?: AbortSignal,
+    trigger: "scheduled" | "business" = "scheduled",
+  ): Promise<void> {
+    if (!settings.enabled) return;
+    if (dynamicToolsLoaded) return;
+    const gen = sessionGeneration;
+    const muxRef = sessionMux;
+    const inflight = dynamicRefreshInflight;
+    if (inflight) {
+      if (inflight.gen === gen) {
+        await inflight.promise; // 同代并发去重：等同一尝试即可
+        return;
       }
-    } catch {
-      // Ignore if Unity is offline during startup
+      // 旧会话残留的 in-flight：不等它；其 finally 也不会清掉新会话的槽位（身份校验）。
     }
+    const now = Date.now();
+    const allowImmediate = trigger === "business" && dynamicImmediateRetryPending;
+    if (!allowImmediate && now - lastDynamicRefreshAttempt < dynamicToolRefreshBackoffMs) return;
+    if (allowImmediate) dynamicImmediateRetryPending = false; // 只消费一次；补试再失败必须走退避
+    lastDynamicRefreshAttempt = now;
+    // 快照会话身份：list-commands 完成后会话已被切换/禁用时不再注册。
+    const run = (async () => {
+      const isCurrent = () => settings.enabled && gen === sessionGeneration && sessionMux === muxRef && getActiveMux() === muxRef;
+      try {
+        const res = await runPiUnityCli(["list-commands", "--full"], { timeoutMs: 15000, signal });
+        if (!res.ok || !res.result) {
+          if (isCurrent()) {
+            if (trigger === "scheduled") dynamicImmediateRetryPending = true;
+          }
+          return;
+        }
+        if (!isCurrent()) return;
+        const list = res.result as PipelineCommandList;
+        const filtered = filterPipelineCommands(list);
+
+        for (const cmd of filtered) {
+          const toolName = normalizePipelineToolName(cmd.name);
+          if (dynamicallyRegisteredTools.has(toolName)) continue;
+          const description =
+            (cmd.description || `Execute Unity Pipeline command: ${cmd.name}`) +
+            (/^assets_refresh/.test(cmd.name)
+              ? " 注意：assets_refresh 是异步的，不等待导入/域重载完成；下一步任何 managed 调用前先 unity_recompile。"
+              : "");
+          const promptSnippet = cmd.name.startsWith("uitree_")
+            ? `UI 任务优先 ${toolName}（速度模式），树对不上再升 unity_snapshot / unity_eval_file。`
+            : cmd.name === "input_drag"
+              ? `拖拽优先 ${toolName}（一次调用内部插值），不要手动拆 start/move/end。`
+              : cmd.name.startsWith("input_drag")
+                ? `手动分步拖拽命令：直接用 unity_pipeline input_drag 一次完成（内部插值）。`
+                : `Use ${toolName} to execute the ${cmd.name} pipeline command.`;
+
+          try {
+            const schema = schemaToTypeBox(Type, cmd.schema, cmd.parameters);
+            pi.registerTool({
+              name: toolName,
+              label: `Unity ${cmd.name}`,
+              description,
+              promptSnippet,
+              parameters: schema,
+              async execute(_toolCallId, params, toolSignal) {
+                return runTool(["pipeline", cmd.name, "--params-json", JSON.stringify(params ?? {})], { signal: toolSignal });
+              },
+            });
+            dynamicallyRegisteredTools.add(toolName);
+          } catch {}
+        }
+        dynamicToolsLoaded = true;
+        dynamicImmediateRetryPending = false;
+      } catch {
+        if (isCurrent()) {
+          if (trigger === "scheduled") dynamicImmediateRetryPending = true;
+        }
+      } finally {
+        if (dynamicRefreshInflight?.promise === run) dynamicRefreshInflight = null; // 只清自己的槽位
+      }
+    })();
+    dynamicRefreshInflight = { gen, promise: run };
+    await run;
   }
 
   pi.on("session_start", async (_event, ctx) => {
     settings = loadUnityHarnessSettings();
+    // 新会话 cwd：不沿用上一会话的显式选择 / 绑定，按新 cwd 重新解析。
+    if (ctx.cwd && !sameProjectPath(ctx.cwd, sessionCwd)) {
+      explicitProjectPath = undefined;
+      activeProjectPath = undefined;
+    }
+    sessionCwd = ctx.cwd;
     await stopSessionMux();
     if (settings.enabled) {
-      startSessionMux(ctx.cwd, activeProjectPath);
+      startSessionMux(ctx.cwd, explicitProjectPath);
       void refreshDynamicPipelineTools();
       void autoConnectUnity(ctx);
     }
@@ -1176,7 +1501,7 @@ export default function (pi: ExtensionAPI) {
       ctx.ui?.notify?.("pi-unity-harness disabled.", "info");
     } else {
       await stopSessionMux();
-      startSessionMux(ctx.cwd, activeProjectPath);
+      startSessionMux(ctx.cwd, explicitProjectPath ?? activeProjectPath);
       void refreshDynamicPipelineTools();
       ctx.ui?.notify?.("pi-unity-harness enabled.", "info");
       await autoConnectUnity(ctx);
@@ -1201,13 +1526,13 @@ export default function (pi: ExtensionAPI) {
 
     const explicit = args?.trim();
     if (explicit) {
-      await switchProject(explicit, ctx);
+      await switchProject(explicit, ctx, { explicit: true });
       ctx.ui?.notify?.(`Connected: ${basename(explicit)}`, "info");
       ctx.ui?.setStatus?.("pi-unity", `unity bridge: ${basename(explicit)}`);
       return;
     }
 
-    const instances = discoverUnityInstances();
+    const instances = discover();
     if (instances.length === 0) {
       ctx.ui?.notify?.("No running Unity Editor detected", "warn");
       return;
@@ -1228,7 +1553,7 @@ export default function (pi: ExtensionAPI) {
 
     if (choices.length === 1) {
       const target = choices[0].value;
-      await switchProject(target, ctx);
+      await switchProject(target, ctx, { explicit: true });
       if (readyInstances.length === 1) {
         ctx.ui?.notify?.(`Connected: ${basename(target)}`, "info");
         ctx.ui?.setStatus?.("pi-unity", `unity bridge: ${basename(target)}`);
@@ -1246,7 +1571,7 @@ export default function (pi: ExtensionAPI) {
 
     if (chosen) {
       const inst = instances.find((i) => i.projectPath === chosen);
-      await switchProject(chosen, ctx);
+      await switchProject(chosen, ctx, { explicit: true });
       if (inst?.bridgeReady) {
         ctx.ui?.notify?.(`Connected: ${basename(chosen)}`, "info");
         ctx.ui?.setStatus?.("pi-unity", `unity bridge: ${basename(chosen)}`);
@@ -1278,7 +1603,7 @@ export default function (pi: ExtensionAPI) {
       let projectPath = args?.trim();
 
       if (!projectPath) {
-        const instances = discoverUnityInstances();
+        const instances = discover();
         const notReady = instances.filter((i) => !i.bridgeReady);
 
         if (notReady.length === 0) {
@@ -1355,11 +1680,11 @@ export default function (pi: ExtensionAPI) {
     }),
     async execute(_toolCallId, params) {
       assertEnabled();
-      const instances = discoverUnityInstances();
+      const instances = discover();
       const readyInstances = instances.filter((i) => i.bridgeReady);
 
       if (params.projectPath) {
-        await switchProject(params.projectPath);
+        await switchProject(params.projectPath, undefined, { explicit: true });
       } else if (readyInstances.length > 0 && !activeProjectPath) {
         await switchProject(readyInstances[0].projectPath);
       }
@@ -1449,7 +1774,9 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "unity_eval",
     label: "Unity Eval",
-    description: "Execute C# code or expression in the Unity Editor main thread via pi-unity eval.",
+    description:
+      "Execute C# code or expression in the Unity Editor main thread via pi-unity eval." +
+      " 契约：最后一行写裸表达式（不要 return，if (...) return 会编译失败）；return {...} 块由 C# worker 自动支持，块内局部变量作用域不跨调用持久；Object 有 System/UnityEngine 歧义，用 UnityEngine.Object 全限定或 UnityObject 别名。",
     promptSnippet: "Use unity_eval for short C# probes on the Unity main thread; prefer unity_eval_file for multi-line scripts.",
     parameters: toolSchema({
       code: Type.String({ description: "C# code or expression to execute in Unity Editor." }),
@@ -1468,7 +1795,9 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "unity_eval_file",
     label: "Unity Eval File",
-    description: "Execute a C# script file or .repl file in the Unity Editor main thread via pi-unity eval -f.",
+    description:
+      "Execute a C# script file or .repl file in the Unity Editor main thread via pi-unity eval -f." +
+      " 契约同 unity_eval：文件最后一行写裸表达式，不要 return；return {...} 块由 worker 自动支持且块内局部变量不跨调用持久；Object 用 UnityEngine.Object 或 UnityObject 别名。",
     promptSnippet: "Use unity_eval_file to run multi-line C# from a file (e.g. Temp/PiUnityHarness/AgentScratch/*.repl).",
     parameters: toolSchema({
       filePath: Type.String({ description: "Path to .cs or .repl file (relative to project root or absolute)." }),
@@ -1516,7 +1845,7 @@ export default function (pi: ExtensionAPI) {
       const args = ["list-commands"];
       pushArg(args, "--timeout", params.timeoutMs);
       pushViewArgs(args, params);
-      void refreshDynamicPipelineTools(signal);
+      await refreshDynamicPipelineTools(signal, "business");
       return runTool(args, { timeoutMs: toolTimeout(params, 15000), signal });
     },
   });
@@ -1525,7 +1854,9 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "unity_pipeline",
     label: "Unity Pipeline",
-    description: "Execute a registered Unity Pipeline [CliCommand] via pi-unity pipeline. Omit command/name to list available commands.",
+    description:
+      "Execute a registered Unity Pipeline [CliCommand] via pi-unity pipeline. Omit command/name to list available commands." +
+      " UI 交互先 uitree_*，拖拽优先 input_drag；assets_refresh 异步，调用后先 unity_recompile 再继续 managed 调用。",
     promptSnippet: "Use unity_pipeline to run pipeline commands like uitree_*, assets_*, input_*, etc.",
     parameters: toolSchema({
       command: Type.String({ description: "Name of the pipeline command to execute (alias for name)." }),
@@ -1605,7 +1936,9 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "unity_capture",
     label: "Unity Capture",
-    description: "Capture a single GameView or SceneView screenshot via pi-unity capture.",
+    description:
+      "Capture a single GameView or SceneView screenshot via pi-unity capture." +
+      " 注意：结果里的 embed:false 等元数据只是建议，宿主不强制，截图仍可能被内联进上下文；省 token 优先 unity_observe（dHash + 路径）或只读返回路径。",
     promptSnippet: "Use unity_capture for fast single-frame viewport screenshot capture.",
     parameters: toolSchema({
       mode: Type.String({ description: "Viewport mode: game or scene (default: game)" }),

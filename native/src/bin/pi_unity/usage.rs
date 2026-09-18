@@ -25,13 +25,25 @@ pub fn usage_error(error: impl Into<String>, help: &[&str]) -> CliError {
 }
 
 pub fn error_payload(err: &CliError) -> serde_json::Value {
-    json!({
+    let mut payload = json!({
         "ok": false,
         "error": err.message(),
         "error_type": err.error_type(),
         "exitCode": err.exit_code(),
         "help": err.help(),
-    })
+    });
+    // 编译失败诊断：standalone 与 mux 共用此载荷。匹配编译失败码时附加
+    // compiled:false 与错误摘要，调用方直接读 compiled 即可，无需再解析文本。
+    if let CliError::Broker { code, message } = err {
+        if code == "compile_error" || code == "compilation_failed" {
+            if let Some(obj) = payload.as_object_mut() {
+                obj.insert("compiled".into(), json!(false));
+                obj.insert("compiledErrorType".into(), json!(code));
+                obj.insert("compiledError".into(), json!(message));
+            }
+        }
+    }
+    payload
 }
 
 pub fn format_error(err: &CliError, json_mode: bool) -> String {

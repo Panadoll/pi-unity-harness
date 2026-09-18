@@ -13,10 +13,10 @@
 
 ## 核心特性
 
-- **纯 CLI 架构（No-MCP）**：无 Node.js 运行时依赖，启动毫秒级，天然解耦与防崩溃。
+- **纯 CLI 架构（No-MCP）**：无 Node.js 运行时依赖，启动开销低，天然解耦与防崩溃。
 - **双模式运行机制**：
-  - **速度模式（默认）**：`snapshot` + `eval` + `uitree_*` 白盒交互，耗时几十毫秒，不看大图，节省 Token。
-  - **GUI 模式（按需）**：`observe` + `capture` 多帧捕获与 dHash 变化检测，大图自动存盘（`Temp/PiUnityHarness/Captures/`），禁止 Base64 倾倒到 stdout。
+  - **速度模式（默认）**：UI 交互先 `uitree_snapshot interactive_only=true`，再 `uitree_find` / `input_probe` 定位，然后动作（拖拽用一次 `input_drag`）；非 UI / 自定义状态用 `snapshot` + `eval`。纯文本白盒交互，不看大图，节省 Token。
+  - **GUI 模式（按需）**：`observe` + `capture` 多帧捕获与 dHash 变化检测，只用于视觉 mismatch / 自绘渲染 UI。大图自动存盘（`Temp/PiUnityHarness/Captures/`），禁止 Base64 倾倒到 stdout，不要每步截图读图；`embed:false` 之类标记只是建议，宿主不强制拦截内联。
 - **自动域重载重连**：`pi-unity compile` 触发编译后，自动接管连接断开并在重载完成后轮询至 `ready` 状态。
 - **AXI 输出**：默认 stdout 为 TOON；`--json` 才输出 JSON。无参 `pi-unity` 打印 live dashboard。Exit Code `0`（成功，含幂等 no-op）、`1`（失败，含未连接/超时）、`2`（用法错误）。
 
@@ -26,9 +26,11 @@
 
 pi-coding-agent 扩展在 `session_start` 拉起隐藏子命令 `pi-unity mux`，工具调用走 stdin/stdout JSONL，不再每次 spawn CLI。每条回复带 `result`（精简 JSON）和 `text`（同一份 result 的 Rust TOON）。JSONL 只是 IPC，模型看到的是 `text`。
 
-mux 持有一条 Unity Named Pipe，已连接时每 5 秒 ping，broker 15 秒空闲会断。断线后下一条业务再连，已发出的请求不重放。当前 broker 同一时刻只服务一个客户端，mux 存活期间其它短 CLI 可能 `Pipe busy`。不要当成多 Agent 同时可用。本通道不恢复 slash UI。
+mux 持有一条 Unity Named Pipe，已连接时每 5 秒 ping，broker 15 秒空闲会断。断线后下一条业务再连，已发出的请求不重放。**broker 保持单客户端**：同一 Editor 同一时刻只服务一个客户端，只允许主会话操作它；subprocess / worktree 子代理必须用各自专用的 Editor。mux 存活期间其它短 CLI 可能 `Pipe busy`，不要当成多 Agent 同时可用。本通道不恢复 slash UI。
 
-扩展侧对 mux 请求做 FIFO：同一时刻只向 stdin 写一条业务帧，排队不扣超时。排队取消只拿掉自己；在途取消或超时会杀掉当前 mux 进程，未发出的排队请求直接失败且不 exec 重放。只有 mux 根本没拉起成功才回退 `execFile`。
+扩展侧对 mux 请求做 FIFO：同一时刻只向 stdin 写一条业务帧，排队不扣超时。排队取消只拿掉自己。**意外退出**时，尚未写出（未 dispatch）的排队请求随新 mux 进程重发一次；**超时 / 取消 / 协议损坏**则队列直接失败，不重发；**已发出的请求（in-flight）绝不重放**。只有 mux 根本没拉起成功才回退 `execFile`。
+
+项目发现顺序：显式指定（`/unity-discover` / `--project-path`）优先，其次会话 cwd 本地发现，最后环境变量（`UNITY_PROJECT_PATH`）兜底。
 
 
 ## CLI 命令速查

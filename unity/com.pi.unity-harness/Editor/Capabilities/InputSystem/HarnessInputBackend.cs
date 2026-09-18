@@ -21,6 +21,8 @@ namespace Pi.UnityHarness.Editor.Capabilities.Input
         private static bool s_inputRouteConfigured;
         private static Type s_gameViewType;
         private static Vector2 s_mousePosition;
+        private static Vector2 s_mouseDelta;
+        private static bool s_hasMousePosition;
         private static Mouse s_syntheticMouse;
         private static Keyboard s_syntheticKeyboard;
         private static GameObject s_pointerPress;
@@ -61,6 +63,7 @@ namespace Pi.UnityHarness.Editor.Capabilities.Input
                 s_inputUpdateHooked = false;
                 s_inputRouteConfigured = false;
                 s_mousePosition = Vector2.zero;
+                ResetPointerMotion();
                 s_eventSystemOwnsPointer = false;
                 ClearPointerState();
             }
@@ -82,17 +85,22 @@ namespace Pi.UnityHarness.Editor.Capabilities.Input
 
             var mouse = EnsureSyntheticMouse();
             float inputY = ConvertScreenshotY(screenshotY);
-            s_mousePosition = new Vector2(screenshotX, inputY);
+            Vector2 nextPosition = new Vector2(screenshotX, inputY);
+            s_mouseDelta = s_hasMousePosition ? nextPosition - s_mousePosition : Vector2.zero;
+            s_mousePosition = nextPosition;
+            s_hasMousePosition = true;
             bool useEventSystemDispatch = ShouldUseEventSystemFallback();
-            if (!s_eventSystemOwnsPointer)
-                ApplyMouseState(mouse, Vector2.zero);
-            // EventSystem 拥有指针（拖拽中）时跳过 ApplyMouseState 以避免重复派发，
-            // 但 UI 处理器可能直接读 Mouse.current / Input.mousePosition，必须同步位置
-            // （对照上游修复：拖拽期间保持游戏鼠标坐标与模拟坐标一致，防止漂移）。
-            else
-                SyncMousePositionOnly(mouse);
             if (useEventSystemDispatch)
+            {
+                // Manual EventSystem dispatch owns UGUI movement. Update readable device controls
+                // without queueing a second input event through an InputSystem UI module.
+                SyncMouseMotionOnly(mouse);
                 DispatchPointerMoveOrDrag();
+            }
+            else
+            {
+                ApplyMouseState(mouse, Vector2.zero, delta: s_mouseDelta);
+            }
         }
 
         public static void ClearAllInput()
@@ -252,6 +260,9 @@ namespace Pi.UnityHarness.Editor.Capabilities.Input
             if (useEventSystemDispatch && pressed)
                 s_eventSystemOwnsPointer = true;
 
+            s_mouseDelta = Vector2.zero;
+            SyncMouseMotionOnly(mouse);
+
             try
             {
                 if (useEventSystemDispatch)
@@ -313,6 +324,7 @@ namespace Pi.UnityHarness.Editor.Capabilities.Input
                 s_heldKeys.Clear();
                 s_heldMouseButtons.Clear();
                 s_mousePosition = Vector2.zero;
+                ResetPointerMotion();
                 s_eventSystemOwnsPointer = false;
                 ClearPointerState();
             }
@@ -390,29 +402,31 @@ namespace Pi.UnityHarness.Editor.Capabilities.Input
         }
 
         /// <summary>
-        /// 仅同步 Mouse 设备的位置（不触碰按钮状态、不排队 StateEvent），
+        /// 仅同步 Mouse 设备的位置和增量（不触碰按钮状态、不排队 StateEvent），
         /// 用于 EventSystem 拥有指针期间保持 Mouse.current / Input.mousePosition
         /// 与模拟坐标一致。
         /// </summary>
-        private static void SyncMousePositionOnly(Mouse mouse)
+        private static void SyncMouseMotionOnly(Mouse mouse)
         {
             if (mouse == null)
                 return;
-            InputSystem.QueueDeltaStateEvent(mouse.position, s_mousePosition);
-            InputSystem.Update();
+            InputState.Change(mouse.position, s_mousePosition);
+            InputState.Change(mouse.delta, s_mouseDelta);
         }
 
         private static void ApplyMouseState(
             Mouse mouse,
             Vector2 scroll,
             bool skipQueueStateEvent = false,
-            bool skipInputStateChange = false)
+            bool skipInputStateChange = false,
+            Vector2 delta = default)
         {
             if (mouse == null) return;
 
             var state = new MouseState
             {
                 position = s_mousePosition,
+                delta = delta,
                 scroll = scroll
             };
 
@@ -424,6 +438,7 @@ namespace Pi.UnityHarness.Editor.Capabilities.Input
                 using (StateEvent.From(mouse, out var eventPtr))
                 {
                     mouse.position.WriteValueIntoEvent(state.position, eventPtr);
+                    mouse.delta.WriteValueIntoEvent(state.delta, eventPtr);
                     mouse.scroll.WriteValueIntoEvent(state.scroll, eventPtr);
                     WriteMouseButtonIntoEvent(mouse, 0, s_heldMouseButtons.Contains(0), eventPtr);
                     WriteMouseButtonIntoEvent(mouse, 1, s_heldMouseButtons.Contains(1), eventPtr);
@@ -674,7 +689,7 @@ namespace Pi.UnityHarness.Editor.Capabilities.Input
             {
                 pointerId = -1,
                 position = s_mousePosition,
-                delta = Vector2.zero,
+                delta = s_mouseDelta,
                 button = PointerEventData.InputButton.Left,
                 clickTime = Time.unscaledTime,
                 clickCount = 1
@@ -692,6 +707,13 @@ namespace Pi.UnityHarness.Editor.Capabilities.Input
             s_currentPointerTarget = null;
             s_pressPosition = Vector2.zero;
             s_dragging = false;
+            ResetPointerMotion();
+        }
+
+        private static void ResetPointerMotion()
+        {
+            s_mouseDelta = Vector2.zero;
+            s_hasMousePosition = false;
         }
 
         private static Key ParseKey(string key)
