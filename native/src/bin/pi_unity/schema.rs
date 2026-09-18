@@ -95,6 +95,58 @@ fn pick_i64(obj: &Value, keys: &[&str], default: i64) -> i64 {
     default
 }
 
+/// 大小写不敏感的字段取值：Pipeline 包的对象用 PascalCase（Status/FullName），
+/// harness 自己的对象用 camelCase，两边都要能读。
+fn pick_str_ci(obj: &Value, keys: &[&str]) -> String {
+    let Some(map) = obj.as_object() else {
+        return String::new();
+    };
+    for key in keys {
+        for (name, value) in map {
+            if name.eq_ignore_ascii_case(key) {
+                if let Some(s) = value.as_str() {
+                    if !s.is_empty() {
+                        return s.to_string();
+                    }
+                }
+            }
+        }
+    }
+    String::new()
+}
+
+fn pick_i64_ci(obj: &Value, keys: &[&str], default: i64) -> i64 {
+    let Some(map) = obj.as_object() else {
+        return default;
+    };
+    for key in keys {
+        for (name, value) in map {
+            if name.eq_ignore_ascii_case(key) {
+                if let Some(n) = value.as_i64() {
+                    return n;
+                }
+            }
+        }
+    }
+    default
+}
+
+/// Pipeline 命令的桥接信封是 {output, typeName, command, valueTypeName, value}，
+/// 真正的命令结果在 value（或 output 里的 JSON 文本）上。
+fn pipeline_payload(raw: &Value) -> Value {
+    if let Some(value) = raw.get("value") {
+        if !value.is_null() {
+            return value.clone();
+        }
+    }
+    if let Some(text) = raw.get("output").and_then(Value::as_str) {
+        if let Ok(parsed) = serde_json::from_str::<Value>(text) {
+            return parsed;
+        }
+    }
+    raw.clone()
+}
+
 pub fn help_items(commands: &[&str]) -> Value {
     let arr: Vec<Value> = commands.iter().map(|c| json!({"run": *c})).collect();
     Value::Array(arr)
@@ -357,11 +409,12 @@ pub fn shape_timeline(raw: &Value, opts: &ViewOptions) -> Value {
 }
 
 pub fn shape_run_tests(raw: &Value) -> Value {
-    let summary = raw.get("summary").cloned().unwrap_or(Value::Null);
-    let passed = pick_i64(&summary, &["passed"], pick_i64(raw, &["passed"], 0));
-    let failed = pick_i64(&summary, &["failed"], pick_i64(raw, &["failed"], 0));
-    let skipped = pick_i64(&summary, &["skipped"], pick_i64(raw, &["skipped"], 0));
-    let results = raw
+    let payload = pipeline_payload(raw);
+    let summary = payload.get("summary").cloned().unwrap_or(Value::Null);
+    let passed = pick_i64_ci(&summary, &["passed"], pick_i64_ci(&payload, &["passed"], 0));
+    let failed = pick_i64_ci(&summary, &["failed"], pick_i64_ci(&payload, &["failed"], 0));
+    let skipped = pick_i64_ci(&summary, &["skipped"], pick_i64_ci(&payload, &["skipped"], 0));
+    let results = payload
         .get("results")
         .and_then(Value::as_array)
         .cloned()
@@ -369,10 +422,10 @@ pub fn shape_run_tests(raw: &Value) -> Value {
     let failures: Vec<Value> = results
         .iter()
         .filter(|r| {
-            let st = pick_str(r, &["status", "result", "state"]);
+            let st = pick_str_ci(r, &["status", "result", "state"]);
             st.eq_ignore_ascii_case("failed") || st.eq_ignore_ascii_case("failure")
         })
-        .map(|r| json!({"name": pick_str(r, &["name", "fullName", "testName"])}))
+        .map(|r| json!({"name": pick_str_ci(r, &["name", "fullName", "testName"])}))
         .collect();
     let mut out = json!({
         "passed": passed,
@@ -414,6 +467,7 @@ pub fn shape_observe(raw: &Value) -> Value {
             Value::Array(paths)
         },
         "latest": pick_str(raw, &["latest"]),
+        "embed": false,
     })
 }
 
@@ -530,6 +584,94 @@ mod tests {
         assert_eq!(out["pipe"], r"\\.\pipe\x");
         assert!(out.get("token").is_none());
         assert!(out.get("state").is_none());
+    }
+
+    #[test]
+    fn run_tests_reads_bridge_envelope_and_pascal_case_results() {
+        let raw = json!({
+            "output": "{\"status\":\"completed\"}",
+            "typeName": "pipeline_command",
+            "command": "run_tests",
+            "valueTypeName": "Unity.Pipeline.TestExecutionResponse",
+            "value": {
+                "status": "completed",
+                "summary": {"total": 3, "passed": 1, "failed": 2, "skipped": 0, "inconclusive": 0},
+                "results": [
+                    {"FullName": "A.B.PassOne", "Status": "Passed"},
+                    {"FullName": "A.B.FailOne", "Status": "Failed"},
+                    {"FullName": "A.B.FailTwo", "Status": "Failed"}
+                ]
+            }
+        });
+        let out = shape_run_tests(&raw);
+        assert_eq!(out["passed"], 1);
+        assert_eq!(out["failed"], 2);
+        assert_eq!(out["skipped"], 0);
+        let failures = out["failures"].as_array().unwrap();
+        assert_eq!(failures.len(), 2);
+        assert_eq!(failures[0]["name"], "A.B.FailOne");
+        assert_eq!(failures[1]["name"], "A.B.FailTwo");
+    }
+
+    #[test]
+    fn run_tests_reads_json_output_when_value_is_absent() {
+        let raw = json!({
+            "output": "{\"summary\":{\"passed\":2,\"failed\":1},\"results\":[{\"status\":\"failed\",\"name\":\"CaseOne\"}]}",
+            "typeName": "pipeline_command"
+        });
+        let out = shape_run_tests(&raw);
+        assert_eq!(out["passed"], 2);
+        assert_eq!(out["failed"], 1);
+        assert_eq!(out["failures"][0]["name"], "CaseOne");
+    }
+
+    #[test]
+    fn run_tests_accepts_flat_payload() {
+        let out = shape_run_tests(&json!({
+            "summary": {"passed": 4, "failed": 0, "skipped": 1},
+            "results": [{"fullName": "A.B.Pass", "status": "Passed"}]
+        }));
+        assert_eq!(out["passed"], 4);
+        assert_eq!(out["skipped"], 1);
+        assert_eq!(out["failures"], "0 个失败用例 found");
+    }
+
+    #[test]
+    fn observe_always_embeds_false_and_preserves_data() {
+        let raw = json!({
+            "frames": ["frame_a.png", "frame_b.png", "frame_c.png"],
+            "changed": false,
+            "fingerprint": "abc123",
+            "captured_count": 3,
+            "unique_count": 2,
+            "latest": "frame_c.png"
+        });
+        assert!(raw.get("embed").is_none());
+        let out = shape_observe(&raw);
+        assert_eq!(out["embed"], false);
+        assert_eq!(out["changedFrames"], 2);
+        assert_eq!(out["dHash"], "abc123");
+        assert_eq!(out["captured"], 3);
+        assert_eq!(out["latest"], "frame_c.png");
+        let frames = out["frames"].as_array().unwrap();
+        assert_eq!(frames.len(), 3);
+        assert_eq!(frames[0]["path"], "frame_a.png");
+        assert_eq!(frames[2]["path"], "frame_c.png");
+        assert!(out["frames"][0].get("data").is_none());
+        assert!(out.get("image").is_none());
+    }
+
+    #[test]
+    fn observe_empty_payload_embeds_false_and_keeps_counts() {
+        let out = shape_observe(&json!({}));
+        assert_eq!(out["embed"], false);
+        assert_eq!(out["changedFrames"], 0);
+        assert_eq!(out["dHash"], "");
+        assert_eq!(out["captured"], 0);
+        assert_eq!(out["latest"], "");
+        let text = out["frames"].as_str().unwrap();
+        assert!(text.starts_with("0 "));
+        assert!(text.contains("found"));
     }
 
     #[test]
