@@ -113,7 +113,10 @@ namespace Pi.UnityHarness.Editor
         // =========================================================
 
         /// <summary>
-        /// Detects and auto-fixes common .repl authoring mistakes.
+        /// 预检并自动修复常见的 .repl 编写错误。
+        /// 注意：不再在此处剥离顶层 return——return 适配整体移到编译路径
+        /// （TryEvalTail 的 strip/wrap 两步回退），否则会剥坏
+        /// `if (x) return 1; return 2;` 这类分支/多 return 代码。
         /// Returns the (possibly fixed) code and populates diagnostic.
         /// </summary>
         internal static string PreLint(string code, out ReplDiagnostic diagnostic)
@@ -122,15 +125,7 @@ namespace Pi.UnityHarness.Editor
             var fixes = new List<string>();
             string result = code;
 
-            // Rule 1: Strip top-level 'return' statements
-            string afterReturn = TryStripTopLevelReturn(result);
-            if (afterReturn != null)
-            {
-                result = afterReturn;
-                fixes.Add("AUTO_FIX: removed top-level 'return' — use bare expression instead");
-            }
-
-            // Rule 2: Detect class declaration after top-level statements (mixed mode)
+            // Rule: Detect class declaration after top-level statements (mixed mode)
             string afterReorder = TryReorderMixedMode(result);
             if (afterReorder != null)
             {
@@ -146,61 +141,6 @@ namespace Pi.UnityHarness.Editor
             }
 
             return result;
-        }
-
-        /// <summary>
-        /// Detects top-level 'return expr;' and converts to bare 'expr;'.
-        /// Returns fixed code, or null if no fix needed.
-        /// </summary>
-        private static string TryStripTopLevelReturn(string code)
-        {
-            // Strategy: scan for 'return' keyword at brace-depth 0, skipping
-            // strings, comments, and class/method bodies.
-            int depth = 0;
-            bool modified = false;
-            var sb = new StringBuilder(code.Length);
-            int i = 0;
-
-            while (i < code.Length)
-            {
-                // Try to skip quoted strings — preserve them verbatim
-                int before = i;
-                if (TrySkipQuoted(code, ref i))
-                {
-                    sb.Append(code, before, i - before + 1);
-                    i++;
-                    continue;
-                }
-
-                // Try to skip comments — preserve them verbatim
-                if (TrySkipComment(code, ref i))
-                {
-                    sb.Append(code, before, i - before + 1);
-                    i++;
-                    continue;
-                }
-
-                char c = code[i];
-
-                if (c == '{') depth++;
-                else if (c == '}' && depth > 0) depth--;
-
-                if (depth == 0 && StartsWithKeyword(code, i, "return"))
-                {
-                    // Found top-level 'return'. Remove it.
-                    modified = true;
-                    i += 6; // skip 'return'
-                    // Skip whitespace after 'return'
-                    while (i < code.Length && (code[i] == ' ' || code[i] == '\t'))
-                        i++;
-                    continue;
-                }
-
-                sb.Append(c);
-                i++;
-            }
-
-            return modified ? sb.ToString() : null;
         }
 
         /// <summary>
@@ -306,7 +246,11 @@ namespace Pi.UnityHarness.Editor
                 error.IndexOf("Top-level statements", StringComparison.OrdinalIgnoreCase) >= 0)
                 return ("mixed_mode", "Class declared after top-level statements. Use Pattern B: declare class FIRST, then call it as bare expression on last line.");
             if (error.IndexOf("CS0127", StringComparison.Ordinal) >= 0)
-                return ("top_level_return", "uh eval does not support 'return'. Use bare expression as last line.");
+                return ("top_level_return", "Top-level 'return <value>' is auto-adapted: a single trailing 'return <expr>;' is stripped to the bare expression; branching/nested returns (if/foreach/switch/try blocks) get wrapped in an immediately-invoked Func<object> (fallthrough returns null). A guarded return followed by a bare final expression is supported. An unconditional top-level return followed by a bare final expression is deliberately rejected by the harness: remove the unreachable expression or use an explicit final 'return <expr>;' to make the intent clear. If CS0127 still appears, also check for a value return inside a void-returning lambda/Action.");
+            if (error.IndexOf("CS0104", StringComparison.Ordinal) >= 0)
+                return ("ambiguous_reference", "Ambiguous type name — qualify it: use 'UnityEngine.Object' for Unity objects, 'global::System.Object' for plain C#, or rely on the predefined 'UnityObject' alias.");
+            if (error.IndexOf("CS1929", StringComparison.Ordinal) >= 0)
+                return ("instance_type_mismatch", "Instance type mismatch in a method call. Fix the FIRST reported diagnostic first — the later errors usually cascade from the first failing statement.");
             if (error.IndexOf("CS1012", StringComparison.Ordinal) >= 0 ||
                 error.IndexOf("CS1009", StringComparison.Ordinal) >= 0 ||
                 error.IndexOf("CS1010", StringComparison.Ordinal) >= 0)
@@ -317,6 +261,67 @@ namespace Pi.UnityHarness.Editor
                 return ("missing_reference", "Name not found. Add a 'using' directive or use the fully qualified namespace.");
 
             return default;
+        }
+
+        /// <summary>
+        /// 判断是否应尝试顶层 return 适配（strip / Func&lt;object&gt; wrap）。
+        /// 仅以原始编译诊断中的 CS0127 为证据，不能因为源码包含 return
+        /// 就重写其他编译失败。嵌套块 return 不要求出现在第 0 层。
+        /// </summary>
+        internal static bool ShouldAdaptTopLevelReturn(string error, string code)
+        {
+            if (string.IsNullOrWhiteSpace(code))
+                return false;
+            return error != null && error.IndexOf("CS0127", StringComparison.Ordinal) >= 0;
+        }
+
+        /// <summary>
+        /// 是否存在第 0 层“带值 return”（return 后跟表达式，而不是裸 return;）。
+        /// Mono.CSharp 的交互宿主方法返回 void，因此这种输入原样编译时必然报 CS0127：
+        /// 原样编译不可能成功，却会在匿名类型这类表达式上留下被污染的持久容器，
+        /// 所以适配链可以直接先跑（见 TryEvalTail）。
+        /// 字符串/注释/大括号内的 return 不计入。
+        /// </summary>
+        internal static bool HasTopLevelValueReturn(string code)
+        {
+            if (string.IsNullOrEmpty(code))
+                return false;
+
+            int depth = 0;
+            for (int i = 0; i < code.Length; i++)
+            {
+                char c = code[i];
+                if (TrySkipQuoted(code, ref i))
+                    continue;
+                if (TrySkipComment(code, ref i))
+                    continue;
+
+                if (c == '{')
+                {
+                    depth++;
+                    continue;
+                }
+
+                if (c == '}')
+                {
+                    if (depth > 0)
+                        depth--;
+                    continue;
+                }
+
+                if (depth != 0 || !StartsWithKeyword(code, i, "return"))
+                    continue;
+
+                int next = SkipWhitespaceAndComments(code, i + "return".Length);
+                if (next >= code.Length)
+                    return false; // 输入在 return 后截断：交给不完整输入诊断
+                if (code[next] == ';')
+                    continue; // 裸 return; 在 void 宿主里合法
+
+                return true;
+            }
+
+            return false;
         }
 
         // ───────────────────────────────────────────────
