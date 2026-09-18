@@ -15,12 +15,10 @@ pub(crate) fn is_base64_data(s: &str) -> bool {
         return true;
     }
     if s.len() >= MIN_BASE64_DETECT_LENGTH {
-        let prefix = &s[..128.min(s.len())];
-        if prefix.bytes().all(|b| {
+        // 只取前 128 字节做采样；用 bytes().take 避免 128 截在 UTF-8 多字节字符中间 panic。
+        return s.bytes().take(128).all(|b| {
             b.is_ascii_alphanumeric() || b == b'+' || b == b'/' || b == b'='
-        }) {
-            return true;
-        }
+        });
     }
     false
 }

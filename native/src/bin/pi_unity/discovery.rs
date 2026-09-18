@@ -95,6 +95,42 @@ pub(crate) fn resolve_project_root(project_path_arg: Option<&str>) -> Result<Pat
     ))
 }
 
+/// broker PID 是否存活（Windows；权限不足/其他平台一律视为不存活）。
+/// 用于 ERROR_FILE_NOT_FOUND(2) 时判断是否值得短暂重试，避免对已退出的 Editor 干等。
+pub(crate) fn process_alive(pid: u32) -> bool {
+    #[cfg(windows)]
+    {
+        use std::ffi::c_void;
+        type Handle = *mut c_void;
+        extern "system" {
+            fn OpenProcess(
+                dwDesiredAccess: u32,
+                bInheritHandle: i32,
+                dwProcessId: u32,
+            ) -> Handle;
+            fn GetExitCodeProcess(hProcess: Handle, lpExitCode: *mut u32) -> i32;
+            fn CloseHandle(hObject: Handle) -> i32;
+        }
+        const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+        const STILL_ACTIVE: u32 = 259;
+        unsafe {
+            let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if handle.is_null() {
+                return false;
+            }
+            let mut exit_code: u32 = 0;
+            let ok = GetExitCodeProcess(handle, &mut exit_code);
+            let _ = CloseHandle(handle);
+            ok != 0 && exit_code == STILL_ACTIVE
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = pid;
+        false
+    }
+}
+
 pub(crate) fn load_bridge_json(project_root: &Path) -> Result<BridgeJson, CliError> {
     let bridge_path = project_root.join("Library/PiUnityHarness/bridge.json");
     if !bridge_path.exists() {
@@ -130,5 +166,12 @@ mod tests {
         ))
         .unwrap_err();
         assert!(err.message().contains("不存在"));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn process_alive_sees_current_process() {
+        assert!(process_alive(std::process::id()));
+        assert!(!process_alive(u32::MAX - 5));
     }
 }

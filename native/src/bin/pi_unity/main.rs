@@ -19,6 +19,9 @@ mod toon;
 mod usage;
 mod version;
 
+#[cfg(all(test, windows))]
+mod mock_pipe;
+
 use args::{Cli, Commands, SessionSubcommands};
 use clap::Parser;
 use client::{CliError, HarnessClient};
@@ -375,16 +378,14 @@ async fn write_mux_stdout(
 }
 
 fn mux_error_value(id: &str, err: &CliError) -> Value {
-    let payload = usage::error_payload(err);
-    json!({
-        "id": id,
-        "ok": false,
-        "exitCode": payload["exitCode"],
-        "error": payload["error"],
-        "error_type": payload["error_type"],
-        "help": payload["help"],
-        "text": usage::format_error(err, false),
-    })
+    // 基于 error_payload 构建：保留其附加诊断字段（如编译失败的 compiled:false），
+    // 再注入 mux 信封的 id / text。
+    let mut value = usage::error_payload(err);
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert("id".to_string(), json!(id));
+        obj.insert("text".to_string(), json!(usage::format_error(err, false)));
+    }
+    value
 }
 
 fn mux_ok_value(id: &str, output: &str) -> Value {
@@ -556,6 +557,8 @@ async fn handle_mux_line(
         );
     };
 
+    // 每个请求在独立的 tokio 任务里执行：await 之后的 panic 只影响当前请求，
+    // 不拖垮整个 mux 循环；panic 时丢弃可疑客户端状态，下一条请求重建。
     if client.is_none() {
         let recorder = Arc::new(TraceRecorder::new("mux"));
         match HarnessClient::new_persistent(root.clone(), recorder) {
@@ -563,18 +566,66 @@ async fn handle_mux_line(
             Err(err) => return (mux_error_value(&id, &err), false),
         }
     }
+    let taken = client.take();
+    let exec = run_mux_exec(id.clone(), command, view_opts, taken, root);
+    match spawn_isolated(exec).await {
+        Ok((reply, quit, restored)) => {
+            *client = restored;
+            (reply, quit)
+        }
+        Err(()) => {
+            // 不暴露原始 panic 载荷，只返回结构化内部错误（客户端状态已被丢弃）。
+            (mux_internal_error(&id), false)
+        }
+    }
+}
 
-    let Some(c) = client.as_mut() else {
+/// 在独立 tokio 任务里执行请求，捕获 panic：Err(()) 表示任务 panic。
+async fn spawn_isolated<T, F>(fut: F) -> Result<T, ()>
+where
+    F: std::future::Future<Output = T> + Send + 'static,
+    T: Send + 'static,
+{
+    match tokio::task::spawn(fut).await {
+        Ok(value) => Ok(value),
+        Err(_) => Err(()),
+    }
+}
+
+fn mux_internal_error(id: &str) -> Value {
+    // panic 隔离后请求结果未知：绝不盲目建议重试（编译/动作类请求可能已产生副作用）。
+    let text = "mux 请求内部错误：已隔离该请求并丢弃其客户端状态，该请求的结果未知，先检查 status/state 确认是否已生效，再决定是否重试";
+    json!({
+        "id": id,
+        "ok": false,
+        "exitCode": 1,
+        "error": text,
+        "error_type": "internal_error",
+        "help": ["pi-unity status 检查当前 Editor 状态", "确认结果未知后再决定是否重试"],
+        "text": format!("[internal_error] {}", text),
+    })
+}
+
+/// 在隔离任务内执行一次 mux 请求；返回回复、是否退出、以及（无 panic 时）恢复的客户端。
+async fn run_mux_exec(
+    id: String,
+    command: Commands,
+    view_opts: ViewOptions,
+    client: Option<HarnessClient>,
+    root: PathBuf,
+) -> (Value, bool, Option<HarnessClient>) {
+    let Some(mut c) = client else {
         return (
             mux_error_value(&id, &CliError::Other("mux client 不可用".into())),
             false,
+            None,
         );
     };
     let recorder = Arc::new(TraceRecorder::new(command.subcommand_name()));
     c.set_recorder(recorder.clone());
-    match execute_harness_command(command, c, &root, true, &view_opts, &recorder).await {
-        Ok(output) => (mux_ok_value(&id, &output), false),
-        Err(err) => (mux_error_value(&id, &err), false),
+    match execute_harness_command(command, &mut c, &root, true, &view_opts, &recorder).await {
+        Ok(output) => (mux_ok_value(&id, &output), false, Some(c)),
+        Err(err) => (mux_error_value(&id, &err), false, Some(c)),
     }
 }
 
@@ -642,7 +693,7 @@ fn handle_exit(
     let duration_ms = start_instant.elapsed().as_millis() as u64;
     let (exit_code, error_type) = match &result {
         Ok(_) => (0, None),
-        Err(e) => (e.exit_code(), Some(e.error_type().to_string())),
+        Err(e) => (e.exit_code(), Some(e.error_type())),
     };
 
     let trace_id = recorder.flush_trace_if_needed(log_root, exit_code, trace_flag);
@@ -698,6 +749,18 @@ fn handle_exit(
     }
 }
 
+/// 截断到 UTF-8 字符边界，绝不 panic（String::truncate / 直接切片可能 panic）。
+fn truncate_chars_safe(s: &str, limit: usize) -> &str {
+    if s.len() <= limit {
+        return s;
+    }
+    let mut end = limit;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 fn handle_error(err: &CliError, json_mode: bool, project_root: Option<&Path>) {
     let mut msg = err.message().to_string();
 
@@ -709,15 +772,16 @@ fn handle_error(err: &CliError, json_mode: bool, project_root: Option<&Path>) {
             let scratch_path = scratch_dir.join(&scratch_file);
             let _ = fs::write(&scratch_path, &msg);
             let rel_path = format!("Temp/PiUnityHarness/AgentScratch/{}", scratch_file);
+            let preview = truncate_chars_safe(&msg, MAX_SAFE_RESPONSE_CHARS);
             msg = format!(
                 "[Error truncated from {} to {} chars. Full message saved to: {}]\n{}",
                 msg.len(),
                 MAX_SAFE_RESPONSE_CHARS,
                 rel_path,
-                &msg[..MAX_SAFE_RESPONSE_CHARS]
+                preview
             );
         } else {
-            msg.truncate(MAX_SAFE_RESPONSE_CHARS);
+            msg = truncate_chars_safe(&msg, MAX_SAFE_RESPONSE_CHARS).to_string();
         }
     }
 
@@ -734,6 +798,11 @@ fn handle_error(err: &CliError, json_mode: bool, project_root: Option<&Path>) {
                 CliError::BridgeNotFound(_) => CliError::BridgeNotFound(msg),
                 CliError::Timeout(_) => CliError::Timeout(msg),
                 CliError::Other(_) => CliError::Other(msg),
+                CliError::Broker { code, message } => CliError::Broker {
+                    code: code.clone(),
+                    message: message.clone(),
+                },
+                CliError::Busy(_) => CliError::Busy(msg),
             },
             json_mode,
         )
@@ -891,5 +960,130 @@ mod tests {
         let err = parse_mux_command(&["--trace".into(), "status".into()]).unwrap_err();
         assert_eq!(err.exit_code(), 2);
         assert!(err.message().contains("--trace"));
+    }
+
+    #[test]
+    fn is_base64_data_no_panic_when_128_splits_multibyte_char() {
+        // 126 个 ASCII 字节后紧跟 3 字节汉字，byte 128 落在汉字中间：旧实现 s[..128] 会 panic。
+        let mut s = "A".repeat(126);
+        s.push('中');
+        s.push_str(&"B".repeat(300));
+        assert!(s.len() >= 256);
+        assert!(!is_base64_data(&s));
+    }
+
+    #[test]
+    fn is_base64_data_long_chinese_emoji_mixed_no_panic() {
+        let mut s = String::new();
+        for _ in 0..40 {
+            s.push_str("你好世界🌍🚀混合输出测试");
+        }
+        s.push_str(&"A".repeat(64));
+        assert!(!is_base64_data(&s));
+    }
+
+    #[test]
+    fn is_base64_data_ascii_prefix_with_multibyte_tail_is_false() {
+        // 前 128 字节内出现非 base64 多字节字符 → false，且不 panic。
+        let s = format!("{}中{}", "A".repeat(40), "B".repeat(300));
+        assert!(!is_base64_data(&s));
+        assert!(s.len() >= 256);
+    }
+
+    #[test]
+    fn format_safe_output_keeps_unicode_intact() {
+        let temp_dir = std::env::temp_dir();
+        let raw = json!({"message": "中文输出\nemoji 🌍🚀\nmixed: äöü 中文 emoji 🎉"});
+        let out = format_safe_output(&raw, &temp_dir, true, None);
+        let parsed: Value = serde_json::from_str(&out).expect("json");
+        assert_eq!(parsed["result"]["message"], raw["message"]);
+    }
+
+    #[test]
+    fn format_safe_output_long_unicode_truncation_no_panic() {
+        let temp_dir = std::env::temp_dir();
+        let long = "中🌍🚀".repeat(10000);
+        let out = format_safe_output(&Value::String(long), &temp_dir, true, None);
+        assert!(out.len() <= MAX_SAFE_RESPONSE_CHARS + 2048);
+    }
+
+    #[test]
+    fn truncate_error_message_never_splits_utf8() {
+        let long = "中".repeat(20000); // 60000 字节，远超 32KB
+        let truncated = truncate_chars_safe(&long, MAX_SAFE_RESPONSE_CHARS);
+        assert!(truncated.len() <= MAX_SAFE_RESPONSE_CHARS);
+        assert!(truncated.is_char_boundary(truncated.len()));
+    }
+
+    #[tokio::test]
+    async fn mux_request_panic_after_await_is_isolated_and_next_succeeds() {
+        let first: Result<usize, ()> = spawn_isolated(async {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+            panic!("模拟 await 之后 panic：boom-payload-XYZ");
+        })
+        .await;
+        assert!(first.is_err(), "panic 请求必须被隔离为 Err");
+        let second: Result<usize, ()> = spawn_isolated(async { 42 }).await;
+        assert_eq!(second, Ok(42), "紧随其后的请求必须成功");
+    }
+
+    #[test]
+    fn mux_internal_error_keeps_id_and_is_structured() {
+        let v = mux_internal_error("req-9");
+        assert_eq!(v["id"], "req-9");
+        assert_eq!(v["ok"], json!(false));
+        assert_eq!(v["error_type"], "internal_error");
+        assert_eq!(v["exitCode"], json!(1));
+        assert!(v["help"].is_array());
+        let text = serde_json::to_string(&v).unwrap();
+        assert!(!text.contains("boom"), "不得暴露原始 panic 载荷");
+    }
+
+    #[cfg(windows)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mux_status_requests_reuse_client_across_isolation() {
+        use crate::mock_pipe::{caps_reply, ready_status, MockBroker};
+        use std::sync::atomic::Ordering as Ao;
+
+        let broker = MockBroker::spawn_default(|req| match req
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+        {
+            "bridge_capabilities" => caps_reply(),
+            "status" => json!({"ok": true, "result": ready_status()}),
+            _ => json!({"ok": false, "error": "unsupported"}),
+        });
+        let _bridge = broker.write_bridge(Some(std::process::id()));
+        let root = Some(broker.bridge_dir.clone());
+        let mut project_root: Option<PathBuf> = root;
+        let mut client: Option<HarnessClient> = None;
+        let (reply1, quit1) = handle_mux_line(
+            r#"{"id":"m1","argv":["status"]}"#,
+            &mut client,
+            &mut project_root,
+            None,
+        )
+        .await;
+        let (reply2, quit2) = handle_mux_line(
+            r#"{"id":"m2","argv":["status"]}"#,
+            &mut client,
+            &mut project_root,
+            None,
+        )
+        .await;
+        assert!(!quit1 && !quit2);
+        assert_eq!(reply1["ok"], json!(true));
+        assert_eq!(reply1["id"], "m1");
+        // status 非 full 的 shape 不保留 managedState：状态放在 editor 字段。
+        assert_eq!(reply1["result"]["editor"], "ready");
+        assert_eq!(reply1["result"]["generation"], json!(7));
+        assert_eq!(reply2["id"], "m2");
+        assert!(client.is_some(), "隔离包装必须恢复客户端状态");
+        assert_eq!(
+            broker.accepted.load(Ao::SeqCst),
+            1,
+            "两个请求应复用同一条连接"
+        );
     }
 }

@@ -250,4 +250,39 @@ namespace Pi.UnityHarness.Editor.Tests
             Assert.That(long.Parse(GetDeadlineTicks()), Is.GreaterThanOrEqualTo(expected.Ticks), "重新进入后应顺延超时截止时间");
         }
     }
+
+    internal sealed class PiUnityCompileCoordinatorTests
+    {
+        [Test]
+        public void RefreshAndRequestCompilation_UsesForceUpdateWithoutSynchronousImport()
+        {
+            Action<ImportAssetOptions> previousRefresh = PiUnityCompileCoordinator.RefreshAssetsAction;
+            Action previousCompile = PiUnityCompileCoordinator.RequestScriptCompilationAction;
+            var calls = new List<string>();
+            ImportAssetOptions observedOptions = 0;
+
+            try
+            {
+                PiUnityCompileCoordinator.RefreshAssetsAction = options =>
+                {
+                    observedOptions = options;
+                    calls.Add("refresh");
+                };
+                PiUnityCompileCoordinator.RequestScriptCompilationAction = () => calls.Add("compile");
+
+                PiUnityCompileCoordinator.RefreshAndRequestCompilation();
+
+                CollectionAssert.AreEqual(new[] { "refresh", "compile" }, calls);
+                Assert.That(observedOptions, Is.EqualTo(ImportAssetOptions.ForceUpdate));
+                Assert.That(
+                    observedOptions & ImportAssetOptions.ForceSynchronousImport,
+                    Is.EqualTo((ImportAssetOptions)0));
+            }
+            finally
+            {
+                PiUnityCompileCoordinator.RefreshAssetsAction = previousRefresh;
+                PiUnityCompileCoordinator.RequestScriptCompilationAction = previousCompile;
+            }
+        }
+    }
 }

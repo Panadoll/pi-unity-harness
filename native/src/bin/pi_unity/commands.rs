@@ -524,18 +524,21 @@ pub(crate) async fn execute_harness_command(
 
         Commands::Compile(args) => {
             recorder.record("compile", "Triggering recompile on Unity broker");
-            let initial_res = client
-                .send_request("recompile", json!({}), args.timeout)
-                .await;
-
-            if let Err(ref e) = initial_res {
-                if let CliError::BridgeNotFound(msg) = e {
-                    return Err(CliError::BridgeNotFound(msg.clone()));
-                }
-            }
-
+            // 整个操作（触发 + 轮询）共享原始 deadline，不随重试/轮询重置。
             let deadline = Instant::now() + Duration::from_millis(args.timeout);
-            tokio::time::sleep(Duration::from_millis(600)).await;
+            // 1) 初始错误全部传播（含 compile_error / compilation_failed / busy / 预分发耗尽）。
+            //    走 Err 保证退出码 1、ok:false；编译失败码由 usage::error_payload 附加
+            //    compiled:false 与错误诊断，绝不返回成功信封（exit0 ok:true 会误导调用方）。
+            let _ = client
+                .send_request("recompile", json!({}), super::client::remaining_ms(deadline))
+                .await?;
+
+            // 2) 只有 recompile 成功返回后才轮询 ready（失败时绝不误报 compiled:true）。
+            //    等待时长受剩余预算约束，绝不突破 deadline。
+            let settle_ms = 600.min(super::client::remaining_ms(deadline));
+            if settle_ms > 0 {
+                tokio::time::sleep(Duration::from_millis(settle_ms)).await;
+            }
 
             let mut last_status = Value::Null;
             let mut is_ready = false;
@@ -543,7 +546,8 @@ pub(crate) async fn execute_harness_command(
             while Instant::now() < deadline {
                 let _ = client.reload_bridge();
                 recorder.record("compile_poll", "Polling status for ready state");
-                match client.send_request("status", json!({}), 3000).await {
+                let poll_timeout = super::client::remaining_ms(deadline).min(3000);
+                match client.send_request("status", json!({}), poll_timeout).await {
                     Ok(status_val) => {
                         let is_ready_now =
                             status_val.get("managedState").and_then(Value::as_str) == Some("ready");
@@ -559,7 +563,11 @@ pub(crate) async fn execute_harness_command(
                     }
                     Err(_) => {}
                 }
-                tokio::time::sleep(Duration::from_millis(500)).await;
+                let remaining = super::client::remaining_ms(deadline);
+                if remaining == 0 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(500.min(remaining))).await;
             }
 
             if !is_ready {
@@ -892,5 +900,228 @@ mod tests {
             skill_is_current(&committed),
             "skills/pi-unity/SKILL.md 与 CLI home 文案漂移"
         );
+    }
+
+    #[cfg(windows)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn compile_initial_compile_error_returns_err_compiled_false_no_poll() {
+        use crate::args::CompileArgs;
+        use crate::mock_pipe::{caps_reply, MockBroker};
+        use std::sync::Arc;
+
+        // 真实 wire 形状（PiUnityCompileCoordinator -> CompleteCompileResult）：
+        // error_type=compile_error，error 为控制台编译错误摘要（file(line,col): message）。
+        let broker = MockBroker::spawn_default(|req| {
+            match req.get("type").and_then(Value::as_str).unwrap_or("") {
+                "bridge_capabilities" => caps_reply(),
+                "recompile" => json!({
+                    "ok": false,
+                    "error_type": "compile_error",
+                    "error": "Assets/Broken.cs(12,5): error CS1234: boom\nAssets/Broken.cs(20,9): error CS5678: nope"
+                }),
+                _ => json!({"ok": false, "error": "unsupported"}),
+            }
+        });
+        let _bridge = broker.write_bridge(Some(std::process::id()));
+        let root = broker.bridge_dir.clone();
+        let recorder = Arc::new(TraceRecorder::new("compile-fail-test"));
+        let mut client = HarnessClient::new(root.clone(), recorder.clone()).unwrap();
+        let opts = ViewOptions::default();
+        let err = execute_harness_command(
+            Commands::Compile(CompileArgs { timeout: 3000 }),
+            &mut client,
+            &root,
+            true,
+            &opts,
+            &recorder,
+        )
+        .await
+        .expect_err("编译失败必须走 Err（exit1 ok:false），不得返回成功信封（exit0 ok:true）");
+        match &err {
+            CliError::Broker { code, message } => {
+                assert_eq!(code, "compile_error");
+                assert!(message.contains("CS1234"), "应保留真实编译错误摘要: {message}");
+            }
+            other => panic!("期望 Broker(compile_error)，实际 {other:?}"),
+        }
+        // 载荷必须 ok:false + 编译失败诊断（usage::error_payload 附加 compiled）。
+        let payload = usage::error_payload(&err);
+        assert_eq!(payload["ok"], json!(false));
+        assert_eq!(payload["exitCode"], json!(1));
+        assert_eq!(payload["error_type"], "compile_error");
+        assert_eq!(payload["compiled"], json!(false));
+        assert_eq!(payload["compiledErrorType"], "compile_error");
+        assert!(
+            payload["compiledError"].as_str().unwrap().contains("CS1234"),
+            "诊断应保留错误摘要: {}",
+            payload["compiledError"]
+        );
+        // 失败后绝不轮询 status、绝不误报 compiled:true。
+        assert_eq!(broker.count("status"), 0, "编译失败后不应再轮询");
+        assert_eq!(broker.count("recompile"), 1);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn compile_all_initial_error_types_return_err_no_poll_no_success() {
+        use crate::args::CompileArgs;
+        use crate::mock_pipe::{caps_reply, MockBroker};
+        use std::sync::Arc;
+
+        // 初始 recompile 的每一类错误都必须：Err 透传（exit1 ok:false）、
+        // 不轮询 status、绝无 compiled:true。
+        let cases: Vec<(&str, Value, &str, bool)> = vec![
+            // 真实 compile_error：error 是文件定位摘要文本。
+            (
+                "compile_error",
+                json!({"ok": false, "error_type": "compile_error", "error": "Assets/A.cs(1,2): error CS1: boom"}),
+                "compile_error",
+                false,
+            ),
+            // 防御路径：coordinator 内部码作显式 error_type。
+            (
+                "legacy_compilation_failed",
+                json!({"ok": false, "error_type": "compilation_failed", "error": "Compilation failed: boom"}),
+                "compilation_failed",
+                false,
+            ),
+            // broker 忙（另一编译进行中）。
+            ("busy", json!({"ok": false, "error_type": "busy", "error": "另一个编译正在进行"}), "busy", false),
+            // PlayMode 退出超时。
+            ("playmode_exit_timeout", json!({"ok": false, "error_type": "playmode_exit_timeout", "error": "PlayMode 退出超时"}), "playmode_exit_timeout", false),
+            // 管道命令失败。
+            ("command_error", json!({"ok": false, "error_type": "command_error", "error": "boom"}), "command_error", false),
+            // broker 原生裸码：预分发重试至预算耗尽后同样 Err，且不轮询。
+            ("managed_not_ready", json!({"ok": false, "error": "managed_not_ready"}), "managed_not_ready", true),
+            // 未知原始错误文本：execution_failed，绝不当作 error_type。
+            ("raw_text", json!({"ok": false, "error": "Assets/Raw.cs(3,3): error CS999: oops"}), "execution_failed", false),
+        ];
+
+        for (name, reply, expected_code, retries) in cases {
+            let broker = MockBroker::spawn_default(move |req| {
+                match req.get("type").and_then(Value::as_str).unwrap_or("") {
+                    "bridge_capabilities" => caps_reply(),
+                    "recompile" => reply.clone(),
+                    _ => json!({"ok": false, "error": "unsupported"}),
+                }
+            });
+            let _bridge = broker.write_bridge(Some(std::process::id()));
+            let root = broker.bridge_dir.clone();
+            let recorder = Arc::new(TraceRecorder::new("compile-errs"));
+            let mut client = HarnessClient::new(root.clone(), recorder.clone()).unwrap();
+            let opts = ViewOptions::default();
+            let timeout = if retries { 800 } else { 3000 };
+            let res = execute_harness_command(
+                Commands::Compile(CompileArgs { timeout }),
+                &mut client,
+                &root,
+                true,
+                &opts,
+                &recorder,
+            )
+            .await;
+            let err = match res {
+                Ok(out) => panic!("[{name}] 编译初始错误必须返回 Err，实际 Ok: {out}"),
+                Err(e) => e,
+            };
+            assert_eq!(err.exit_code(), 1, "[{name}] 退出码必须为 1");
+            assert_eq!(err.error_type(), expected_code, "[{name}] 错误分类");
+            assert_eq!(broker.count("status"), 0, "[{name}] 失败后绝不轮询");
+
+            let payload = usage::error_payload(&err);
+            assert_eq!(payload["ok"], json!(false), "[{name}] 载荷必须 ok:false");
+            if expected_code == "compile_error" || expected_code == "compilation_failed" {
+                assert_eq!(payload["compiled"], json!(false), "[{name}]");
+                assert_eq!(payload["compiledErrorType"], expected_code, "[{name}]");
+            } else {
+                assert!(payload.get("compiled").is_none(), "[{name}] 非编译失败码不附加 compiled");
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn compile_polls_until_ready_only_after_successful_recompile() {
+        use crate::mock_pipe::{caps_reply, ready_status, reloading_status, MockBroker};
+        use crate::args::CompileArgs;
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use std::sync::Arc;
+
+        let status_calls = Arc::new(AtomicU32::new(0));
+        let status_calls_clone = status_calls.clone();
+        let broker = MockBroker::spawn_default(move |req| {
+            match req.get("type").and_then(Value::as_str).unwrap_or("") {
+                "bridge_capabilities" => caps_reply(),
+                "recompile" => {
+                    json!({"ok": true, "result": {"result": "compilation_succeeded"}})
+                }
+                "status" => {
+                    let n = status_calls_clone.fetch_add(1, Ordering::SeqCst);
+                    if n == 0 {
+                        json!({"ok": true, "result": reloading_status()})
+                    } else {
+                        json!({"ok": true, "result": ready_status()})
+                    }
+                }
+                _ => json!({"ok": false, "error": "unsupported"}),
+            }
+        });
+        let _bridge = broker.write_bridge(Some(std::process::id()));
+        let root = broker.bridge_dir.clone();
+        let recorder = Arc::new(TraceRecorder::new("compile-ok-test"));
+        let mut client = HarnessClient::new(root.clone(), recorder.clone()).unwrap();
+        let opts = ViewOptions::default();
+        let out = execute_harness_command(
+            Commands::Compile(CompileArgs { timeout: 8000 }),
+            &mut client,
+            &root,
+            true,
+            &opts,
+            &recorder,
+        )
+        .await
+        .expect("recompile 成功 + 状态转 ready 应成功");
+        let parsed: Value = serde_json::from_str(&out).expect("json");
+        assert_eq!(parsed["result"]["compiled"], json!(true));
+        assert_eq!(parsed["result"]["managedState"], "ready");
+        assert_eq!(parsed["result"]["generation"], json!(7));
+        assert_eq!(broker.count("recompile"), 1);
+        assert!(status_calls.load(Ordering::SeqCst) >= 2);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn compile_settle_and_poll_sleeps_share_one_deadline() {
+        use crate::args::CompileArgs;
+        use crate::mock_pipe::{caps_reply, reloading_status, MockBroker};
+        use std::sync::Arc;
+
+        let broker = MockBroker::spawn_default(|req| {
+            match req.get("type").and_then(Value::as_str).unwrap_or("") {
+                "bridge_capabilities" => caps_reply(),
+                "recompile" => json!({"ok": true, "result": {"result": "compilation_succeeded"}}),
+                "status" => json!({"ok": true, "result": reloading_status()}),
+                _ => json!({"ok": false, "error": "unsupported"}),
+            }
+        });
+        let _bridge = broker.write_bridge(Some(std::process::id()));
+        let root = broker.bridge_dir.clone();
+        let recorder = Arc::new(TraceRecorder::new("compile-deadline-test"));
+        let mut client = HarnessClient::new(root.clone(), recorder.clone()).unwrap();
+        let started = Instant::now();
+        let err = execute_harness_command(
+            Commands::Compile(CompileArgs { timeout: 800 }),
+            &mut client,
+            &root,
+            true,
+            &ViewOptions::default(),
+            &recorder,
+        )
+        .await
+        .unwrap_err();
+        let elapsed = started.elapsed();
+        assert!(matches!(err, CliError::Timeout(_)), "实际 {err:?}");
+        assert!(broker.count("status") >= 1, "成功触发后应进入状态轮询");
+        assert!(elapsed < Duration::from_millis(1200), "600/500ms sleep 不得重置总 deadline: {elapsed:?}");
     }
 }

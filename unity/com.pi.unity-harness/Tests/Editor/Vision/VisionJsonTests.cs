@@ -23,6 +23,7 @@ namespace Pi.UnityHarness.Editor.Tests.Vision
             Assert.That(json, Does.StartWith("{\"status\":\"succeeded\""));
             Assert.That(json, Does.Contain("\"schema\":\"harness.vision.capture.v1\""));
             Assert.That(json, Does.Contain("\"path\":\"/tmp/shot.png\""));
+            Assert.That(json, Does.Contain("\"embed\":false"));
             Assert.That(json, Does.Contain("\"source\":\"game\""));
             Assert.That(json, Does.Contain("\"width\":1280"));
             Assert.That(json, Does.Contain("\"height\":720"));
@@ -210,10 +211,11 @@ namespace Pi.UnityHarness.Editor.Tests.Vision
         [Test]
         public void BuildAnalysisRequestJson_PreservesCaptureFields()
         {
-            string captureJson = "{\"path\":\"/tmp/shot.png\",\"source\":\"game\",\"width\":1280,\"height\":720,\"bytes\":45678,\"output_size\":{\"w\":1280,\"h\":720}}";
+            string captureJson = "{\"path\":\"/tmp/shot.png\",\"embed\":false,\"source\":\"game\",\"width\":1280,\"height\":720,\"bytes\":45678,\"output_size\":{\"w\":1280,\"h\":720}}";
             string json = VisionJson.BuildAnalysisRequestJson("Describe.", captureJson, null);
 
             Assert.That(json, Does.Contain("\"path\":\"/tmp/shot.png\""));
+            Assert.That(json, Does.Contain("\"embed\":false"));
             Assert.That(json, Does.Contain("\"source\":\"game\""));
             Assert.That(json, Does.Contain("\"width\":1280"));
             Assert.That(json, Does.Contain("\"height\":720"));
@@ -297,10 +299,11 @@ namespace Pi.UnityHarness.Editor.Tests.Vision
         [Test]
         public void BuildCaptureJsonFromMetadata_PreservesCoordinateMapping()
         {
-            string captureJson = "{\"status\":\"succeeded\",\"path\":\"old.png\",\"source\":\"game\",\"width\":1280,\"height\":720,\"bytes\":1,\"output_size\":{\"w\":1280,\"h\":720},\"gameview_size\":{\"w\":826,\"h\":410},\"capture_source_size\":{\"w\":1920,\"h\":1080},\"scale\":{\"x\":1.5,\"y\":1.7},\"screenshot_to_gameview\":{\"x\":0.64,\"y\":0.57},\"captured_at_utc\":\"2026-01-01T12:00:00.000Z\"}";
+            string captureJson = "{\"status\":\"succeeded\",\"path\":\"old.png\",\"embed\":false,\"source\":\"game\",\"width\":1280,\"height\":720,\"bytes\":1,\"output_size\":{\"w\":1280,\"h\":720},\"gameview_size\":{\"w\":826,\"h\":410},\"capture_source_size\":{\"w\":1920,\"h\":1080},\"scale\":{\"x\":1.5,\"y\":1.7},\"screenshot_to_gameview\":{\"x\":0.64,\"y\":0.57},\"captured_at_utc\":\"2026-01-01T12:00:00.000Z\"}";
             string json = VisionJson.BuildCaptureJsonFromMetadata("new.png", captureJson, 0, 0, 123, "2026-01-02T12:00:00.000Z");
 
             Assert.That(json, Does.Contain("\"path\":\"new.png\""));
+            Assert.That(json, Does.Contain("\"embed\":false"));
             Assert.That(json, Does.Contain("\"width\":1280"));
             Assert.That(json, Does.Contain("\"height\":720"));
             Assert.That(json, Does.Contain("\"bytes\":123"));

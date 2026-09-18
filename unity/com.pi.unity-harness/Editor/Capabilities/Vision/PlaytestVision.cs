@@ -223,6 +223,7 @@ namespace Pi.UnityHarness.Editor.Capabilities.Vision
             var sb = new StringBuilder(1024);
             sb.Append("{\"status\":\"").Append(status).Append('"');
             sb.Append(",\"schema\":\"").Append(ObserveSchema).Append('"');
+            sb.Append(",\"embed\":false");
             sb.Append(",\"warnings\":");
             if (warnings == null)
             {
@@ -311,6 +312,7 @@ namespace Pi.UnityHarness.Editor.Capabilities.Vision
             var sb = new StringBuilder(512);
             sb.Append("{\"status\":\"").Append(status).Append('"');
             sb.Append(",\"schema\":\"").Append(CaptureAfterSchema).Append('"');
+            sb.Append(",\"embed\":false");
             if (status == "failed")
             {
                 sb.Append(",\"error\":").Append(JsonString(error));

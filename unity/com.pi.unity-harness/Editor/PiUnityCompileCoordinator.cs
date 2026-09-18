@@ -32,6 +32,11 @@ namespace Pi.UnityHarness.Editor
         private static int s_deferredNoCompileChecks;
         private static Action<string, bool, string, string> s_onComplete;
 
+        internal static Action<ImportAssetOptions> RefreshAssetsAction =
+            options => AssetDatabase.Refresh(options);
+        internal static Action RequestScriptCompilationAction =
+            () => CompilationPipeline.RequestScriptCompilation();
+
         /// <summary>
         /// Unified recompile entry: wait for a safe EditMode, then start compile.
         /// </summary>
@@ -79,13 +84,9 @@ namespace Pi.UnityHarness.Editor
 
             // 先处理外部文件改动：编辑器不在前台时 Unity 不会自动刷新，
             // 少了这一步，"改完文件直接 compile" 会看不到新/改动脚本，静默地什么都不编译。
-            // 上游 uloop 的 compile 路径同样是先 Refresh 再请求编译。
-            AssetDatabase.Refresh();
-
-            // Explicitly request script compilation. With only AssetDatabase.Refresh, dirty scripts /
-            // asset-only refreshes can leave isCompiling=true without ever firing compilationFinished,
-            // which would hang the pipe-side recompile until timeout.
-            CompilationPipeline.RequestScriptCompilation();
+            // ForceUpdate marks this as a user-initiated import check. It intentionally does not use
+            // ForceSynchronousImport; compilation completion still arrives through pipeline callbacks.
+            RefreshAndRequestCompilation();
 
             // Unity may only enter isCompiling on a later editor update.
             // Defer a few frames before deciding "no compilation was triggered" to avoid
@@ -93,6 +94,16 @@ namespace Pi.UnityHarness.Editor
             // a missed compilationFinished cannot hang the request.
             if (!s_callbackFired)
                 ScheduleDeferredNoCompileCheck(8);
+        }
+
+        internal static void RefreshAndRequestCompilation()
+        {
+            RefreshAssetsAction(ImportAssetOptions.ForceUpdate);
+
+            // Explicitly request script compilation. With only AssetDatabase.Refresh, dirty scripts /
+            // asset-only refreshes can leave isCompiling=true without ever firing compilationFinished,
+            // which would hang the pipe-side recompile until timeout.
+            RequestScriptCompilationAction();
         }
 
         /// <summary>

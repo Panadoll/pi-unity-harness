@@ -11,6 +11,6 @@ pi-unity observe --overlay grid
 
 默认 3 帧，间隔 160ms，叠加网格和标注。
 
-只在 GUI 模式用。日常重构留在 `snapshot` + `eval` + `uitree_*`。GameView 要在 PlayMode。
+只在 GUI 模式用：视觉 mismatch / 自绘渲染 UI 对不上时。日常重构留在 `snapshot` + `eval` + `uitree_*`。GameView 要在 PlayMode。不要每步读图；结果里的 `embed:false` 之类标记只是建议，宿主不强制拦截内联图片。
 
 图写到 `Temp/PiUnityHarness/Captures/`。CLI 只返回路径、`changedFrames`、`dHash`。不要把 Base64 倒进终端。

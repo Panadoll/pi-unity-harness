@@ -216,6 +216,7 @@ namespace Pi.UnityHarness.Editor.Tests.Playtest
 
             StringAssert.Contains("\"schema\":\"harness.vision.observe.v1\"", json);
             StringAssert.Contains("\"status\":\"succeeded\"", json);
+            StringAssert.Contains("\"embed\":false", json);
             StringAssert.Contains("\"fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"", json);
             StringAssert.Contains("\"changed\":true", json);
             StringAssert.Contains("\"timed_out\":false", json);
@@ -274,6 +275,7 @@ namespace Pi.UnityHarness.Editor.Tests.Playtest
                 capturedAtUtc: "2026-01-01T00:00:00.000Z");
 
             StringAssert.Contains("\"schema\":\"harness.vision.capture_after.v1\"", json);
+            StringAssert.Contains("\"embed\":false", json);
             StringAssert.Contains("\"mode\":\"burst\"", json);
             StringAssert.Contains("\"sheet\":\"s.jpg\"", json);
             StringAssert.Contains("\"timings_ms\":[0,80]", json);

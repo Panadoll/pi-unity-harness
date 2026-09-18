@@ -23,6 +23,8 @@ namespace Pi.UnityHarness.Editor
             "recompile",
             "recompile_status",
         };
+        private const int MaxCommandSuggestions = 5;
+        private const int MaxSuggestionTextLength = 128;
         // Pure in-memory state: not persisted across domain reloads. On beforeAssemblyReload each
         // request is answered with a timeout error and cleared, because managed Tasks cannot be
         // resumed after reload (contrast: PiUnityTestCoordinator uses SessionState across reloads).
@@ -102,8 +104,8 @@ namespace Pi.UnityHarness.Editor
                 CommandInfo command = CommandRegistry.DiscoverCommands().FirstOrDefault(c => string.Equals(c.Name, commandName, StringComparison.Ordinal));
                 if (command == null)
                 {
-                    string available = string.Join(", ", CommandRegistry.DiscoverCommands().Where(IsCommandVisible).Select(c => c.Name).OrderBy(n => n));
-                    completeJson(requestId, PiUnityJsonHelper.ErrorJson(requestId, "command_not_found", "No pipeline command named '" + commandName + "'. Available: [" + available + "]"));
+                    string message = BuildCommandNotFoundMessage(commandName, CommandRegistry.DiscoverCommands());
+                    completeJson(requestId, PiUnityJsonHelper.ErrorJson(requestId, "command_not_found", message));
                     return;
                 }
 
@@ -185,6 +187,89 @@ namespace Pi.UnityHarness.Editor
                 return "Pipeline recompile_status is disabled on the pipe bridge; unity_recompile returns the final result directly, and unity_status can observe compiler state.";
 
             return null;
+        }
+
+        internal static string BuildCommandNotFoundMessage(string commandName, IEnumerable<CommandInfo> commands)
+        {
+            string displayedName = TruncateSuggestionText(commandName ?? string.Empty);
+            List<string> suggestions = GetCommandSuggestions(commandName, commands);
+            string message = "No pipeline command named '" + displayedName + "'.";
+            return suggestions.Count == 0
+                ? message + " Use 'pi-unity list-commands' to see available commands."
+                : message + " Did you mean: [" + string.Join(", ", suggestions.Select(TruncateSuggestionText)) + "]?";
+        }
+
+        internal static List<string> GetCommandSuggestions(string commandName, IEnumerable<CommandInfo> commands)
+        {
+            string query = NormalizeSuggestionText(commandName);
+            if (query.Length == 0 || commands == null)
+                return new List<string>();
+
+            int distanceThreshold = Math.Min(4, Math.Max(2, query.Length / 3));
+            return commands
+                .Where(IsCommandVisible)
+                .Select(c => c.Name)
+                .Where(n => !string.IsNullOrEmpty(n))
+                .Distinct(StringComparer.Ordinal)
+                .Select(name =>
+                {
+                    string candidate = NormalizeSuggestionText(name);
+                    bool candidateStartsWithQuery = candidate.StartsWith(query, StringComparison.Ordinal);
+                    bool queryStartsWithCandidate = query.StartsWith(candidate, StringComparison.Ordinal);
+                    int distance = BoundedEditDistance(query, candidate);
+                    return new
+                    {
+                        Name = name,
+                        PrefixRank = candidateStartsWithQuery ? 0 : (queryStartsWithCandidate ? 1 : 2),
+                        Distance = distance,
+                        Relevant = candidateStartsWithQuery || queryStartsWithCandidate || distance <= distanceThreshold,
+                    };
+                })
+                .Where(s => s.Relevant)
+                .OrderBy(s => s.PrefixRank)
+                .ThenBy(s => s.Distance)
+                .ThenBy(s => s.Name, StringComparer.Ordinal)
+                .Take(MaxCommandSuggestions)
+                .Select(s => s.Name)
+                .ToList();
+        }
+
+        private static string NormalizeSuggestionText(string value)
+        {
+            string text = value ?? string.Empty;
+            if (text.Length > MaxSuggestionTextLength)
+                text = text.Substring(0, MaxSuggestionTextLength);
+            return text.ToLowerInvariant();
+        }
+
+        private static string TruncateSuggestionText(string value)
+        {
+            if (value.Length <= MaxSuggestionTextLength)
+                return value;
+            return value.Substring(0, MaxSuggestionTextLength) + "...";
+        }
+
+        private static int BoundedEditDistance(string left, string right)
+        {
+            int[] previous = new int[right.Length + 1];
+            int[] current = new int[right.Length + 1];
+            for (int j = 0; j <= right.Length; j++)
+                previous[j] = j;
+
+            for (int i = 1; i <= left.Length; i++)
+            {
+                current[0] = i;
+                for (int j = 1; j <= right.Length; j++)
+                {
+                    int substitution = previous[j - 1] + (left[i - 1] == right[j - 1] ? 0 : 1);
+                    current[j] = Math.Min(Math.Min(previous[j] + 1, current[j - 1] + 1), substitution);
+                }
+                int[] swap = previous;
+                previous = current;
+                current = swap;
+            }
+
+            return previous[right.Length];
         }
 
         private static JObject BuildCommandJson(CommandInfo command)
