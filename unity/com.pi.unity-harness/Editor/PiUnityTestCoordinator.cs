@@ -22,6 +22,9 @@ namespace Pi.UnityHarness.Editor
         private const string SessionKey_EditorSegmentResultJson = "PiUnityHarness_EditorTestSegmentResultJson";
         private const string SessionKey_DeadlineUtcTicks = "PiUnityHarness_TestDeadlineUtcTicks";
 
+        private const string SessionKey_LastCompletedRequestId = "PiUnityHarness_LastCompletedTestRequestId";
+        private const string SessionKey_LastCompletedResponse = "PiUnityHarness_LastCompletedTestResponse";
+
         private const string SegmentSingle = "single";
         private const string SegmentEditor = "editor";
         private const string SegmentPlaymode = "playmode";
@@ -56,13 +59,25 @@ namespace Pi.UnityHarness.Editor
         public static void StartRunTests(string requestId, string parametersJson, int timeoutMs, Action<string, string> completeJson)
         {
 #if PI_UNITY_PIPELINE
-            s_completeJson = completeJson;
-
             if (HasPendingRequest())
             {
+                if (SessionState.GetString(SessionKey_PendingTestRequestId, string.Empty) == requestId)
+                {
+                    // Reattach the same operation after reload without restarting tests or its deadline.
+                    s_completeJson = completeJson;
+                    EnsurePolling();
+                    return;
+                }
                 completeJson(requestId, PiUnityJsonHelper.ErrorJson(requestId, "busy", "run_tests request already in progress"));
                 return;
             }
+
+            if (SessionState.GetString(SessionKey_LastCompletedRequestId, string.Empty) == requestId)
+            {
+                completeJson(requestId, SessionState.GetString(SessionKey_LastCompletedResponse, string.Empty));
+                return;
+            }
+            s_completeJson = completeJson;
 
             if (PipelineTestRunRunningProvider())
             {
@@ -496,17 +511,27 @@ namespace Pi.UnityHarness.Editor
                 ["value"] = value,
             };
 
+            string response = PiUnityJsonHelper.SuccessJson(id, result.ToString(Formatting.None));
+            RememberCompletion(id, response);
             ClearSessionState();
-            s_completeJson?.Invoke(id, PiUnityJsonHelper.SuccessJson(id, result.ToString(Formatting.None)));
+            s_completeJson?.Invoke(id, response);
             StopPollingIfIdle();
         }
 
         private static void CompleteError(string errorType, string error)
         {
             string id = SessionState.GetString(SessionKey_PendingTestRequestId, string.Empty);
+            string response = PiUnityJsonHelper.ErrorJson(id, errorType, error);
+            RememberCompletion(id, response);
             ClearSessionState();
-            s_completeJson?.Invoke(id, PiUnityJsonHelper.ErrorJson(id, errorType, error));
+            s_completeJson?.Invoke(id, response);
             StopPollingIfIdle();
+        }
+
+        private static void RememberCompletion(string id, string response)
+        {
+            SessionState.SetString(SessionKey_LastCompletedRequestId, id);
+            SessionState.SetString(SessionKey_LastCompletedResponse, response);
         }
 
         private static void ClearSessionState()

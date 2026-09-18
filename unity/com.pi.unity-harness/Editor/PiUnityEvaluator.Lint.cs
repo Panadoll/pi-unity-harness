@@ -317,11 +317,25 @@ namespace Pi.UnityHarness.Editor
                     return false; // 输入在 return 后截断：交给不完整输入诊断
                 if (code[next] == ';')
                     continue; // 裸 return; 在 void 宿主里合法
+                if (IsYieldBeforeReturn(code, i))
+                    continue;
 
                 return true;
             }
 
             return false;
+        }
+
+        private static bool IsYieldBeforeReturn(string code, int returnIndex)
+        {
+            int previous = SkipWhitespaceAndCommentsBackwards(code, returnIndex - 1);
+            if (previous < 0 || !IsIdentifierPart(code[previous]))
+                return false;
+
+            int start = previous;
+            while (start > 0 && IsIdentifierPart(code[start - 1]))
+                start--;
+            return string.Equals(code.Substring(start, previous - start + 1), "yield", StringComparison.Ordinal);
         }
 
         // ───────────────────────────────────────────────

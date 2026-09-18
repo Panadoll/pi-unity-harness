@@ -13,21 +13,30 @@ namespace Pi.UnityHarness.Editor.Tests.Vision
     public sealed class VisionAnalyzeUnavailableTests
     {
         [Test]
-        public void CaptureAndAnalyzeJson_DefaultProvider_ReturnsPartial()
+        public void AnalyzeImageJson_DefaultProvider_ReturnsPartial()
         {
-            // Mock mode with no camera = capture fails, analysis skipped
-            string json = HarnessVision.CaptureAndAnalyzeJson(
-                "Find the Start button.", "scene", null, 0, 0, null);
+            // This test verifies provider behavior without rendering a SceneView camera.
+            string path = Path.Combine(Path.GetTempPath(), "harness-vision-unavailable-" + Guid.NewGuid().ToString("N") + ".png");
+            File.WriteAllBytes(path, new byte[]
+            {
+                137, 80, 78, 71, 13, 10, 26, 10,
+                0, 0, 0, 13, 73, 72, 82,
+                0, 0, 1, 0, 0, 0, 1, 0
+            });
 
-            // Should return compound JSON with schema
-            Assert.That(json, Does.Contain("\"schema\":\"harness.vision.capture_analysis.v1\""));
-            // If capture fails (no SceneView in test runner), status is "failed"
-            // If capture succeeds (unlikely in test runner), status is "partial"
-            Assert.That(
-                json.Contains("\"status\":\"failed\"") ||
-                json.Contains("\"status\":\"partial\""),
-                Is.True,
-                "Expected status 'failed' (no camera) or 'partial' (capture ok, analysis unavailable). Got: " + json);
+            try
+            {
+                string json = HarnessVision.AnalyzeImageJson(
+                    "Find the Start button.", path, null, null);
+
+                Assert.That(json, Does.Contain("\"status\":\"partial\""));
+                Assert.That(json, Does.Contain("\"status\":\"unavailable\""));
+            }
+            finally
+            {
+                if (File.Exists(path))
+                    File.Delete(path);
+            }
         }
 
         [Test]

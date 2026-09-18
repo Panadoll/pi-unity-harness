@@ -203,7 +203,9 @@ namespace Pi.UnityHarness.Editor
         // 丢掉这些缓存条目可以在不重建实例、不丢持久变量的前提下恢复；重建只作兜底。
         private FieldInfo _moduleField;
         private FieldInfo _anonymousTypesField;
-        private bool _lastCompileHadErrors;
+        private HashSet<object> _anonymousTypesBeforeCompile;
+        private readonly HashSet<object> _anonymousTypesToRemove = new HashSet<object>();
+        private bool _anonymousTypeCleanupPending;
         private bool _cacheCleanupUnavailable;
         private bool _compilerPoisoned;
         private string _rebuildReason;
@@ -225,6 +227,11 @@ namespace Pi.UnityHarness.Editor
 
         private void Initialize()
         {
+            _anonymousTypesBeforeCompile = null;
+            _anonymousTypesToRemove.Clear();
+            _anonymousTypeCleanupPending = false;
+            _cacheCleanupUnavailable = false;
+
             Assembly asm = LoadMonoCSharpAssembly();
             Type evaluatorType = asm.GetType("Mono.CSharp.Evaluator")
                 ?? throw new TypeLoadException("Mono.CSharp.Evaluator not found");
@@ -248,11 +255,12 @@ namespace Pi.UnityHarness.Editor
                 ?? throw new MissingMethodException("Evaluator ctor not found");
             _evaluator = evaluatorCtor.Invoke(new[] { context });
 
-            _moduleField = evaluatorType.GetField(
-                "module", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            _moduleField = FindInstanceField(
+                evaluatorType, "module");
             Type moduleType = asm.GetType("Mono.CSharp.ModuleContainer");
-            _anonymousTypesField = moduleType?.GetField(
-                "anonymous_types", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            _anonymousTypesField = moduleType == null
+                ? null
+                : FindInstanceField(moduleType, "anonymous_types");
 
             _evaluate = evaluatorType.GetMethod("Evaluate", new[]
             {
@@ -349,7 +357,10 @@ namespace Pi.UnityHarness.Editor
             string result = ValidateCore(code);
             // "(valid)" 时保留待报状态，交给紧随其后的 Eval 如实告知。
             if (_rebuildPending && result != "(valid)")
+            {
+                _rebuildPending = false;
                 return (result ?? string.Empty) + "\n" + RebuildNote();
+            }
             return result;
         }
 
@@ -640,13 +651,11 @@ namespace Pi.UnityHarness.Editor
                 string diagnostics = _reportBuffer.ToString().Trim();
                 if (HasCompileErrors(diagnostics))
                 {
-                    _lastCompileHadErrors = true;
                     compileError = "COMPILE ERROR: " + diagnostics;
                     return false;
                 }
                 if (!string.IsNullOrEmpty(partial))
                 {
-                    _lastCompileHadErrors = true;
                     compileError = "COMPILE ERROR: incomplete input: " + partial;
                     return false;
                 }
@@ -717,13 +726,11 @@ namespace Pi.UnityHarness.Editor
             string errors = _reportBuffer.ToString().Trim();
             if (HasCompileErrors(errors))
             {
-                _lastCompileHadErrors = true;
                 validationError = "COMPILE ERROR: " + errors;
                 return false;
             }
             if (!string.IsNullOrEmpty(partial))
             {
-                _lastCompileHadErrors = true;
                 validationError = "COMPILE ERROR: incomplete input: " + partial;
                 return false;
             }
@@ -803,45 +810,119 @@ namespace Pi.UnityHarness.Editor
         /// </summary>
         private void PrepareCompilerForCompile()
         {
-            if (!_lastCompileHadErrors || _cacheCleanupUnavailable)
+            if (!_anonymousTypeCleanupPending)
                 return;
 
-            _lastCompileHadErrors = false;
-            if (_moduleField == null || _anonymousTypesField == null)
+            _anonymousTypeCleanupPending = false;
+            if (_cacheCleanupUnavailable || _anonymousTypesToRemove.Count == 0)
             {
-                _cacheCleanupUnavailable = true;
+                _anonymousTypesToRemove.Clear();
                 return;
             }
 
             try
             {
-                object module = _moduleField.GetValue(_evaluator);
-                object cache = module == null ? null : _anonymousTypesField.GetValue(module);
-                if (cache is IDictionary dictionary && dictionary.Count > 0)
-                    dictionary.Clear();
+                object module = _moduleField == null ? null : _moduleField.GetValue(_evaluator);
+                object cache = module == null || _anonymousTypesField == null
+                    ? null
+                    : _anonymousTypesField.GetValue(module);
+                if (!(cache is IDictionary dictionary))
+                {
+                    _cacheCleanupUnavailable = true;
+                    _anonymousTypesToRemove.Clear();
+                    return;
+                }
+
+                foreach (object key in _anonymousTypesToRemove)
+                    dictionary.Remove(key);
+                _anonymousTypesToRemove.Clear();
             }
             catch (Exception ex)
             {
                 _cacheCleanupUnavailable = true;
+                _anonymousTypesToRemove.Clear();
                 LogVerbose("anonymous type cache cleanup unavailable: " + ex.Message);
+            }
+        }
+
+        private void CaptureAnonymousTypesBeforeCompile()
+        {
+            _anonymousTypesBeforeCompile = null;
+            if (_cacheCleanupUnavailable || _moduleField == null || _anonymousTypesField == null)
+                return;
+
+            try
+            {
+                object module = _moduleField.GetValue(_evaluator);
+                object cache = module == null ? null : _anonymousTypesField.GetValue(module);
+                if (cache is IDictionary dictionary)
+                {
+                    _anonymousTypesBeforeCompile = new HashSet<object>();
+                    foreach (object key in dictionary.Keys)
+                        _anonymousTypesBeforeCompile.Add(key);
+                }
+            }
+            catch (Exception ex)
+            {
+                _cacheCleanupUnavailable = true;
+                LogVerbose("anonymous type cache inspection unavailable: " + ex.Message);
+            }
+        }
+
+        private void QueueNewAnonymousTypesForCleanup()
+        {
+            if (_anonymousTypesBeforeCompile == null || _cacheCleanupUnavailable
+                || _moduleField == null || _anonymousTypesField == null)
+                return;
+
+            try
+            {
+                object module = _moduleField.GetValue(_evaluator);
+                object cache = module == null ? null : _anonymousTypesField.GetValue(module);
+                if (!(cache is IDictionary dictionary))
+                    return;
+
+                foreach (object key in dictionary.Keys)
+                {
+                    if (!_anonymousTypesBeforeCompile.Contains(key))
+                        _anonymousTypesToRemove.Add(key);
+                }
+                if (_anonymousTypesToRemove.Count > 0)
+                    _anonymousTypeCleanupPending = true;
+            }
+            catch (Exception ex)
+            {
+                _cacheCleanupUnavailable = true;
+                LogVerbose("anonymous type cache inspection unavailable: " + ex.Message);
+            }
+            finally
+            {
+                _anonymousTypesBeforeCompile = null;
             }
         }
 
         private CompileOutcome TryCompileGuarded(string code, out object compiled, out string partial, out string failure)
         {
             PrepareCompilerForCompile();
+            CaptureAnonymousTypesBeforeCompile();
 
             CompileOutcome outcome = TryCompileOnce(code, out compiled, out partial, out failure);
+            bool compilerReportedError = outcome != CompileOutcome.Compiled
+                || HasCompileErrors(_reportBuffer.ToString())
+                || !string.IsNullOrEmpty(partial);
+            if (compilerReportedError)
+                QueueNewAnonymousTypesForCleanup();
+
             if (outcome != CompileOutcome.Compiled)
             {
-                // 编译带错误就可能留下半 emit 的匿名类型容器；下一条 Compile 前清理。
-                _lastCompileHadErrors = true;
+                // InternalErrorException 说明当前实例已污染；普通编译错误不会触发重建。
 
                 // 兜底：缓存清理没生效（或遇到其它内部错误）时重建编译器实例；
                 // 编译阶段从未执行用户代码，重试不存在副作用回放。
                 if (_compilerPoisoned && _ready)
                 {
                     RebuildCompiler();
+                    CaptureAnonymousTypesBeforeCompile();
                     outcome = TryCompileOnce(code, out compiled, out partial, out failure);
                 }
             }
@@ -939,6 +1020,18 @@ namespace Pi.UnityHarness.Editor
                 || diagnostics.IndexOf("\nerror ", StringComparison.Ordinal) >= 0
                 || diagnostics.IndexOf(": error ", StringComparison.Ordinal) >= 0
                 || diagnostics.IndexOf("error CS", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        internal static FieldInfo FindInstanceField(Type type, string name)
+        {
+            const BindingFlags Flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+            for (Type current = type; current != null; current = current.BaseType)
+            {
+                FieldInfo field = current.GetField(name, Flags);
+                if (field != null)
+                    return field;
+            }
+            return null;
         }
 
         private static void TrySetMember(object target, string name, object value)

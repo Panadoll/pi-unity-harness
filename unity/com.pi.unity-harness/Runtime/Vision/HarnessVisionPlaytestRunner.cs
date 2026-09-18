@@ -257,6 +257,9 @@ namespace Pi.UnityHarness.Runtime.Capabilities.Vision
                     yield break;
                 }
 
+                // ScreenCapture is only valid in the end-of-frame window. The render callback
+                // above is a readiness signal, not the capture window itself.
+                yield return new WaitForEndOfFrame();
                 Texture2D frame = ScreenCapture.CaptureScreenshotAsTexture();
                 if (frame == null)
                     throw new InvalidOperationException("ScreenCapture returned no texture. GameView is not ready yet.");
@@ -402,6 +405,9 @@ namespace Pi.UnityHarness.Runtime.Capabilities.Vision
                     yield break;
                 }
 
+                // ScreenCapture is only valid in the end-of-frame window. The render callback
+                // above is a readiness signal, not the capture window itself.
+                yield return new WaitForEndOfFrame();
                 Texture2D frame = ScreenCapture.CaptureScreenshotAsTexture();
                 if (frame == null)
                     throw new InvalidOperationException("ScreenCapture returned no texture. GameView is not ready yet.");

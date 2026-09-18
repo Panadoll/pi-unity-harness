@@ -245,6 +245,16 @@ impl HarnessClient {
     ) -> Result<Value, CliError> {
         // 整个请求（连接 + 握手 + 重试）共享同一个 deadline，绝不按重试轮次重置。
         let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+        // The test coordinator survives reloads and deduplicates by request id.
+        // Reuse it across managed-reloading replies, never across transport loss.
+        let test_request_id = if req_type == "command"
+            && payload.get("name").and_then(Value::as_str) == Some("run_tests")
+        {
+            self.req_counter += 1;
+            Some(format!("cli-{}-{}-{}", std::process::id(), self.req_counter, now_ms()))
+        } else {
+            None
+        };
         loop {
             if self.persistent
                 && req_type != "bridge_capabilities"
@@ -255,7 +265,7 @@ impl HarnessClient {
                     return Err(e);
                 }
             }
-            match self.exchange(req_type, payload.clone(), deadline).await {
+            match self.exchange_with_id(req_type, payload.clone(), deadline, test_request_id.as_deref()).await {
                 Ok(v) => return Ok(v),
                 // 只重试 broker 明确拒绝且未派发的预分发错误（broker 保证
                 // managed_reloading / managed_not_ready 不会入队）。
@@ -287,13 +297,23 @@ impl HarnessClient {
         payload: Value,
         deadline: Instant,
     ) -> Result<Value, CliError> {
-        self.req_counter += 1;
-        let id = format!(
-            "cli-{}-{}-{}",
-            std::process::id(),
-            self.req_counter,
-            now_ms()
-        );
+        self.exchange_with_id(req_type, payload, deadline, None).await
+    }
+
+    async fn exchange_with_id(
+        &mut self,
+        req_type: &str,
+        payload: Value,
+        deadline: Instant,
+        request_id: Option<&str>,
+    ) -> Result<Value, CliError> {
+        let id = match request_id {
+            Some(id) => id.to_string(),
+            None => {
+                self.req_counter += 1;
+                format!("cli-{}-{}-{}", std::process::id(), self.req_counter, now_ms())
+            }
+        };
         self.recorder.add_request_id(id.clone());
 
         let mut pipe = match self.connection.take() {

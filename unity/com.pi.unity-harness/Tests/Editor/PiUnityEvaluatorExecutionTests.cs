@@ -61,7 +61,10 @@ namespace Pi.UnityHarness.Editor.Tests
             run("poisoned compiler is rebuilt on the next call", PoisonedCompilerSelfHeals);
             run("value return keeps persistent session state", ValueReturnKeepsSessionState);
             run("top-level value return detection", TopLevelValueReturnGate);
+            run("reflection finds inherited compiler fields", ReflectionFindsInheritedFields);
+            run("Validate consumes rebuild notice on errors", ValidateConsumesRebuildNoticeOnErrors);
             run("failed anonymous type compile keeps session state", FailedAnonymousTypeCompileKeepsSessionState);
+            run("ordinary failure preserves cached anonymous types", OrdinaryFailurePreservesCachedAnonymousTypes);
             run("failed value return keeps session state", FailedValueReturnKeepsSessionState);
         }
 
@@ -355,6 +358,50 @@ namespace Pi.UnityHarness.Editor.Tests
             Value(evaluator, "sessionValue", "7");
         }
 
+        private class ReflectionFieldBase
+        {
+            private int inheritedField;
+        }
+
+        private sealed class ReflectionFieldDerived : ReflectionFieldBase
+        {
+        }
+
+        private static void ReflectionFindsInheritedFields()
+        {
+            FieldInfo field = PiUnityEvaluator.FindInstanceField(typeof(ReflectionFieldDerived), "inheritedField");
+            Require(field != null, "failed to find a private instance field declared on a base type.");
+            Require(field.DeclaringType == typeof(ReflectionFieldBase), "found the wrong declaring type.");
+
+            var evaluator = new PiUnityEvaluator();
+            FieldInfo moduleHandle = typeof(PiUnityEvaluator).GetField(
+                "_moduleField", BindingFlags.Instance | BindingFlags.NonPublic);
+            FieldInfo anonymousTypesHandle = typeof(PiUnityEvaluator).GetField(
+                "_anonymousTypesField", BindingFlags.Instance | BindingFlags.NonPublic);
+            Require(moduleHandle != null && moduleHandle.GetValue(evaluator) != null,
+                "production module reflection handle was not resolved.");
+            Require(anonymousTypesHandle != null && anonymousTypesHandle.GetValue(evaluator) != null,
+                "production anonymous_types reflection handle was not resolved.");
+        }
+
+        private static void ValidateConsumesRebuildNoticeOnErrors()
+        {
+            var evaluator = new PiUnityEvaluator();
+            FieldInfo pending = typeof(PiUnityEvaluator).GetField(
+                "_rebuildPending", BindingFlags.Instance | BindingFlags.NonPublic);
+            FieldInfo reason = typeof(PiUnityEvaluator).GetField(
+                "_rebuildReason", BindingFlags.Instance | BindingFlags.NonPublic);
+            Require(pending != null && reason != null, "rebuild state fields are missing.");
+            pending.SetValue(evaluator, true);
+            reason.SetValue(evaluator, "test");
+
+            string first = evaluator.Validate("missingValidationName;");
+            Contains(first, "已重建");
+            string second = evaluator.Validate("missingValidationName;");
+            Require(second.IndexOf("已重建", StringComparison.Ordinal) < 0,
+                "Validate repeated a one-shot rebuild notice.");
+        }
+
         private static void TopLevelValueReturnGate()
         {
             Require(PiUnityEvaluator.HasTopLevelValueReturn("var a = 1;\nreturn a;"), "missed top-level value return.");
@@ -365,6 +412,7 @@ namespace Pi.UnityHarness.Editor.Tests
             Require(!PiUnityEvaluator.HasTopLevelValueReturn("\"return 1;\""), "string literal treated as return.");
             Require(!PiUnityEvaluator.HasTopLevelValueReturn("// return 1;"), "comment treated as return.");
             Require(!PiUnityEvaluator.HasTopLevelValueReturn("var returnValue = 1;\nreturnValue"), "identifier prefix treated as return.");
+            Require(!PiUnityEvaluator.HasTopLevelValueReturn("yield return 1;"), "yield return treated as a top-level value return.");
         }
 
         /// <summary>
@@ -390,6 +438,16 @@ namespace Pi.UnityHarness.Editor.Tests
         /// 带值 return 且引用了不存在的名字：strip/wrap 都会失败，最后仍会原样编译一次以拿
         /// 到真实的 CS0127 诊断；这一步同样不得丢掉之前声明的持久变量。
         /// </summary>
+        private static void OrdinaryFailurePreservesCachedAnonymousTypes()
+        {
+            var evaluator = new PiUnityEvaluator();
+            Success(evaluator, "var cachedAnon = new { value = 1 };");
+            var failed = evaluator.Eval("missingOrdinaryName;");
+            Require(!failed.Ok, "ordinary invalid input unexpectedly compiled.");
+            Success(evaluator, "var sameShape = new { value = 2 };\ncachedAnon = sameShape;");
+            Value(evaluator, "cachedAnon.value", "2");
+        }
+
         private static void FailedValueReturnKeepsSessionState()
         {
             var evaluator = new PiUnityEvaluator();
