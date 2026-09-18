@@ -4,6 +4,7 @@ import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, write
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { paths, PathConversionError } from "./paths.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -71,14 +72,14 @@ export interface UnityInstance {
 }
 
 export function discoverUnityInstances(): UnityInstance[] {
-  if (process.platform !== "win32") return [];
+  if (process.platform !== "win32" && !paths.wsl) return [];
 
   try {
     const output = execFileSync(
       "powershell.exe",
       [
         "-NoProfile", "-NonInteractive", "-Command",
-        `Get-CimInstance Win32_Process -Filter "name='Unity.exe'" | ForEach-Object { $procId = $_.ProcessId; $cmd = if ($_.CommandLine) { $_.CommandLine } else { '' }; Write-Output "PID:$procId"; Write-Output "CMD:$cmd"; Write-Output "---" }`,
+        `[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); Get-CimInstance Win32_Process -Filter "name='Unity.exe'" | ForEach-Object { $procId = $_.ProcessId; $cmd = if ($_.CommandLine) { $_.CommandLine } else { '' }; Write-Output "PID:$procId"; Write-Output "CMD:$cmd"; Write-Output "---" }`,
       ],
       { encoding: "utf8", timeout: 15000, stdio: ["ignore", "pipe", "ignore"] },
     );
@@ -96,12 +97,10 @@ export function discoverUnityInstances(): UnityInstance[] {
 
       if (/AssetImportWorker|-adb2|(^|\s)-batchMode(\s|$)/i.test(cmdLine)) continue;
 
-      const ppMatch = cmdLine.match(/-projectPath[\s"]+"?([^"\s]+)/i) ??
-        cmdLine.match(/-createproject[\s"]+"?([^"\s]+)/i);
-      const projectPath = ppMatch ? resolve(ppMatch[1]) : null;
-      if (!projectPath) continue;
-
-      if (instances.some((i) => i.projectPath === projectPath)) continue;
+      const rawPath = unityProjectFromCommandLine(cmdLine);
+      if (!rawPath) continue;
+      const projectPath = paths.host(rawPath);
+      if (instances.some((i) => sameProjectPath(i.projectPath, projectPath))) continue;
 
       const bridgePath = join(projectPath, "Library", "PiUnityHarness", "bridge.json");
       let bridgeReady = false;
@@ -123,9 +122,15 @@ export function discoverUnityInstances(): UnityInstance[] {
     }
 
     return instances;
-  } catch {
-    return [];
+  } catch (error) {
+    if (error instanceof PathConversionError) throw error;
+    throw new Error("unity_discovery_failed: Cannot scan Windows Unity processes. Check powershell.exe / WSL interop, or select a known project path explicitly.");
   }
+}
+
+export function unityProjectFromCommandLine(commandLine: string): string | undefined {
+  const match = commandLine.match(/(?:^|\s)"?-(?:projectPath|createproject)"?\s+(?:"([^"]+)"|(\S+))/i);
+  return match?.[1] ?? match?.[2];
 }
 
 function readManifest(projectPath: string): any | null {
@@ -312,28 +317,20 @@ export function installUnityPipelineForProject(
 
 /** Find pi-unity CLI binary path */
 export function findPiUnityBinary(): string {
-  if (process.env.PI_UNITY_BIN && existsSync(process.env.PI_UNITY_BIN)) {
-    return resolve(process.env.PI_UNITY_BIN);
+  if (process.env.PI_UNITY_BIN) {
+    const configured = process.env.PI_UNITY_BIN;
+    return /[\\/]/.test(configured) ? paths.host(configured) : configured;
   }
 
   const workspaceRoot = resolve(__dirname, "../../../");
-  const isWindows = process.platform === "win32";
-  const binName = isWindows ? "pi-unity.exe" : "pi-unity";
-
-  const candidates = [
-    join(workspaceRoot, "bin", binName),
-    join(workspaceRoot, "dist", binName),
-    join(workspaceRoot, "native", "target", "release", binName),
-    join(workspaceRoot, "native", "target", "debug", binName),
-  ];
-
-  for (const c of candidates) {
-    if (existsSync(c)) {
-      return resolve(c);
+  const names = process.platform === "win32" || paths.wsl ? ["pi-unity.exe", "pi-unity"] : ["pi-unity"];
+  for (const name of names) {
+    for (const dir of ["bin", "dist", "native/target/release", "native/target/debug"]) {
+      const candidate = join(workspaceRoot, dir, name);
+      if (existsSync(candidate)) return candidate;
     }
   }
-
-  return binName;
+  return names[0];
 }
 
 /**
@@ -341,7 +338,7 @@ export function findPiUnityBinary(): string {
  * 只探测存在性（不读内容），避免依赖 / 泄露 bridge 里的 token。
  */
 export function findNearestBridgeProject(startDir: string): string | undefined {
-  let dir = resolve(startDir);
+  let dir = paths.host(startDir);
   for (;;) {
     if (existsSync(join(dir, "Library", "PiUnityHarness", "bridge.json"))) return dir;
     const parent = dirname(dir);
@@ -359,12 +356,12 @@ export function resolveSessionProjectPath(
   explicit?: string,
   envProject?: string,
 ): string | undefined {
-  if (explicit) return resolve(cwd, explicit);
+  if (explicit) return paths.host(explicit, cwd);
   const nearest = findNearestBridgeProject(cwd);
   if (nearest) return nearest;
   const fromEnv = envProject?.trim();
   // 相对 env 路径也统一按会话 cwd 解析（与显式选择一致）。
-  return fromEnv ? resolve(cwd, fromEnv) : undefined;
+  return fromEnv ? paths.host(fromEnv, cwd) : undefined;
 }
 
 export interface CliExecutionResult {
@@ -576,7 +573,7 @@ export class MuxClient {
   private spawnMux(): Promise<boolean> {
     return new Promise((resolve) => {
       const args = ["mux"];
-      if (this.projectPath) args.push("--project-path", this.projectPath);
+      // Convert only process arguments; cwd is interpreted by the host Node process.
       let settled = false;
       const finish = (ok: boolean) => {
         if (settled) return;
@@ -585,14 +582,12 @@ export class MuxClient {
       };
       let child: ChildProcess;
       try {
+        if (this.projectPath) args.push("--project-path", paths.cliPath(this.projectPath, this.bin));
         child = this.spawnImpl(this.bin, args, {
           stdio: ["pipe", "pipe", "pipe"],
           windowsHide: true,
           cwd: this.cwd,
-          env: {
-            ...process.env,
-            PI_UNITY_CLIENT: "pi-ext",
-          },
+          env: paths.env(this.bin, process.env, this.projectPath),
         });
       } catch {
         finish(false);
@@ -955,6 +950,14 @@ export class MuxClient {
         result: { ok: false, error: "mux 未发送已终止", error_type: "other", exitCode: 1 },
       };
     }
+    try {
+      argv = paths.argv(argv, this.bin);
+      if (this.projectPath) paths.cliPath(this.projectPath, this.bin);
+      paths.env(this.bin, process.env, this.projectPath);
+    } catch (error) {
+      if (!(error instanceof PathConversionError)) throw error;
+      return { status: "queue-dropped", written: false, retryAllowed: false, result: pathFailure(error) };
+    }
     const timeoutMs = options.timeoutMs && options.timeoutMs > 0 ? options.timeoutMs : DEFAULT_MUX_TIMEOUT_MS;
     return new Promise<MuxCallResult>((resolve) => {
       const job: MuxJob = {
@@ -1052,12 +1055,10 @@ async function execPiUnity(
   args: string[],
   options: { projectPath?: string; timeoutMs?: number; signal?: AbortSignal; cwd?: string } = {},
 ): Promise<CliExecutionResult> {
-  const bin = findPiUnityBinary();
-  const cliArgs = [...args, "--json"];
-  if (options.projectPath) {
-    cliArgs.push("--project-path", options.projectPath);
-  }
   try {
+    const bin = findPiUnityBinary();
+    const cliArgs = paths.argv([...args, "--json"], bin);
+    if (options.projectPath) cliArgs.push("--project-path", paths.cliPath(options.projectPath, bin));
     const { stdout } = await execFileAsync(bin, cliArgs, {
       encoding: "utf8",
       timeout: options.timeoutMs ?? 120000,
@@ -1065,13 +1066,11 @@ async function execPiUnity(
       windowsHide: true,
       signal: options.signal,
       cwd: options.cwd,
-      env: {
-        ...process.env,
-        PI_UNITY_CLIENT: "pi-ext",
-      },
+      env: paths.env(bin, process.env, options.projectPath),
     });
     return parseCliJson(stdout);
   } catch (err: unknown) {
+    if (err instanceof PathConversionError) return pathFailure(err);
     const e = err as {
       stdout?: string | Buffer;
       stderr?: string | Buffer;
@@ -1101,8 +1100,12 @@ async function execPiUnity(
 }
 
 /** Execute pi-unity CLI asynchronously and return parsed JSON */
-function sameProjectPath(a: string, b: string): boolean {
-  return resolve(a) === resolve(b);
+export function sameProjectPath(a: string, b: string): boolean {
+  return paths.sameProject(a, b);
+}
+
+function pathFailure(error: PathConversionError): CliExecutionResult {
+  return { ok: false, error: error.message, error_type: error.code, exitCode: 1 };
 }
 
 export async function runPiUnityCli(
@@ -1115,7 +1118,14 @@ export async function runPiUnityCli(
   const mux = activeMux;
   if (mux) {
     const muxProject = mux.fixedProjectPath;
-    if (options.projectPath && (!muxProject || !sameProjectPath(options.projectPath, muxProject))) {
+    let matches = !options.projectPath;
+    try {
+      if (options.projectPath && muxProject) matches = sameProjectPath(options.projectPath, muxProject);
+    } catch (error) {
+      if (error instanceof PathConversionError) return pathFailure(error);
+      throw error;
+    }
+    if (!matches) {
       return {
         ok: false,
         error: muxProject
@@ -1238,7 +1248,7 @@ export default function (pi: ExtensionAPI, opts: UnityHarnessExtensionOptions = 
     opts: { explicit?: boolean } = {},
   ) {
     // 相对显式路径按会话工作目录解析。
-    activeProjectPath = newPath ? resolve(ctx?.cwd ?? sessionCwd, newPath) : undefined;
+    activeProjectPath = newPath ? paths.host(newPath, ctx?.cwd ?? sessionCwd) : undefined;
     if (opts.explicit) explicitProjectPath = activeProjectPath;
     if (activeProjectPath) {
       process.env.UNITY_PROJECT_PATH = activeProjectPath;
@@ -1255,7 +1265,14 @@ export default function (pi: ExtensionAPI, opts: UnityHarnessExtensionOptions = 
   async function autoConnectUnity(ctx: { ui: any; cwd: string }) {
     if (!ctx?.ui) return;
     const gen = sessionGeneration;
-    const instances = discover();
+    let instances: UnityInstance[];
+    try {
+      instances = discover();
+    } catch (error) {
+      ctx.ui?.setStatus?.("pi-unity", "Unity discovery failed (/unity-discover)");
+      ctx.ui?.notify?.(error instanceof Error ? error.message : "unity_discovery_failed", "warn");
+      return;
+    }
     if (instances.length === 0) {
       ctx.ui?.setStatus?.("pi-unity", "enabled, no Unity detected (/unity-discover)");
       return;
@@ -1279,12 +1296,12 @@ export default function (pi: ExtensionAPI, opts: UnityHarnessExtensionOptions = 
     }
     if (gen !== sessionGeneration || !settings.enabled) return; // 会话已变：本次自动连接作废
     const target = readyInstances[0].projectPath;
-    activeProjectPath = resolve(ctx.cwd, target);
+    activeProjectPath = paths.host(target, ctx.cwd);
     process.env.UNITY_PROJECT_PATH = activeProjectPath;
     await stopSessionMux();
     if (gen !== sessionGeneration - 1 || !settings.enabled) {
       // 停止期间被 stop/切换/禁用（代数不止我们自己那一次 +1）：作废，不重建。
-      if (resolve(ctx.cwd, target) === activeProjectPath) {
+      if (paths.host(target, ctx.cwd) === activeProjectPath) {
         activeProjectPath = undefined;
         delete process.env.UNITY_PROJECT_PATH;
       }
@@ -1632,7 +1649,7 @@ export default function (pi: ExtensionAPI, opts: UnityHarnessExtensionOptions = 
         }
       }
 
-      const resolvedProject = resolve(projectPath);
+      const resolvedProject = paths.host(projectPath, ctx.cwd);
       const harnessResult = installPiUnityHarness(resolvedProject);
       if (harnessResult.ok) {
         ctx.ui?.notify?.(harnessResult.message, "info");
@@ -1680,7 +1697,15 @@ export default function (pi: ExtensionAPI, opts: UnityHarnessExtensionOptions = 
     }),
     async execute(_toolCallId, params) {
       assertEnabled();
-      const instances = discover();
+      let scanError: string | undefined;
+      let instances: UnityInstance[];
+      try {
+        instances = discover();
+      } catch (error) {
+        if (!params.projectPath) throw error;
+        instances = [];
+        scanError = error instanceof Error ? error.message : "unity_discovery_failed";
+      }
       const readyInstances = instances.filter((i) => i.bridgeReady);
 
       if (params.projectPath) {
@@ -1692,11 +1717,12 @@ export default function (pi: ExtensionAPI, opts: UnityHarnessExtensionOptions = 
       const current = activeProjectPath ?? null;
       const result = {
         current,
+        ...(scanError ? { scanError } : {}),
         instances: instances.map((i) => ({
           projectPath: i.projectPath,
           pid: i.pid,
           bridgeReady: i.bridgeReady,
-          selected: current ? resolve(i.projectPath) === resolve(current) : false,
+          selected: current ? sameProjectPath(i.projectPath, current) : false,
         })),
         hint: readyInstances.length === 0 && instances.length > 0
           ? `Detected ${instances.length} running Unity instance(s), but none have the bridge installed. Run /unity-install to install.`
