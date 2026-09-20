@@ -1558,18 +1558,18 @@ export default function (pi: ExtensionAPI, opts: UnityHarnessExtensionOptions = 
     const readyInstances = instances.filter((i) => i.bridgeReady);
     const notReady = instances.filter((i) => !i.bridgeReady);
 
-    const choices: { label: string; value: string; hint?: string }[] = [];
-    for (const inst of readyInstances) {
-      const name = basename(inst.projectPath);
-      choices.push({ label: `[ready] ${name}`, value: inst.projectPath, hint: `PID ${inst.pid}` });
-    }
-    for (const inst of notReady) {
-      const name = basename(inst.projectPath);
-      choices.push({ label: `[no bridge] ${name}`, value: inst.projectPath, hint: `PID ${inst.pid}` });
-    }
+    const choices: string[] = [];
+    const choicePaths = new Map<string, string>();
+    const addChoice = (inst: UnityInstance, state: string) => {
+      const label = `${state} ${basename(inst.projectPath)} (PID ${inst.pid}) - ${inst.projectPath}`;
+      choices.push(label);
+      choicePaths.set(label, inst.projectPath);
+    };
+    for (const inst of readyInstances) addChoice(inst, "[ready]");
+    for (const inst of notReady) addChoice(inst, "[no bridge]");
 
     if (choices.length === 1) {
-      const target = choices[0].value;
+      const target = choicePaths.get(choices[0])!;
       await switchProject(target, ctx, { explicit: true });
       if (readyInstances.length === 1) {
         ctx.ui?.notify?.(`Connected: ${basename(target)}`, "info");
@@ -1583,18 +1583,19 @@ export default function (pi: ExtensionAPI, opts: UnityHarnessExtensionOptions = 
 
     const chosen = await ctx.ui?.select?.(
       "Choose a Unity instance to connect:",
-      choices.map((c) => ({ label: c.label, value: c.value, hint: c.hint })),
+      choices,
     );
 
-    if (chosen) {
-      const inst = instances.find((i) => i.projectPath === chosen);
-      await switchProject(chosen, ctx, { explicit: true });
+    const chosenPath = chosen ? choicePaths.get(chosen) : undefined;
+    if (chosenPath) {
+      const inst = instances.find((i) => i.projectPath === chosenPath);
+      await switchProject(chosenPath, ctx, { explicit: true });
       if (inst?.bridgeReady) {
-        ctx.ui?.notify?.(`Connected: ${basename(chosen)}`, "info");
-        ctx.ui?.setStatus?.("pi-unity", `unity bridge: ${basename(chosen)}`);
+        ctx.ui?.notify?.(`Connected: ${basename(chosenPath)}`, "info");
+        ctx.ui?.setStatus?.("pi-unity", `unity bridge: ${basename(chosenPath)}`);
       } else {
-        ctx.ui?.notify?.(`Project set: ${basename(chosen)} (bridge not ready; install with /unity-install)`, "warn");
-        ctx.ui?.setStatus?.("pi-unity", `unity: ${basename(chosen)} (no bridge)`);
+        ctx.ui?.notify?.(`Project set: ${basename(chosenPath)} (bridge not ready; install with /unity-install)`, "warn");
+        ctx.ui?.setStatus?.("pi-unity", `unity: ${basename(chosenPath)} (no bridge)`);
       }
     }
   };
@@ -1636,16 +1637,16 @@ export default function (pi: ExtensionAPI, opts: UnityHarnessExtensionOptions = 
         if (notReady.length === 1) {
           projectPath = notReady[0].projectPath;
         } else {
+          const installChoices = notReady.map(
+            (i) => `${basename(i.projectPath)} (PID ${i.pid}) - ${i.projectPath}`,
+          );
           const chosen = await ctx.ui?.select?.(
             "Choose a project to install:",
-            notReady.map((i) => ({
-              label: basename(i.projectPath),
-              value: i.projectPath,
-              hint: `PID ${i.pid}`,
-            })),
+            installChoices,
           );
           if (!chosen) return;
-          projectPath = chosen;
+          projectPath = notReady[installChoices.indexOf(chosen)]?.projectPath;
+          if (!projectPath) return;
         }
       }
 
