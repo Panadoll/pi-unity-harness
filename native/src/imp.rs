@@ -1,3 +1,4 @@
+    use std::cmp::Reverse;
     use std::collections::{HashMap, VecDeque};
     use std::ffi::{c_void, OsStr};
     use std::fs::{self, OpenOptions};
@@ -573,10 +574,8 @@
             }
 
             // Import settings changed: prefer "Apply"
-            if title_lower.contains("import") {
-                if buttons.iter().any(|b| b == "apply") {
-                    return Some("Apply".to_string());
-                }
+            if title_lower.contains("import") && buttons.iter().any(|b| b == "apply") {
+                return Some("Apply".to_string());
             }
 
             // Generic Unity dialog with OK
@@ -648,11 +647,10 @@
                         } else {
                             request.enqueued_at_ms
                         };
-                        if heartbeat_timed_out
-                            && now.saturating_sub(age_start) > HEARTBEAT_TIMEOUT_MS
+                        if (heartbeat_timed_out
+                            && now.saturating_sub(age_start) > HEARTBEAT_TIMEOUT_MS)
+                            || now.saturating_sub(age_start) > request.timeout_ms
                         {
-                            Some(id.clone())
-                        } else if now.saturating_sub(age_start) > request.timeout_ms {
                             Some(id.clone())
                         } else {
                             None
@@ -1144,7 +1142,7 @@
                         .collect()
                 })
                 .unwrap_or_default();
-            files.sort_by(|a, b| file_modified_ms(b).cmp(&file_modified_ms(a)));
+            files.sort_by_key(|path| Reverse(file_modified_ms(path)));
 
             let mut events = Vec::new();
             for path in files {
@@ -1166,7 +1164,7 @@
                 .filter_map(|key| actions.remove(&key))
                 .filter(|item| timeline_matches(item, request_type, action, success))
                 .collect();
-            filtered.sort_by(|a, b| activity_timestamp_ms(b).cmp(&activity_timestamp_ms(a)));
+            filtered.sort_by_key(|item| Reverse(activity_timestamp_ms(item)));
             filtered.truncate(limit);
 
             let captured_at_ms = now_ms();
@@ -1421,7 +1419,7 @@
     ) -> bool {
         field_eq_ignore_case(item, "requestType", request_type)
             && field_eq_ignore_case(item, "action", action)
-            && success.map_or(true, |expected| {
+            && success.is_none_or(|expected| {
                 item.get("success").and_then(Value::as_bool) == Some(expected)
             })
     }

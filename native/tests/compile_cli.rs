@@ -67,54 +67,51 @@ fn spawn_mock_broker() -> (
                     continue;
                 }
             };
-            match server.connect().await {
-                Ok(()) => {
-                    let (reader, mut writer) = tokio::io::split(server);
-                    let mut lines = BufReader::new(reader).lines();
-                    while let Ok(Some(line)) = lines.next_line().await {
-                        let req: Value = match serde_json::from_str(&line) {
-                            Ok(v) => v,
-                            Err(_) => continue,
-                        };
-                        let id = req.get("id").and_then(Value::as_str).unwrap_or("");
-                        let req_type = req.get("type").and_then(Value::as_str).unwrap_or("");
-                        let mut reply = match req_type {
-                            "bridge_capabilities" => {
-                                json!({"ok": true, "result": {"protocolVersion": 1}})
-                            }
-                            "recompile" => {
-                                recompile_clone.fetch_add(1, Ordering::SeqCst);
-                                json!({
-                                    "ok": false,
-                                    "error_type": "compile_error",
-                                    "error": "Assets/Broken.cs(12,5): error CS1234: boom"
-                                })
-                            }
-                            "status" => {
-                                status_clone.fetch_add(1, Ordering::SeqCst);
-                                json!({"ok": true, "result": {"managedState": "ready"}})
-                            }
-                            _ => json!({"ok": false, "error": "unsupported"}),
-                        };
-                        if let Some(obj) = reply.as_object_mut() {
-                            if !obj.contains_key("reply_to") {
-                                obj.insert("reply_to".to_string(), Value::String(id.to_string()));
-                            }
+            if let Ok(()) = server.connect().await {
+                let (reader, mut writer) = tokio::io::split(server);
+                let mut lines = BufReader::new(reader).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    let req: Value = match serde_json::from_str(&line) {
+                        Ok(v) => v,
+                        Err(_) => continue,
+                    };
+                    let id = req.get("id").and_then(Value::as_str).unwrap_or("");
+                    let req_type = req.get("type").and_then(Value::as_str).unwrap_or("");
+                    let mut reply = match req_type {
+                        "bridge_capabilities" => {
+                            json!({"ok": true, "result": {"protocolVersion": 1}})
                         }
-                        let mut bytes = match serde_json::to_vec(&reply) {
-                            Ok(b) => b,
-                            Err(_) => continue,
-                        };
-                        bytes.push(b'\n');
-                        if writer.write_all(&bytes).await.is_err() {
-                            break;
+                        "recompile" => {
+                            recompile_clone.fetch_add(1, Ordering::SeqCst);
+                            json!({
+                                "ok": false,
+                                "error_type": "compile_error",
+                                "error": "Assets/Broken.cs(12,5): error CS1234: boom"
+                            })
                         }
-                        if writer.flush().await.is_err() {
-                            break;
+                        "status" => {
+                            status_clone.fetch_add(1, Ordering::SeqCst);
+                            json!({"ok": true, "result": {"managedState": "ready"}})
+                        }
+                        _ => json!({"ok": false, "error": "unsupported"}),
+                    };
+                    if let Some(obj) = reply.as_object_mut() {
+                        if !obj.contains_key("reply_to") {
+                            obj.insert("reply_to".to_string(), Value::String(id.to_string()));
                         }
                     }
+                    let mut bytes = match serde_json::to_vec(&reply) {
+                        Ok(b) => b,
+                        Err(_) => continue,
+                    };
+                    bytes.push(b'\n');
+                    if writer.write_all(&bytes).await.is_err() {
+                        break;
+                    }
+                    if writer.flush().await.is_err() {
+                        break;
+                    }
                 }
-                Err(_) => {}
             }
         }
     });

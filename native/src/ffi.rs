@@ -14,12 +14,12 @@ pub unsafe extern "C" fn pi_unity_init(
 ) -> c_int {
     #[cfg(windows)]
     {
-        return crate::imp::init(
+        crate::imp::init(
             string_from_raw(project, project_len),
             string_from_raw(pipe, pipe_len),
             string_from_raw(token, token_len),
             protocol_version,
-        );
+        )
     }
     #[cfg(not(windows))]
     {
