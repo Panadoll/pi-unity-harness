@@ -138,7 +138,8 @@ pub(crate) fn handle_skills_command(
     if let Some(custom_target) = args.target {
         target_dirs.push(PathBuf::from(custom_target));
     } else {
-        if args.agents || (!args.agents && !args.claude) {
+        if args.agents || !args.claude {
+            // 显式指定 agents 或两个 flag 都未给（默认）时装 .agents/skills
             target_dirs.push(project_root.join(".agents/skills"));
         }
         if args.claude {

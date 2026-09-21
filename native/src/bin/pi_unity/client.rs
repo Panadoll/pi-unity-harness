@@ -261,9 +261,7 @@ impl HarnessClient {
                 && (!self.handshake_done || self.connection.is_none())
             {
                 self.reload_bridge()?;
-                if let Err(e) = self.handshake_with_deadline(deadline).await {
-                    return Err(e);
-                }
+                self.handshake_with_deadline(deadline).await?;
             }
             match self.exchange_with_id(req_type, payload.clone(), deadline, test_request_id.as_deref()).await {
                 Ok(v) => return Ok(v),

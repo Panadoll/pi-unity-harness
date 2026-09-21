@@ -1,5 +1,6 @@
 using System.Text;
 using Pi.UnityHarness.Editor;
+using static Pi.UnityHarness.Editor.PiUnityJsonHelper;
 using UnityEngine;
 
 namespace Pi.UnityHarness.Editor.Capabilities.Shared
@@ -115,32 +116,6 @@ namespace Pi.UnityHarness.Editor.Capabilities.Shared
                 current = current.parent;
             }
             return path;
-        }
-
-        private static void AppendString(StringBuilder sb, string name, string value, bool first = false)
-        {
-            if (!first) sb.Append(',');
-            sb.Append('"').Append(name).Append("\":");
-            if (value == null)
-                sb.Append("null");
-            else
-                sb.Append('"').Append(PiUnityJsonHelper.EscapeJson(value)).Append('"');
-        }
-
-        private static void AppendBool(StringBuilder sb, string name, bool value)
-        {
-            sb.Append(',').Append('"').Append(name).Append("\":").Append(value ? "true" : "false");
-        }
-
-        private static void AppendNumber(StringBuilder sb, string name, float value)
-        {
-            sb.Append(',').Append('"').Append(name).Append("\":")
-                .Append(value.ToString(System.Globalization.CultureInfo.InvariantCulture));
-        }
-
-        private static void AppendNumber(StringBuilder sb, string name, int value)
-        {
-            sb.Append(',').Append('"').Append(name).Append("\":").Append(value);
         }
     }
 

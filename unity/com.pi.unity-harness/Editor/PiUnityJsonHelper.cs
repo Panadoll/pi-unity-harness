@@ -63,6 +63,36 @@ namespace Pi.UnityHarness.Editor
             return sb.ToString();
         }
 
+        /// <summary>
+        /// Appends `,"name":value` fields for hand-rolled JSON builders. Number formatting uses the invariant
+        /// culture; string values are JSON-escaped, null becomes `null`.
+        /// </summary>
+        public static void AppendString(StringBuilder sb, string name, string value, bool first = false)
+        {
+            if (!first) sb.Append(',');
+            sb.Append('"').Append(name).Append("\":");
+            if (value == null)
+                sb.Append("null");
+            else
+                sb.Append('"').Append(EscapeJson(value)).Append('"');
+        }
+
+        public static void AppendBool(StringBuilder sb, string name, bool value)
+        {
+            sb.Append(',').Append('"').Append(name).Append("\":").Append(value ? "true" : "false");
+        }
+
+        public static void AppendNumber(StringBuilder sb, string name, float value)
+        {
+            sb.Append(',').Append('"').Append(name).Append("\":")
+                .Append(value.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+
+        public static void AppendNumber(StringBuilder sb, string name, int value)
+        {
+            sb.Append(',').Append('"').Append(name).Append("\":").Append(value);
+        }
+
         private static void AppendEscaped(StringBuilder sb, string value)
         {
             for (int i = 0; i < value.Length; i++)

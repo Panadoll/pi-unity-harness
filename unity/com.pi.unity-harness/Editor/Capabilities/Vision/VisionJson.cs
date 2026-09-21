@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Text;
 using Pi.UnityHarness.Editor;
+using static Pi.UnityHarness.Editor.PiUnityJsonHelper;
 
 namespace Pi.UnityHarness.Editor.Capabilities.Vision
 {
@@ -848,11 +849,6 @@ namespace Pi.UnityHarness.Editor.Capabilities.Vision
         {
             while (index < json.Length && char.IsWhiteSpace(json[index]))
                 index++;
-        }
-
-        private static string EscapeJson(string value)
-        {
-            return PiUnityJsonHelper.EscapeJson(value);
         }
 
         private static string FloatStr(float value)

@@ -38,6 +38,7 @@ pub(crate) struct Cli {
 }
 
 #[derive(Subcommand, Debug)]
+#[allow(clippy::enum_variant_names)] // 变体名直接映射为 CLI 子命令名（如 list-commands），保持命名
 pub(crate) enum Commands {
     /// 探测 broker
     #[command(after_help = "示例:\n  pi-unity ping\n  pi-unity ping --timeout 3000")]

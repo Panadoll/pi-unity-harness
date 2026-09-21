@@ -80,6 +80,21 @@ async fn main() -> ExitCode {
 
     let (session_id, host_session_id) = resolve_session(&log_root);
 
+    let call_base = CallContext {
+        json_mode,
+        trace_flag,
+        log_root: &log_root,
+        recorder: recorder.as_ref(),
+        subcommand: subcommand_name.to_string(),
+        project_root: None,
+        session_id,
+        host_session_id,
+        discover_ms: 0,
+        connect_ms: 0,
+        request_ms: 0,
+        start_instant,
+    };
+
     if let Some(Commands::Eval(ref args)) = cli.command {
         if args.code.is_none() && args.file.is_none() {
             return handle_exit(
@@ -90,18 +105,7 @@ async fn main() -> ExitCode {
                         "pi-unity eval -f Temp/PiUnityHarness/AgentScratch/probe.repl",
                     ],
                 )),
-                json_mode,
-                trace_flag,
-                &log_root,
-                &recorder,
-                subcommand_name,
-                None,
-                session_id,
-                host_session_id,
-                0,
-                0,
-                0,
-                start_instant,
+                call_base.clone(),
             );
         }
     }
@@ -208,18 +212,10 @@ async fn main() -> ExitCode {
                     recorder.record("discover", "Project discovery failed");
                     return handle_exit(
                         Err(err),
-                        json_mode,
-                        trace_flag,
-                        &log_root,
-                        &recorder,
-                        subcommand_name,
-                        None,
-                        session_id,
-                        host_session_id,
-                        discover_ms,
-                        0,
-                        0,
-                        start_instant,
+                        CallContext {
+                            discover_ms,
+                            ..call_base.clone()
+                        },
                     );
                 }
             };
@@ -235,18 +231,12 @@ async fn main() -> ExitCode {
                     );
                     return handle_exit(
                         Err(e),
-                        json_mode,
-                        trace_flag,
-                        &log_root,
-                        &recorder,
-                        subcommand_name,
-                        project_root_opt.as_deref(),
-                        session_id,
-                        host_session_id,
-                        discover_ms,
-                        connect_ms,
-                        0,
-                        start_instant,
+                        CallContext {
+                            project_root: project_root_opt.as_deref(),
+                            discover_ms,
+                            connect_ms,
+                            ..call_base.clone()
+                        },
                     );
                 }
             };
@@ -256,18 +246,12 @@ async fn main() -> ExitCode {
                 recorder.record("handshake", &format!("Handshake failed: {}", e.message()));
                 return handle_exit(
                     Err(e),
-                    json_mode,
-                    trace_flag,
-                    &log_root,
-                    &recorder,
-                    subcommand_name,
-                    project_root_opt.as_deref(),
-                    session_id,
-                    host_session_id,
-                    discover_ms,
-                    connect_ms,
-                    0,
-                    start_instant,
+                    CallContext {
+                        project_root: project_root_opt.as_deref(),
+                        discover_ms,
+                        connect_ms,
+                        ..call_base.clone()
+                    },
                 );
             }
             connect_ms = conn_start.elapsed().as_millis() as u64;
@@ -290,18 +274,13 @@ async fn main() -> ExitCode {
 
     handle_exit(
         result,
-        json_mode,
-        trace_flag,
-        &log_root,
-        &recorder,
-        subcommand_name,
-        project_root_opt.as_deref(),
-        session_id,
-        host_session_id,
-        discover_ms,
-        connect_ms,
-        request_ms,
-        start_instant,
+        CallContext {
+            project_root: project_root_opt.as_deref(),
+            discover_ms,
+            connect_ms,
+            request_ms,
+            ..call_base.clone()
+        },
     )
 }
 
@@ -336,10 +315,10 @@ async fn run_mux(project_path: Option<&str>) -> ExitCode {
                             c.disconnect();
                         } else if !c.is_connected() {
                             // token/generation 变了，等下条业务再连
-                        } else if connected_before {
-                            if c.send_request("ping", json!({}), 2000).await.is_err() {
-                                c.disconnect();
-                            }
+                        } else if connected_before
+                            && c.send_request("ping", json!({}), 2000).await.is_err()
+                        {
+                            c.disconnect();
                         }
                     }
                 }
@@ -675,56 +654,59 @@ async fn run_home(
     ))
 }
 
-fn handle_exit(
-    result: Result<String, CliError>,
+#[derive(Clone)]
+struct CallContext<'a> {
     json_mode: bool,
     trace_flag: bool,
-    log_root: &Path,
-    recorder: &TraceRecorder,
-    subcommand_name: &str,
-    project_root: Option<&Path>,
+    log_root: &'a Path,
+    recorder: &'a TraceRecorder,
+    subcommand: String,
+    project_root: Option<&'a Path>,
     session_id: Option<String>,
     host_session_id: Option<String>,
     discover_ms: u64,
     connect_ms: u64,
     request_ms: u64,
     start_instant: Instant,
-) -> ExitCode {
-    let duration_ms = start_instant.elapsed().as_millis() as u64;
+}
+
+fn handle_exit(result: Result<String, CliError>, ctx: CallContext<'_>) -> ExitCode {
+    let duration_ms = ctx.start_instant.elapsed().as_millis() as u64;
     let (exit_code, error_type) = match &result {
         Ok(_) => (0, None),
         Err(e) => (e.exit_code(), Some(e.error_type())),
     };
 
-    let trace_id = recorder.flush_trace_if_needed(log_root, exit_code, trace_flag);
-    let request_ids = recorder
+    let trace_id = ctx.recorder.flush_trace_if_needed(ctx.log_root, exit_code, ctx.trace_flag);
+    let request_ids = ctx
+        .recorder
         .request_ids
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .clone();
-    let reconnects = recorder.reconnects.load(Ordering::SeqCst);
-    let is_truncated = recorder.truncated.load(Ordering::SeqCst);
+    let reconnects = ctx.recorder.reconnects.load(Ordering::SeqCst);
+    let is_truncated = ctx.recorder.truncated.load(Ordering::SeqCst);
 
     let call_event = CallEvent {
         v: LOG_FORMAT_VERSION,
         kind: "call".to_string(),
-        ts_utc: timestamp_utc(recorder.start_ms),
+        ts_utc: timestamp_utc(ctx.recorder.start_ms),
         version: DEFAULT_VERSION.to_string(),
         client: resolve_client_name(),
         pid: std::process::id(),
-        session_id,
-        host_session_id,
-        subcommand: subcommand_name.to_string(),
-        project_hash: compute_project_hash(project_root),
+        session_id: ctx.session_id,
+        host_session_id: ctx.host_session_id,
+        subcommand: ctx.subcommand,
+        project_hash: compute_project_hash(ctx.project_root),
         exit_code,
         duration_ms,
         phases: CallEventPhases {
-            discover_ms,
-            connect_ms,
-            request_ms,
+            discover_ms: ctx.discover_ms,
+            connect_ms: ctx.connect_ms,
+            request_ms: ctx.request_ms,
         },
         flags: CallEventFlags {
-            json: json_mode,
+            json: ctx.json_mode,
             truncated: is_truncated,
             reconnects,
         },
@@ -734,7 +716,7 @@ fn handle_exit(
     };
 
     if let Ok(value) = serde_json::to_value(&call_event) {
-        let _ = append_event_line(log_root, &value);
+        let _ = append_event_line(ctx.log_root, &value);
     }
 
     match result {
@@ -743,7 +725,7 @@ fn handle_exit(
             ExitCode::SUCCESS
         }
         Err(err) => {
-            handle_error(&err, json_mode, project_root);
+            handle_error(&err, ctx.json_mode, ctx.project_root);
             ExitCode::from(exit_code as u8)
         }
     }
@@ -862,7 +844,7 @@ mod tests {
         let pairs = vec![
             "flag=true".to_string(),
             "count=42".to_string(),
-            "ratio=3.14".to_string(),
+            "ratio=2.5".to_string(),
             "name=test".to_string(),
             "nested={\"a\":1}".to_string(),
             "list=[1,2,3]".to_string(),
@@ -870,7 +852,7 @@ mod tests {
         let val = parse_param_pairs(&pairs, None).unwrap();
         assert_eq!(val["flag"], json!(true));
         assert_eq!(val["count"], json!(42));
-        assert_eq!(val["ratio"], json!(3.14));
+        assert_eq!(val["ratio"], json!(2.5));
         assert_eq!(val["name"], json!("test"));
         assert_eq!(val["nested"], json!({"a": 1}));
         assert_eq!(val["list"], json!([1, 2, 3]));

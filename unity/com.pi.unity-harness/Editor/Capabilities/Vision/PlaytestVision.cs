@@ -5,6 +5,7 @@ using System.IO;
 using System.Text;
 using Pi.UnityHarness.Editor;
 using Pi.UnityHarness.Editor.Capabilities.Shared;
+using static Pi.UnityHarness.Editor.PiUnityJsonHelper;
 using Pi.UnityHarness.Runtime.Capabilities.Vision;
 using UnityEditor;
 using UnityEngine;
@@ -787,13 +788,6 @@ namespace Pi.UnityHarness.Editor.Capabilities.Vision
                 overlay.g * alpha + existing.g * inv,
                 overlay.b * alpha + existing.b * inv,
                 Mathf.Max(existing.a, overlay.a));
-        }
-
-        private static string JsonString(string value)
-        {
-            if (value == null)
-                return "null";
-            return "\"" + PiUnityJsonHelper.EscapeJson(value) + "\"";
         }
 
         private static string F(float value)
