@@ -260,6 +260,7 @@ export function installOfficialUnityPipeline(projectPath: string): { ok: boolean
     return { ok: false, message: `Cannot find or parse Packages/manifest.json: ${projectPath}` };
   }
   manifest.dependencies ??= {};
+  delete manifest.dependencies[PIPELINE_COMPAT_PACKAGE_NAME];
   manifest.dependencies[PIPELINE_PACKAGE_NAME] = PIPELINE_PACKAGE_VERSION;
   try {
     writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n", "utf8");
@@ -281,13 +282,16 @@ export function installCompatUnityPipeline(projectPath: string): { ok: boolean; 
   }
 
   manifest.dependencies ??= {};
+  // 旧版本曾误用 PIPELINE_PACKAGE_NAME 作为依赖 key（包内 name 实为 compat），
+  // 导致同一目录被注册两次并刷屏 ArgumentException；这里清理遗留 key 并改回真实包名。
+  delete manifest.dependencies[PIPELINE_PACKAGE_NAME];
   delete manifest.dependencies[PIPELINE_COMPAT_PACKAGE_NAME];
 
   try {
     const targetDir = join(projectPath, "Packages", PIPELINE_PACKAGE_NAME);
     rmSync(targetDir, { recursive: true, force: true });
     cpSync(compatDir, targetDir, { recursive: true, force: true });
-    manifest.dependencies[PIPELINE_PACKAGE_NAME] = "file:com.unity.pipeline";
+    manifest.dependencies[PIPELINE_COMPAT_PACKAGE_NAME] = "file:com.unity.pipeline";
     if (!manifest.dependencies["com.unity.inputsystem"]) {
       manifest.dependencies["com.unity.inputsystem"] = PIPELINE_COMPAT_INPUTSYSTEM_VERSION;
     }
