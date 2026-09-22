@@ -110,7 +110,11 @@ export class PathBoundary {
   }
 
   env(bin: string, env: NodeJS.ProcessEnv, project?: string): NodeJS.ProcessEnv {
-    const result: NodeJS.ProcessEnv = { ...env, PI_UNITY_CLIENT: "pi-ext" };
+    const result: NodeJS.ProcessEnv = {
+      ...env,
+      PI_UNITY_CLIENT: "pi-ext",
+      PI_UNITY_AGENT_ID: env.PI_UNITY_AGENT_ID?.trim() || "default",
+    };
     const path = project ?? env.UNITY_PROJECT_PATH;
     if (path) result.UNITY_PROJECT_PATH = this.cliPath(path, bin);
     return result;

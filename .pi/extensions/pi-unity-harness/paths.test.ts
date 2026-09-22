@@ -20,6 +20,12 @@ test("PathBoundary converts WSL and Windows project paths", () => {
   assert.equal(boundary.sameProject("/mnt/f/UnityProjects/ctest", "F:\\UnityProjects\\other"), false);
 });
 
+test("PathBoundary injects the default agent id for mux processes", () => {
+  const boundary = new PathBoundary({ platform: "linux", wsl: false });
+  assert.equal(boundary.env("pi-unity", {}, "/tmp/project").PI_UNITY_AGENT_ID, "default");
+  assert.equal(boundary.env("pi-unity", { PI_UNITY_AGENT_ID: "agent-a" }, "/tmp/project").PI_UNITY_AGENT_ID, "agent-a");
+});
+
 test("PathBoundary rewrites only typed path arguments", () => {
   const boundary = new PathBoundary({
     platform: "linux",
