@@ -26,9 +26,7 @@ pub(crate) fn parse_param_pairs(
             )
         })?;
         if let Value::Object(obj) = val {
-            for (k, v) in obj {
-                map.insert(k, v);
-            }
+            map.extend(obj);
         } else {
             return Err(usage::usage_error(
                 "--params-json 必须是 JSON 对象",

@@ -256,7 +256,7 @@ fn canonical_float(f: f64) -> String {
         return "0".to_string();
     }
     let abs = f.abs();
-    if abs < 1e-6 || abs >= 1e21 {
+    if !(1e-6..1e21).contains(&abs) {
         let s = format!("{f:e}");
         return s.replace('E', "e");
     }
