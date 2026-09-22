@@ -1,5 +1,6 @@
 using System;
 using System.Text;
+using System.IO;
 #if PI_UNITY_PIPELINE
 using System.Collections.Generic;
 using System.Linq;
@@ -17,6 +18,8 @@ namespace Pi.UnityHarness.Editor
     internal static class PiUnityPipelineCommandExecutor
     {
 #if PI_UNITY_PIPELINE
+        private static readonly Dictionary<string, string> SidecarMutability = LoadSidecarMutability();
+        private static bool s_sidecarWarningLogged;
         private static readonly HashSet<string> ForbiddenCommands = new HashSet<string>(StringComparer.Ordinal)
         {
             "eval",
@@ -172,6 +175,52 @@ namespace Pi.UnityHarness.Editor
             return command != null && command.RuntimeOnly == false && !ForbiddenCommands.Contains(command.Name);
         }
 
+        internal static string GetMutability(CommandInfo command, out string source)
+        {
+            source = "default";
+            if (command == null)
+                return "write";
+            PiCommandPolicyAttribute attribute = command.Method.GetCustomAttributes(typeof(PiCommandPolicyAttribute), true).FirstOrDefault() as PiCommandPolicyAttribute;
+            if (attribute != null)
+            {
+                source = "attribute";
+                return NormalizeMutability(attribute.Mutability);
+            }
+            if (SidecarMutability.TryGetValue(command.Name, out string sidecar))
+            {
+                source = "sidecar";
+                return NormalizeMutability(sidecar);
+            }
+            return "write";
+        }
+
+        private static string NormalizeMutability(string value)
+        {
+            return value == "read" || value == "destructive" ? value : "write";
+        }
+
+        private static Dictionary<string, string> LoadSidecarMutability()
+        {
+            var values = new Dictionary<string, string>(StringComparer.Ordinal);
+            try
+            {
+                string path = Path.Combine(Directory.GetParent(UnityEngine.Application.dataPath).FullName, "Packages/com.pi.unity-harness/Editor/Pipeline/command-policy.json");
+                if (!File.Exists(path)) return values;
+                JObject root = JObject.Parse(File.ReadAllText(path));
+                foreach (var property in root.Properties())
+                    values[property.Name] = (string)property.Value["mutability"] ?? "write";
+            }
+            catch (Exception ex)
+            {
+                if (!s_sidecarWarningLogged)
+                {
+                    s_sidecarWarningLogged = true;
+                    Debug.LogWarning("[PiUnityHarness] command-policy.json ignored: " + ex.Message);
+                }
+            }
+            return values;
+        }
+
         internal static string GetForbiddenReason(CommandInfo command)
         {
             if (command.RuntimeOnly)
@@ -295,19 +344,46 @@ namespace Pi.UnityHarness.Editor
                     ["description"] = parameter.Description,
                     ["type"] = parameter.ParameterType.Name,
                     ["typeFullName"] = parameter.ParameterType.FullName,
+                    ["jsonType"] = JsonTypeFor(parameter.ParameterType),
                     ["required"] = parameter.Required,
                     ["defaultValue"] = ToJToken(parameter.DefaultValue),
                 });
             }
 
+            JObject policy = BuildPolicy(command);
+            if (schema is JObject schemaObject)
+                schemaObject["x-command-metadata"] = policy.DeepClone();
             return new JObject
             {
                 ["name"] = command.Name,
                 ["description"] = command.Description,
                 ["mainThreadRequired"] = command.MainThreadRequired,
                 ["runtimeOnly"] = command.RuntimeOnly,
+                ["policy"] = policy,
                 ["schema"] = schema,
                 ["parameters"] = parameters,
+            };
+        }
+
+        private static string JsonTypeFor(Type type)
+        {
+            if (type == typeof(bool)) return "boolean";
+            if (type == typeof(byte) || type == typeof(sbyte) || type == typeof(short) || type == typeof(ushort) || type == typeof(int) || type == typeof(uint) || type == typeof(long) || type == typeof(ulong)) return "integer";
+            if (type == typeof(float) || type == typeof(double) || type == typeof(decimal)) return "number";
+            if (type != typeof(string) && typeof(System.Collections.IEnumerable).IsAssignableFrom(type)) return "array";
+            return "string";
+        }
+
+        private static JObject BuildPolicy(CommandInfo command)
+        {
+            string source;
+            string mutability = GetMutability(command, out source);
+            return new JObject
+            {
+                ["mutability"] = mutability,
+                ["thread"] = command.MainThreadRequired ? "main" : "any",
+                ["runtime"] = command.RuntimeOnly ? "runtime" : "editor",
+                ["source"] = source,
             };
         }
 

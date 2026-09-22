@@ -1405,8 +1405,13 @@ export default function (pi: ExtensionAPI, opts: UnityHarnessExtensionOptions = 
         for (const cmd of filtered) {
           const toolName = normalizePipelineToolName(cmd.name);
           if (dynamicallyRegisteredTools.has(toolName)) continue;
+          const policyLabel = cmd.policy?.mutability === "destructive"
+            ? "[DESTRUCTIVE] "
+            : cmd.policy?.mutability === "write"
+              ? "[WRITE] "
+              : "";
           const description =
-            (cmd.description || `Execute Unity Pipeline command: ${cmd.name}`) +
+            policyLabel + (cmd.description || `Execute Unity Pipeline command: ${cmd.name}`) +
             (/^assets_refresh/.test(cmd.name)
               ? " 注意：assets_refresh 是异步的，不等待导入/域重载完成；下一步任何 managed 调用前先 unity_recompile。"
               : "");

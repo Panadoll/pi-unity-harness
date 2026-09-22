@@ -8,6 +8,7 @@ export interface PipelineParameterInfo {
   description?: string;
   type?: string;
   typeFullName?: string;
+  jsonType?: "boolean" | "integer" | "number" | "string" | "array" | "object";
   required?: boolean;
   defaultValue?: unknown;
 }
@@ -17,6 +18,7 @@ export interface PipelineCommandInfo {
   description?: string;
   mainThreadRequired?: boolean;
   runtimeOnly?: boolean;
+  policy?: { mutability?: "read" | "write" | "destructive"; thread?: "main" | "any"; runtime?: "editor" | "runtime" | "both"; source?: "attribute" | "sidecar" | "default" };
   schema?: Record<string, unknown> | null;
   parameters?: PipelineParameterInfo[];
 }
@@ -58,6 +60,11 @@ export function normalizePipelineToolName(commandName: string): string {
 
 export function parameterToTypeBox(TypeApi: TypeBoxLike, parameter: PipelineParameterInfo): any {
   const options = { description: parameter.description };
+  const jsonType = parameter.jsonType;
+  if (jsonType === "boolean") return TypeApi.Boolean(options);
+  if (jsonType === "integer") return TypeApi.Integer(options);
+  if (jsonType === "number") return TypeApi.Number(options);
+  if (jsonType === "string" || jsonType === "array" || jsonType === "object") return TypeApi.String(options);
   const typeName = String(parameter.type ?? parameter.typeFullName ?? "").toLowerCase();
   if (typeName.includes("boolean")) return TypeApi.Boolean(options);
   if (typeName.includes("int") || typeName.includes("long") || typeName.includes("short") || typeName.includes("byte")) return TypeApi.Integer(options);
@@ -85,16 +92,19 @@ export function schemaToTypeBox(
 export function isVisiblePipelineCommand(
   command: PipelineCommandInfo | null | undefined,
   excludedCommands = PIPELINE_TOOL_EXCLUDE,
+  allowDestructive = process.env.PIPELINE_TOOL_ALLOW_DESTRUCTIVE === "1",
 ): command is PipelineCommandInfo {
-  return Boolean(command?.name) && command?.runtimeOnly !== true && !excludedCommands.has(command.name);
+  return Boolean(command?.name) && command?.runtimeOnly !== true && !excludedCommands.has(command.name)
+    && (command.policy?.mutability !== "destructive" || allowDestructive);
 }
 
 export function filterPipelineCommands(
   list: PipelineCommandList | null | undefined,
   excludedCommands = PIPELINE_TOOL_EXCLUDE,
+  allowDestructive = process.env.PIPELINE_TOOL_ALLOW_DESTRUCTIVE === "1",
 ): PipelineCommandInfo[] {
   const commands = Array.isArray(list?.commands) ? list.commands : [];
-  return commands.filter((command): command is PipelineCommandInfo => isVisiblePipelineCommand(command, excludedCommands));
+  return commands.filter((command): command is PipelineCommandInfo => isVisiblePipelineCommand(command, excludedCommands, allowDestructive));
 }
 
 export function pipelineCommandSummary(
@@ -105,6 +115,7 @@ export function pipelineCommandSummary(
   const shortcut = shortcutCommands.has(command.name);
   return {
     name: command.name,
+    policy: command.policy ?? { mutability: "write", source: "default" },
     shortcut,
     shortcutTool: shortcut ? normalizePipelineToolName(command.name) : null,
     description: command.description,

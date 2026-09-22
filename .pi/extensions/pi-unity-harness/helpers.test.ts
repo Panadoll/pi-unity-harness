@@ -53,6 +53,11 @@ test("schemaToTypeBox builds object from parameters when schema is absent", () =
   });
 });
 
+test("parameterToTypeBox prefers jsonType over misleading CLR names", () => {
+  assert.equal(parameterToTypeBox(mockTypeBox, { name: "flag", jsonType: "boolean", typeFullName: "System.String" }).kind, "boolean");
+  assert.equal(parameterToTypeBox(mockTypeBox, { name: "count", jsonType: "integer", typeFullName: "System.String" }).kind, "integer");
+});
+
 test("parameterToTypeBox maps scalar types", () => {
   assert.equal(parameterToTypeBox(mockTypeBox, { name: "flag", type: "Boolean" }).kind, "boolean");
   assert.equal(parameterToTypeBox(mockTypeBox, { name: "num", type: "Int32" }).kind, "integer");
@@ -67,6 +72,7 @@ test("filterPipelineCommands hides runtime and excluded commands", () => {
       { name: "good_cmd", runtimeOnly: false },
       { name: "runtime_cmd", runtimeOnly: true },
       { name: "eval", runtimeOnly: false },
+      { name: "danger", policy: { mutability: "destructive" } },
       null,
     ],
   };
@@ -74,6 +80,7 @@ test("filterPipelineCommands hides runtime and excluded commands", () => {
   const filtered = filterPipelineCommands(list);
   assert.equal(filtered.length, 1);
   assert.equal(filtered[0]?.name, "good_cmd");
+  assert.equal(filterPipelineCommands(list, new Set(), true).some((command) => command.name === "danger"), true);
 });
 
 test("pipelineCommandSummary exposes shortcut info", () => {
