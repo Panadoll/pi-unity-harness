@@ -17,6 +17,18 @@ pub fn print_version() {
     println!("{VERSION}");
 }
 
+pub fn format_version_json() -> String {
+    serde_json::to_string_pretty(&json!({
+        "cli": { "crateVersion": VERSION, "protocolVersion": super::EXPECTED_PROTOCOL_VERSION },
+        "native": {
+            "crateVersion": VERSION,
+            "gitRev": env!("PI_UNITY_GIT_REV"),
+            "dirty": env!("PI_UNITY_GIT_DIRTY") == "true",
+            "protocolVersion": super::EXPECTED_PROTOCOL_VERSION,
+        }
+    })).unwrap()
+}
+
 pub fn usage_error(error: impl Into<String>, help: &[&str]) -> CliError {
     CliError::Usage {
         error: error.into(),

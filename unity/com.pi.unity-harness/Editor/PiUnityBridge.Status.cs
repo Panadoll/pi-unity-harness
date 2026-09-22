@@ -70,6 +70,9 @@ namespace Pi.UnityHarness.Editor
             if (mainThreadStale)
                 flags += ";mainThreadStale=1";
 
+            if (s_nativeVersionMismatch)
+                flags += ";nativeVersionMismatch=1";
+
             return mode + rest + flags;
         }
         private static string CurrentEditorStatus()

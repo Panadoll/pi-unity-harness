@@ -44,7 +44,11 @@ pub const EXPECTED_PROTOCOL_VERSION: i32 = 1;
 async fn main() -> ExitCode {
     let argv: Vec<String> = std::env::args().collect();
     if usage::try_version_fast_path(&argv[1..]) {
-        usage::print_version();
+        if argv.iter().any(|arg| arg == "--json") {
+            println!("{}", usage::format_version_json());
+        } else {
+            usage::print_version();
+        }
         return ExitCode::SUCCESS;
     }
 

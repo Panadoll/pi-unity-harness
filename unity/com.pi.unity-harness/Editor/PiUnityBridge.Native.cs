@@ -24,6 +24,9 @@ namespace Pi.UnityHarness.Editor
             int protocolVersion);
 
         [DllImport(NativeDll, CallingConvention = CallingConvention.Cdecl)]
+        private static extern int pi_unity_build_info(byte[] buffer, int bufferLen, out int requiredLen);
+
+        [DllImport(NativeDll, CallingConvention = CallingConvention.Cdecl)]
         private static extern void pi_unity_shutdown();
 
         [DllImport(NativeDll, CallingConvention = CallingConvention.Cdecl)]
@@ -59,6 +62,37 @@ namespace Pi.UnityHarness.Editor
 
         [DllImport("kernel32.dll")]
         private static extern uint GetCurrentThreadId();
+
+        private static void CheckNativeBuildInfo()
+        {
+            try
+            {
+                int required;
+                if (pi_unity_build_info(null, 0, out required) != 0 || required <= 0)
+                    return;
+                byte[] bytes = new byte[required];
+                if (pi_unity_build_info(bytes, bytes.Length, out required) != 1)
+                    return;
+                NativeBuildInfo info = JsonUtility.FromJson<NativeBuildInfo>(Encoding.UTF8.GetString(bytes, 0, required));
+                UnityEditor.PackageManager.PackageInfo package = UnityEditor.PackageManager.PackageInfo.FindForAssembly(typeof(PiUnityBridge).Assembly);
+                string packageVersion = package != null ? package.version : null;
+                s_nativeVersionMismatch = info == null || string.IsNullOrEmpty(packageVersion) || info.crate != packageVersion;
+                if (s_nativeVersionMismatch && !s_nativeVersionWarningLogged)
+                {
+                    s_nativeVersionWarningLogged = true;
+                    UnityEngine.Debug.LogWarning("[PiUnityHarness] native DLL version does not match package version; bridge remains available.");
+                }
+            }
+            catch (Exception ex)
+            {
+                if (!s_nativeVersionWarningLogged)
+                {
+                    s_nativeVersionWarningLogged = true;
+                    UnityEngine.Debug.LogWarning("[PiUnityHarness] could not read native DLL build info: " + ex.Message);
+                }
+            }
+        }
+
         private static void PublishManagedState(int state, string editorStatus)
         {
             try

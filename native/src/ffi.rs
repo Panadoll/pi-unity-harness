@@ -37,6 +37,23 @@ pub unsafe extern "C" fn pi_unity_init(
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn pi_unity_build_info(
+    buffer: *mut u8,
+    buffer_len: i32,
+    out_required_len: *mut i32,
+) -> c_int {
+    let bytes = crate::BUILD_INFO_JSON.as_bytes();
+    if !out_required_len.is_null() {
+        *out_required_len = bytes.len() as i32;
+    }
+    if buffer.is_null() || buffer_len < bytes.len() as i32 {
+        return 0;
+    }
+    std::ptr::copy_nonoverlapping(bytes.as_ptr(), buffer, bytes.len());
+    1
+}
+
+#[no_mangle]
 pub extern "C" fn pi_unity_shutdown() {
     #[cfg(windows)]
     crate::imp::shutdown();

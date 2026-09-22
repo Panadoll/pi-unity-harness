@@ -4,6 +4,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+Set-Location (Split-Path -Parent $PSScriptRoot)
 
 $root = Split-Path -Parent $PSScriptRoot
 $nativeDir = Join-Path $root 'native'

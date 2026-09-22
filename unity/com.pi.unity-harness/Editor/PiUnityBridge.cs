@@ -62,6 +62,16 @@ namespace Pi.UnityHarness.Editor
         }
 
         [Serializable]
+        [Serializable]
+        private sealed class NativeBuildInfo
+        {
+            public string crate;
+            public string gitRev;
+            public bool dirty;
+            public int protocol;
+            public string builtUtc;
+        }
+
         private sealed class BridgeInfo
         {
             public string project;
@@ -131,6 +141,8 @@ namespace Pi.UnityHarness.Editor
         /// <summary>Updated from main-thread and background heartbeats. For diagnostics only.</summary>
         private static long s_lastNativeHeartbeatUtcTicks;
         private static bool s_runInBackgroundApplied;
+        private static bool s_nativeVersionMismatch;
+        private static bool s_nativeVersionWarningLogged;
         private static string s_lastMainThreadEditorStatus = "editing;focus=unknown;window=normal";
 
         static PiUnityBridge()
@@ -166,6 +178,7 @@ namespace Pi.UnityHarness.Editor
 
                 if (pi_unity_init(Utf8(s_projectPath), ByteLen(s_projectPath), Utf8(s_pipeName), ByteLen(s_pipeName), Utf8(s_token), ByteLen(s_token), NativeProtocolVersion) != 0)
                     UnityEngine.Debug.LogError("[PiUnityHarness] native broker init failed");
+                CheckNativeBuildInfo();
 
                 PublishManagedState(ManagedStateInitializing, "starting");
                 WriteBridgeInfo();
