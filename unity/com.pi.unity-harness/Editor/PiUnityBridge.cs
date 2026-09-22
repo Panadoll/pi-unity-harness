@@ -62,7 +62,6 @@ namespace Pi.UnityHarness.Editor
         }
 
         [Serializable]
-        [Serializable]
         private sealed class NativeBuildInfo
         {
             public string crate;
@@ -179,6 +178,7 @@ namespace Pi.UnityHarness.Editor
                 if (pi_unity_init(Utf8(s_projectPath), ByteLen(s_projectPath), Utf8(s_pipeName), ByteLen(s_pipeName), Utf8(s_token), ByteLen(s_token), NativeProtocolVersion) != 0)
                     UnityEngine.Debug.LogError("[PiUnityHarness] native broker init failed");
                 CheckNativeBuildInfo();
+                PiUnityReloadOperationRegistry.Configure(CompleteCompileResult, CompleteJson);
 
                 PublishManagedState(ManagedStateInitializing, "starting");
                 WriteBridgeInfo();
@@ -226,6 +226,7 @@ namespace Pi.UnityHarness.Editor
             PublishManagedState(ManagedStateReloading, "reloading");
             StopNativePumpThread();
             CancelAllPendingAsyncEvals("CANCELLED: domain reload");
+            PiUnityReloadOperationRegistry.BeforeReloadAll();
             s_pump?.Dispose();
             s_pump = null;
             s_asyncEvalPump = null;
@@ -234,9 +235,8 @@ namespace Pi.UnityHarness.Editor
         private static void OnAfterReload()
         {
             Start();
-            // Complete compile requests pending before domain reload (responses can only be sent after Start)
-            PiUnityCompileCoordinator.ResumeAfterReload(CompleteCompileResult);
-            PiUnityTestCoordinator.ResumeAfterReload(CompleteJson);
+            // Complete registered operations only after the native pump is available again.
+            PiUnityReloadOperationRegistry.ResumeAfterReloadAll();
         }
 
         private static void ForceReadyAfterStartup()

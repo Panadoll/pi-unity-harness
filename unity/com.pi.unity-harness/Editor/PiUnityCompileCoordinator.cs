@@ -54,6 +54,11 @@ namespace Pi.UnityHarness.Editor
             FinalizeAfterReload(onComplete);
         }
 
+        internal static bool HasPendingRequest()
+        {
+            return !string.IsNullOrEmpty(s_pendingRequestId) || !string.IsNullOrEmpty(SessionState.GetString(SessionKey_PendingCompileId, ""));
+        }
+
         /// <summary>
         /// Starts a compile request.
         /// </summary>
