@@ -1,0 +1,1 @@
+{"description":"managed reload status","direction":"status","wire":{"managedState":"reloading","connected":true},"expect":{"ok":true,"errorType":null,"errorCode":null,"message":null,"exitCode":0}}

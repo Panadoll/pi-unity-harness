@@ -1,0 +1,1 @@
+{"description":"missing pipe correlation is discarded","direction":"response","wire":{"ok":true,"result":null},"expect":{"ok":false,"errorType":"discarded","errorCode":"missing_reply_to","message":"missing reply_to","exitCode":1}}

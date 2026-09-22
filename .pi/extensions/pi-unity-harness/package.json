@@ -2,12 +2,10 @@
   "name": "pi-unity-harness-extension",
   "type": "module",
   "private": true,
-
   "license": "MIT",
   "scripts": {
-    "test": "npx tsx --test helpers.test.ts config.test.ts cli.test.ts mux.test.ts lifecycle.test.ts"
+    "test": "npx tsx --test helpers.test.ts config.test.ts cli.test.ts mux.test.ts lifecycle.test.ts protocol.test.ts"
   },
-
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"
   },
@@ -15,6 +13,8 @@
     "typebox": "^0.34.41"
   },
   "pi": {
-    "extensions": ["./index.ts"]
+    "extensions": [
+      "./index.ts"
+    ]
   }
 }

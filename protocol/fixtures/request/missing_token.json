@@ -1,0 +1,1 @@
+{"description":"request missing token","direction":"request","wire":{"id":"r5","type":"status","payload":{}},"expect":{"ok":false,"errorType":"unauthorized","errorCode":"unauthorized","message":"unauthorized","exitCode":1}}

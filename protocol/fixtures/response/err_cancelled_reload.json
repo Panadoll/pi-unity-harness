@@ -1,0 +1,1 @@
+{"description":"reload cancellation","direction":"response","wire":{"reply_to":"r6","ok":false,"error":"domain reload","error_type":"cancelled"},"expect":{"ok":false,"errorType":"cancelled","errorCode":null,"message":"domain reload","exitCode":1}}

@@ -1,0 +1,1 @@
+{"description":"capabilities request","direction":"request","wire":{"id":"r4","type":"bridge_capabilities","token":"token","payload":{}},"expect":{"ok":null,"errorType":null,"errorCode":null,"message":null,"exitCode":0}}

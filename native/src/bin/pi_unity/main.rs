@@ -780,6 +780,9 @@ fn handle_error(err: &CliError, json_mode: bool, project_root: Option<&Path>) {
                 CliError::BridgeNotFound(_) => CliError::BridgeNotFound(msg),
                 CliError::Timeout(_) => CliError::Timeout(msg),
                 CliError::Other(_) => CliError::Other(msg),
+                CliError::ProtocolMismatch { expected, actual } => {
+                    CliError::ProtocolMismatch { expected: *expected, actual: *actual }
+                }
                 CliError::Broker { code, message } => CliError::Broker {
                     code: code.clone(),
                     message: message.clone(),

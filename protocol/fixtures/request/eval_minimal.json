@@ -1,0 +1,1 @@
+{"description":"minimal execute request","direction":"request","wire":{"id":"r1","type":"execute_code","token":"token","payload":{"code":"1+1"}},"expect":{"ok":null,"errorType":null,"errorCode":null,"message":null,"exitCode":0}}

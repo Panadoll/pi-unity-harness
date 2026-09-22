@@ -1,0 +1,1 @@
+{"description":"broker reloading rejection","direction":"response","wire":{"reply_to":"r7","ok":false,"error":"managed_reloading"},"expect":{"ok":false,"errorType":"managed_reloading","errorCode":"managed_reloading","message":"managed_reloading","exitCode":1}}

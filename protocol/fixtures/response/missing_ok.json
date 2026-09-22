@@ -1,0 +1,1 @@
+{"description":"missing ok is malformed","direction":"response","wire":{"reply_to":"r14","error":"broken"},"expect":{"ok":false,"errorType":"malformed_response","errorCode":"malformed_response","message":"broken","exitCode":1}}

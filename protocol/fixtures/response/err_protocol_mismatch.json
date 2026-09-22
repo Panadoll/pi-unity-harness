@@ -1,0 +1,1 @@
+{"description":"protocol version mismatch with structured versions","direction":"response","wire":{"reply_to":"r-version","ok":false,"error":"Protocol version mismatch","error_type":"protocol_mismatch","result":{"expected":1,"actual":2}},"expect":{"ok":false,"errorType":"protocol_mismatch","errorCode":null,"message":"Protocol version mismatch","exitCode":1}}

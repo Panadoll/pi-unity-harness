@@ -1,0 +1,1 @@
+{"description":"mux result success","direction":"mux","wire":{"id":"j1","ok":true,"result":{"value":1},"exitCode":0},"expect":{"ok":true,"errorType":null,"errorCode":null,"message":null,"exitCode":0}}

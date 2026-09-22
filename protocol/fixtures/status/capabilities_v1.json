@@ -1,0 +1,1 @@
+{"description":"supported capabilities","direction":"status","wire":{"protocolVersion":1,"capabilities":["status"]},"expect":{"ok":true,"errorType":null,"errorCode":null,"message":null,"exitCode":0}}

@@ -1,0 +1,1 @@
+{"description":"managed runtime error","direction":"response","wire":{"reply_to":"r4","ok":false,"error":"boom","error_type":"runtime_error"},"expect":{"ok":false,"errorType":"runtime_error","errorCode":null,"message":"boom","exitCode":1}}

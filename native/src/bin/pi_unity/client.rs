@@ -30,6 +30,7 @@ pub(crate) enum CliError {
     Timeout(String),
     Usage { error: String, help: Vec<String> },
     Other(String),
+    ProtocolMismatch { expected: i32, actual: i32 },
     /// 结构化 broker/Unity 侧错误：code 保存错误码（managed_reloading、command_error、compilation_failed...）。
     Broker { code: String, message: String },
     /// 管道忙（ERROR_PIPE_BUSY / 231）：单客户端架构下已有客户端占用。
@@ -44,6 +45,7 @@ impl CliError {
             | CliError::BridgeNotFound(_)
             | CliError::Timeout(_)
             | CliError::Other(_)
+            | CliError::ProtocolMismatch { .. }
             | CliError::Broker { .. }
             | CliError::Busy(_) => 1,
         }
@@ -56,6 +58,7 @@ impl CliError {
             CliError::Timeout(_) => "timeout".to_string(),
             CliError::Usage { .. } => "usage".to_string(),
             CliError::Other(_) => "other".to_string(),
+            CliError::ProtocolMismatch { .. } => "protocol_mismatch".to_string(),
             CliError::Broker { code, .. } => code.clone(),
             CliError::Busy(_) => "busy".to_string(),
         }
@@ -68,6 +71,7 @@ impl CliError {
             CliError::Timeout(msg) => msg,
             CliError::Usage { error, .. } => error,
             CliError::Other(msg) => msg,
+            CliError::ProtocolMismatch { .. } => "Protocol version mismatch",
             CliError::Broker { message, .. } => message,
             CliError::Busy(msg) => msg,
         }
@@ -85,7 +89,10 @@ impl CliError {
                 "同一时间只允许一个客户端连接 Unity 管道（单客户端架构）".to_string(),
                 "等待当前请求完成或稍后重试，不要并发多个 pi-unity 客户端".to_string(),
             ],
-            CliError::ExecutionFailed(_) | CliError::Other(_) | CliError::Broker { .. } => {
+            CliError::ExecutionFailed(_)
+            | CliError::Other(_)
+            | CliError::ProtocolMismatch { .. }
+            | CliError::Broker { .. } => {
                 Vec::new()
             }
         }
@@ -224,10 +231,10 @@ impl HarnessClient {
             .unwrap_or(0) as i32;
         if version != EXPECTED_PROTOCOL_VERSION {
             self.disconnect();
-            return Err(CliError::Other(format!(
-                "Protocol version mismatch: Broker reported version {}, but CLI expected version {}.",
-                version, EXPECTED_PROTOCOL_VERSION
-            )));
+            return Err(CliError::ProtocolMismatch {
+                expected: EXPECTED_PROTOCOL_VERSION,
+                actual: version,
+            });
         }
         if self.persistent {
             self.handshake_done = true;

@@ -1,0 +1,1 @@
+{"description":"mux error with help","direction":"mux","wire":{"id":"j4","ok":false,"error":"bad input","error_type":"usage","exitCode":2,"help":["pi-unity --help"]},"expect":{"ok":false,"errorType":"usage","errorCode":null,"message":"bad input","exitCode":2}}

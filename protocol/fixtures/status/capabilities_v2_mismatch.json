@@ -1,0 +1,1 @@
+{"description":"unsupported capabilities version","direction":"status","wire":{"protocolVersion":2,"capabilities":["status"]},"expect":{"ok":false,"errorType":"protocol_mismatch","errorCode":null,"message":"Protocol version mismatch","exitCode":1}}
