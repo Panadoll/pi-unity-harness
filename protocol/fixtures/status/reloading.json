@@ -1,1 +1,22 @@
-{"description":"managed reload status","direction":"status","wire":{"managedState":"reloading","connected":true},"expect":{"ok":true,"errorType":null,"errorCode":null,"message":null,"exitCode":0}}
+{
+  "description": "managed reload status",
+  "direction": "status",
+  "wire": {
+    "managedState": "reloading",
+    "connected": true,
+    "lifecycle": {
+      "managed": "reloading",
+      "transport": "connected",
+      "mainThread": "unknown",
+      "reason": "managed_reloading",
+      "generation": 0
+    }
+  },
+  "expect": {
+    "ok": true,
+    "errorType": null,
+    "errorCode": null,
+    "message": null,
+    "exitCode": 0
+  }
+}

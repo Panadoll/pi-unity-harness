@@ -1,1 +1,26 @@
-{"description":"ready with modal","direction":"status","wire":{"managedState":"ready","connected":true,"modalObservation":{"present":true,"title":"Save Scene"}},"expect":{"ok":true,"errorType":null,"errorCode":null,"message":null,"exitCode":0}}
+{
+  "description": "ready with modal",
+  "direction": "status",
+  "wire": {
+    "managedState": "ready",
+    "connected": true,
+    "modalObservation": {
+      "present": true,
+      "title": "Save Scene"
+    },
+    "lifecycle": {
+      "managed": "ready",
+      "transport": "connected",
+      "mainThread": "blocked_modal",
+      "reason": "modal_dialog",
+      "generation": 0
+    }
+  },
+  "expect": {
+    "ok": true,
+    "errorType": null,
+    "errorCode": null,
+    "message": null,
+    "exitCode": 0
+  }
+}

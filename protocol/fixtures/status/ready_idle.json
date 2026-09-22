@@ -1,1 +1,24 @@
-{"description":"ready idle status","direction":"status","wire":{"managedState":"ready","connected":true,"pendingCount":0,"inFlightCount":0},"expect":{"ok":true,"errorType":null,"errorCode":null,"message":null,"exitCode":0}}
+{
+  "description": "ready idle status",
+  "direction": "status",
+  "wire": {
+    "managedState": "ready",
+    "connected": true,
+    "pendingCount": 0,
+    "inFlightCount": 0,
+    "lifecycle": {
+      "managed": "ready",
+      "transport": "connected",
+      "mainThread": "responsive",
+      "reason": null,
+      "generation": 0
+    }
+  },
+  "expect": {
+    "ok": true,
+    "errorType": null,
+    "errorCode": null,
+    "message": null,
+    "exitCode": 0
+  }
+}
