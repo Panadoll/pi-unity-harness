@@ -162,6 +162,10 @@ managed 处于 `initializing` / `reloading` / `quitting` 时，此类请求立�
 | `managed_heartbeat_timeout` | 主线程卡死（heartbeat 超过 5s 未更新且请求在途超 5s） |
 | `client_disconnected` | 客户端断开导致在途请求失败 |
 
+### 5.4 请求投递状态机
+
+请求依次经过 `queued`、`in_flight`、`completed`；排队超时为 `request_timeout_before_dispatch`，派发后超时为 `request_timeout_in_flight`，heartbeat 丢失为 `managed_heartbeat_timeout`，客户端断开仅写入审计并不会伪造响应。managed 非 `ready` 时立即返回 `managed_not_ready`、`managed_reloading` 或 `managed_quitting`。域重载期间的 `compile` / `run_tests` 恢复由 C# `SessionState` 处理，不跨越 broker 队列。
+
 协议握手时 `protocolVersion` 不匹配，客户端断开并返回唯一新增的 `error_type=protocol_mismatch`，且 `result` 为 `{ "expected": 1, "actual": <n> }`。
 
 `request_timeout_*` 与 `managed_heartbeat_timeout` 的判定基于 heartbeat：managed 每 <5s 上报一次 heartbeat；heartbeat 超时才用 `managed_heartbeat_timeout`，否则按客户端 `timeoutMs` 判 `request_timeout_in_flight`。
@@ -198,6 +202,13 @@ broker 的拒绝语义不变：`managed_not_ready` / `managed_reloading` / `mana
   "lastHeartbeatMs": 1750000000000,
   "heartbeatAgeMs": 12,
   "heartbeatTimedOut": false,
+  "lifecycle": {
+    "managed": "ready",
+    "transport": "connected",
+    "mainThread": "responsive",
+    "reason": null,
+    "generation": 3
+  },
   "editorStatus": "editing;focus=background;window=minimized",
   "focusState": "background",
   "windowState": "minimized",
@@ -212,6 +223,7 @@ broker 的拒绝语义不变：`managed_not_ready` / `managed_reloading` / `mana
 | 字段 | 说明 |
 |------|------|
 | `managedState` | `initializing` / `ready` / `reloading` / `quitting` |
+| `lifecycle` | 正交的 managed、transport、mainThread、reason、generation 快照；`mainThread` 优先反映 modal，再反映 heartbeat stale |
 | `connected` | 当前是否有客户端连接（state plane 中用作"被占用"标志） |
 | `editorStatus` | 分号分隔状态串，第一段为状态（`editing` / `playing` / `blocked` / `reloading` / `quitting`），后接 `key=value`：`focus=foreground|background`、`window=normal|minimized`、`mainThreadStale=1`（主线程停摆）。Win32 模态弹窗以 `modalObservation.present` 为准，不再依赖 `modal=1` |
 | `capabilities` | 能力列表：`native-broker`、`direct-status`、`reload-stable-pipe`、`state-plane-v1`、`background-runner`、`focus-state`、`heartbeat-timeout`、`request-timeout`、`client-heartbeat-timeout`、`context-snapshot-v1`、`action-timeline-v1`、`modal-probe-v1` |

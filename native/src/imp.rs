@@ -65,6 +65,15 @@
         })
     }
 
+    #[derive(Clone, Debug, PartialEq)]
+    struct LifecycleSnapshot {
+        managed: &'static str,
+        transport: &'static str,
+        main_thread: &'static str,
+        reason: Option<&'static str>,
+        generation: i64,
+    }
+
     /// YOLO mode: off (no action), detect (report only), safe-auto (click whitelisted buttons).
     #[derive(Clone, Copy, PartialEq)]
     enum YoloMode {
@@ -364,6 +373,47 @@
             }
         }
 
+        fn derive_lifecycle(&self, now: i64) -> LifecycleSnapshot {
+            let managed = self.managed_state_name();
+            let modal_present = self
+                .modal_observation
+                .lock()
+                .map(|observation| observation.present)
+                .unwrap_or(false);
+            let (main_thread, reason) = if modal_present {
+                ("blocked_modal", Some("modal_dialog"))
+            } else if managed == "ready" && self.is_heartbeat_timed_out_at(now) {
+                ("stale", Some("heartbeat_timeout"))
+            } else if managed == "ready" {
+                ("responsive", None)
+            } else {
+                ("unknown", Some(match managed {
+                    "initializing" => "managed_initializing",
+                    "reloading" => "managed_reloading",
+                    "quitting" => "managed_quitting",
+                    _ => "managed_unknown",
+                }))
+            };
+            LifecycleSnapshot {
+                managed,
+                transport: if self.connected.load(Ordering::SeqCst) { "connected" } else { "disconnected" },
+                main_thread,
+                reason,
+                generation: self.managed_generation.load(Ordering::SeqCst),
+            }
+        }
+
+        fn lifecycle_json(&self, now: i64) -> Value {
+            let lifecycle = self.derive_lifecycle(now);
+            json!({
+                "managed": lifecycle.managed,
+                "transport": lifecycle.transport,
+                "mainThread": lifecycle.main_thread,
+                "reason": lifecycle.reason,
+                "generation": lifecycle.generation,
+            })
+        }
+
         fn status_payload(&self) -> Value {
             let now = now_ms();
             let heartbeat_age_ms = self.heartbeat_age_ms(now);
@@ -374,6 +424,7 @@
                 "pipe": self.pipe_name,
                 "statePlaneName": self.state_plane_name,
                 "native": native_info(),
+                "lifecycle": self.lifecycle_json(now),
                 "connected": self.connected.load(Ordering::SeqCst),
                 "managedState": self.managed_state_name(),
                 "managedGeneration": self.managed_generation.load(Ordering::SeqCst),
@@ -704,6 +755,7 @@
                 "statePlaneName": self.state_plane_name,
                 "observedAtMs": observed_at_ms,
                 "native": native_info(),
+                "lifecycle": self.lifecycle_json(observed_at_ms),
                 "connected": self.connected.load(Ordering::SeqCst),
                 "managedState": self.managed_state_name(),
                 "managedGeneration": self.managed_generation.load(Ordering::SeqCst),
@@ -1911,6 +1963,28 @@
         fn request_timeout_uses_client_budget_with_grace() {
             let value = json!({ "timeoutMs": 20_000 });
             assert_eq!(request_timeout_ms(&value), 25_000);
+        }
+
+        #[test]
+        fn lifecycle_snapshot_derives_modal_stale_responsive_and_unknown() {
+            let broker = test_broker("lifecycle");
+            broker.set_managed_state(MANAGED_STATE_READY, 3, Some("editing".to_string()));
+            broker.connected.store(true, Ordering::SeqCst);
+            assert_eq!(broker.derive_lifecycle(now_ms()).main_thread, "responsive");
+
+            broker.last_heartbeat_ms.store(now_ms() - HEARTBEAT_TIMEOUT_MS - 1, Ordering::SeqCst);
+            let stale = broker.derive_lifecycle(now_ms());
+            assert_eq!(stale.main_thread, "stale");
+            assert_eq!(stale.reason, Some("heartbeat_timeout"));
+
+            broker.modal_observation.lock().unwrap().present = true;
+            let modal = broker.derive_lifecycle(now_ms());
+            assert_eq!(modal.main_thread, "blocked_modal");
+            assert_eq!(modal.reason, Some("modal_dialog"));
+
+            broker.modal_observation.lock().unwrap().present = false;
+            broker.managed_state.store(MANAGED_STATE_RELOADING, Ordering::SeqCst);
+            assert_eq!(broker.derive_lifecycle(now_ms()).main_thread, "unknown");
         }
 
         #[test]

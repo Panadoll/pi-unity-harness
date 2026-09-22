@@ -1,1 +1,22 @@
-{"description":"heartbeat timeout status","direction":"status","wire":{"managedState":"ready","heartbeatTimedOut":true},"expect":{"ok":true,"errorType":null,"errorCode":null,"message":null,"exitCode":0}}
+{
+  "description": "heartbeat timeout status",
+  "direction": "status",
+  "wire": {
+    "managedState": "ready",
+    "heartbeatTimedOut": true,
+    "lifecycle": {
+      "managed": "ready",
+      "transport": "disconnected",
+      "mainThread": "stale",
+      "reason": "heartbeat_timeout",
+      "generation": 0
+    }
+  },
+  "expect": {
+    "ok": true,
+    "errorType": null,
+    "errorCode": null,
+    "message": null,
+    "exitCode": 0
+  }
+}

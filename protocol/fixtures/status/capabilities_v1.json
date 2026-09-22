@@ -1,1 +1,24 @@
-{"description":"supported capabilities","direction":"status","wire":{"protocolVersion":1,"capabilities":["status"]},"expect":{"ok":true,"errorType":null,"errorCode":null,"message":null,"exitCode":0}}
+{
+  "description": "supported capabilities",
+  "direction": "status",
+  "wire": {
+    "protocolVersion": 1,
+    "capabilities": [
+      "status"
+    ],
+    "lifecycle": {
+      "managed": "ready",
+      "transport": "disconnected",
+      "mainThread": "responsive",
+      "reason": null,
+      "generation": 0
+    }
+  },
+  "expect": {
+    "ok": true,
+    "errorType": null,
+    "errorCode": null,
+    "message": null,
+    "exitCode": 0
+  }
+}
