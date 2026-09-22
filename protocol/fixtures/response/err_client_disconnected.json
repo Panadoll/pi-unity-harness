@@ -1,0 +1,1 @@
+{"description":"client disconnected","direction":"response","wire":{"reply_to":"r12","ok":false,"error":"client_disconnected"},"expect":{"ok":false,"errorType":"client_disconnected","errorCode":"client_disconnected","message":"client_disconnected","exitCode":1}}

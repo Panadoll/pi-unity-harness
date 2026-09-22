@@ -1,0 +1,1 @@
+{"description":"managed compile error","direction":"response","wire":{"reply_to":"r3","ok":false,"error":"CS1002: ; expected","error_type":"compile_error"},"expect":{"ok":false,"errorType":"compile_error","errorCode":null,"message":"CS1002: ; expected","exitCode":1}}

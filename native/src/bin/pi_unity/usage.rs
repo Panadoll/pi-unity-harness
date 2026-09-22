@@ -32,6 +32,11 @@ pub fn error_payload(err: &CliError) -> serde_json::Value {
         "exitCode": err.exit_code(),
         "help": err.help(),
     });
+    if let CliError::ProtocolMismatch { expected, actual } = err {
+        if let Some(obj) = payload.as_object_mut() {
+            obj.insert("result".into(), json!({ "expected": expected, "actual": actual }));
+        }
+    }
     // 编译失败诊断：standalone 与 mux 共用此载荷。匹配编译失败码时附加
     // compiled:false 与错误摘要，调用方直接读 compiled 即可，无需再解析文本。
     if let CliError::Broker { code, message } = err {

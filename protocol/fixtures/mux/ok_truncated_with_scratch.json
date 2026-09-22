@@ -1,0 +1,1 @@
+{"description":"mux truncated success","direction":"mux","wire":{"id":"j3","ok":true,"text":"preview","truncated":true,"savedScratchPath":"Temp/full.txt","exitCode":0},"expect":{"ok":true,"errorType":null,"errorCode":null,"message":null,"exitCode":0}}

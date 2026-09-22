@@ -1,0 +1,1 @@
+{"description":"mux without id discarded","direction":"mux","wire":{"ok":false,"error":"bad","error_type":"execution_failed","exitCode":1},"expect":{"ok":false,"errorType":"discarded","errorCode":"missing_id","message":"missing id","exitCode":1}}

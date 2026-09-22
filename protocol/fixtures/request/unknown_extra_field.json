@@ -1,0 +1,1 @@
+{"description":"unknown request field ignored","direction":"request","wire":{"id":"r6","type":"status","token":"token","payload":{},"futureField":42},"expect":{"ok":true,"errorType":null,"errorCode":null,"message":null,"exitCode":0}}

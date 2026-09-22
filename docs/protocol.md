@@ -93,6 +93,8 @@ pipe 名为 `pi_unity_` + 项目路径 SHA-256 前 6 字节（12 位 hex）；`s
 | `error` | 错误码或错误信息（字符串） |
 | `error_type` | 可选；managed 侧失败时附加的错误分类（见 5.2） |
 
+响应帧缺少 `reply_to` 时必须丢弃，不得用 `id` 代替；成功响应缺少 `result` 时按 `result:null` 处理。mux stdout envelope 是 CLI 独立 wire surface，使用 `id`（不得使用 `reply_to`），其合成字段见 §3.5。
+
 ### 3.3 事件帧（Broker → Client，单向）
 
 ```json
@@ -100,6 +102,10 @@ pipe 名为 `pi_unity_` + 项目路径 SHA-256 前 6 字节（12 位 hex）；`s
 ```
 
 客户端应忽略不认识的事件。当前 broker 保留该帧类型（C# 侧 `pi_unity_emit_event`），暂无已发布事件。
+
+### 3.5 CLI 合成字段（mux stdout）
+
+mux stdout envelope 只在 CLI 与 pi 扩展之间使用，关联字段为 `id`。`exitCode`、`help`、`truncated`、`savedScratchPath`、`text` 是 CLI 合成字段，不出现在 pipe 请求或 pipe 响应帧中。mux 成功 envelope 缺少 `result` 时按 `result:null` 归一化；缺少 `id` 的行丢弃。
 
 ### 3.4 传输级规则
 
@@ -156,6 +162,8 @@ managed 处于 `initializing` / `reloading` / `quitting` 时，此类请求立�
 | `managed_heartbeat_timeout` | 主线程卡死（heartbeat 超过 5s 未更新且请求在途超 5s） |
 | `client_disconnected` | 客户端断开导致在途请求失败 |
 
+协议握手时 `protocolVersion` 不匹配，客户端断开并返回唯一新增的 `error_type=protocol_mismatch`，且 `result` 为 `{ "expected": 1, "actual": <n> }`。
+
 `request_timeout_*` 与 `managed_heartbeat_timeout` 的判定基于 heartbeat：managed 每 <5s 上报一次 heartbeat；heartbeat 超时才用 `managed_heartbeat_timeout`，否则按客户端 `timeoutMs` 判 `request_timeout_in_flight`。
 
 ### 5.2 Managed 级错误（附加 `error_type`）
@@ -167,6 +175,7 @@ managed 处于 `initializing` / `reloading` / `quitting` 时，此类请求立�
 | `runtime_error` | 执行异常信息 |
 | `busy` | `coroutine queue full` |
 | `cancelled` | 异步 eval 被取消（域重载前清理等） |
+| `protocol_mismatch` | CLI 与 broker 的协议版本不一致；`result` 携带 `expected` 与 `actual` |
 
 ### 5.3 客户端重试边界
 

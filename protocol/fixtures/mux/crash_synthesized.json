@@ -1,0 +1,1 @@
+{"description":"mux crash synthesized envelope","direction":"mux","wire":{"id":"j5","ok":false,"error":"mux process exited","error_type":"mux_crash","exitCode":1,"result":{"retryAllowed":false}},"expect":{"ok":false,"errorType":"mux_crash","errorCode":null,"message":"mux process exited","exitCode":1}}

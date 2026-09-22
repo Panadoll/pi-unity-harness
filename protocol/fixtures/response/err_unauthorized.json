@@ -1,0 +1,1 @@
+{"description":"unauthorized response","direction":"response","wire":{"reply_to":"r13","ok":false,"error":"unauthorized"},"expect":{"ok":false,"errorType":"unauthorized","errorCode":"unauthorized","message":"unauthorized","exitCode":1}}
