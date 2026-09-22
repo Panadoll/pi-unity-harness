@@ -17,6 +17,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo build
       - run: cargo test
+      - name: Check compat patch metadata
+        shell: pwsh
+        run: ../scripts/check-compat-patches.ps1 -BaseRef "${{ github.event.pull_request.base.sha || github.event.before }}"
 
   extension:
     name: Pi extension tests
