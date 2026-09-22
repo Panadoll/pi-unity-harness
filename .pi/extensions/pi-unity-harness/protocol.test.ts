@@ -26,6 +26,7 @@ function load(dir: string): Array<{ name: string; value: Fixture }> {
 function assertSurface(dir: string, direction: string): void {
   const fixtures = load(dir);
   assert.ok(fixtures.length > 0, `${dir} fixtures must not be empty`);
+  assert.ok(fixtures.some(({ value }) => typeof (value as Fixture & { description?: unknown }).description === "string"), `${dir} fixtures must include descriptions`);
   for (const { name, value } of fixtures) {
     assert.equal(value.direction, direction, name);
     assert.equal(typeof value.wire, "object", name);
@@ -46,6 +47,10 @@ test("shared fixtures keep pipe and mux correlation fields separate", () => {
   assertSurface("response", "response");
   assertSurface("status", "status");
   assertSurface("mux", "mux");
+});
+
+test("required eval fixture remains available", () => {
+  assert.equal(load("request").some(({ name }) => name === "eval_minimal.json"), true);
 });
 
 test("protocol_mismatch exposes expected and actual versions", () => {

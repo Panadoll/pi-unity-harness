@@ -27,6 +27,7 @@ fn load_all(dir: &str) -> Vec<(PathBuf, Value)> {
 fn assert_fixture_shape(dir: &str, expected_direction: &str, correlation: &str) {
     let fixtures = load_all(dir);
     assert!(!fixtures.is_empty(), "fixture directory {dir} must not be empty");
+    assert!(fixtures.iter().any(|(_, fixture)| fixture["description"].as_str().is_some()), "fixture directory {dir} must include descriptions");
     for (path, fixture) in fixtures {
         assert_eq!(fixture["direction"], expected_direction, "{}", path.display());
         assert!(fixture["wire"].is_object(), "{} missing wire", path.display());
@@ -49,6 +50,12 @@ fn shared_fixture_tree_has_expected_wire_surfaces() {
     assert_fixture_shape("response", "response", "reply_to");
     assert_fixture_shape("status", "status", "id");
     assert_fixture_shape("mux", "mux", "id");
+}
+
+#[test]
+fn fixture_deletion_is_detected_by_expected_named_fixture() {
+    let fixture = fixture_root().join("request/eval_minimal.json");
+    assert!(fixture.exists(), "required fixture missing: {}", fixture.display());
 }
 
 #[test]
