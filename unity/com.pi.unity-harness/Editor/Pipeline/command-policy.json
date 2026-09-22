@@ -1,0 +1,6 @@
+{
+  "scene_get_data": { "mutability": "read" },
+  "gameobject_find": { "mutability": "read" },
+  "assets_refresh": { "mutability": "write" },
+  "scene_delete": { "mutability": "destructive" }
+}

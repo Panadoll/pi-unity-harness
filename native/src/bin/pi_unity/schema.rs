@@ -349,6 +349,7 @@ pub fn shape_list_commands(raw: &Value, opts: &ViewOptions) -> Value {
             let mut row = json!({
                 "name": pick_str(c, &["name"]),
                 "summary": pick_str(c, &["description", "summary"]),
+                "mutability": c.get("policy").and_then(|p| p.get("mutability")).and_then(Value::as_str).unwrap_or("write"),
             });
             if opts.full {
                 if let Some(obj) = row.as_object_mut() {

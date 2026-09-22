@@ -185,6 +185,12 @@ managed 处于 `initializing` / `reloading` / `quitting` 时，此类请求立�
 
 broker 的拒绝语义不变：`managed_not_ready` / `managed_reloading` / `managed_quitting` 在 managed 未就绪时仍是立即失败帧。CLI 只允许对**显式、尚未派发（pre-dispatch）**的 `managed_not_ready` / `managed_reloading` 拒绝，在原始请求 deadline 内做有界重试；任意断连（pipe 关闭、超时、in-flight 丢失、协议损坏）不得自动重试或重放请求。
 
+## 5.5 Pipeline 命令安全元数据
+
+`list_commands` 的每个命令保留既有 `mainThreadRequired` / `runtimeOnly` 字段，并新增 `policy`：`mutability` 为 `read`、`write` 或 `destructive`，`thread` 为 `main` 或 `any`，`runtime` 为 `editor` 或 `runtime`，`source` 为 `attribute`、`sidecar` 或 `default`。缺少策略时保守默认为 `write`。同一策略会写入 JSON Schema 的 `x-command-metadata`。
+
+扩展注册 typed tool 时以 `[WRITE]` / `[DESTRUCTIVE]` 前缀提示可变命令；`destructive` 命令默认不注册，只有 `PIPELINE_TOOL_ALLOW_DESTRUCTIVE=1` 才允许注册。`jsonType` 存在时优先用于参数类型推断，缺失时才兼容旧的 CLR 类型名匹配。
+
 ## 6. 结果负载
 
 ### 6.1 `status` / state plane 状态负载
