@@ -56,6 +56,15 @@
     const MODAL_PROBE_INTERVAL_MS: i64 = 500;
     const YOLO_AUTO_CLICK_COOLDOWN_MS: i64 = 8_000;
 
+    fn native_info() -> Value {
+        json!({
+            "crateVersion": env!("CARGO_PKG_VERSION"),
+            "gitRev": env!("PI_UNITY_GIT_REV"),
+            "dirty": env!("PI_UNITY_GIT_DIRTY") == "true",
+            "protocolVersion": NATIVE_PROTOCOL_VERSION,
+        })
+    }
+
     /// YOLO mode: off (no action), detect (report only), safe-auto (click whitelisted buttons).
     #[derive(Clone, Copy, PartialEq)]
     enum YoloMode {
@@ -364,6 +373,7 @@
                 "processId": std::process::id(),
                 "pipe": self.pipe_name,
                 "statePlaneName": self.state_plane_name,
+                "native": native_info(),
                 "connected": self.connected.load(Ordering::SeqCst),
                 "managedState": self.managed_state_name(),
                 "managedGeneration": self.managed_generation.load(Ordering::SeqCst),
@@ -693,6 +703,7 @@
                 "pipe": self.pipe_name,
                 "statePlaneName": self.state_plane_name,
                 "observedAtMs": observed_at_ms,
+                "native": native_info(),
                 "connected": self.connected.load(Ordering::SeqCst),
                 "managedState": self.managed_state_name(),
                 "managedGeneration": self.managed_generation.load(Ordering::SeqCst),
@@ -883,7 +894,8 @@
                     id,
                     json!({
                         "protocolVersion": NATIVE_PROTOCOL_VERSION,
-                        "capabilities": CAPABILITIES
+                        "capabilities": CAPABILITIES,
+                        "native": native_info()
                     }),
                 )),
                 _ => {

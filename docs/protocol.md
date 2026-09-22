@@ -281,5 +281,8 @@ pi 扩展 `.pi/extensions/pi-unity-harness/index.ts` 是协议的事实参考实
 ## 10. 版本与兼容性
 
 - `NATIVE_PROTOCOL_VERSION = 1`；managed 侧 `pi_unity_init` 传入协议版本，不匹配时 broker 仅告警不拒绝（当前向前兼容策略）
+- `status` 与 `bridge_capabilities` 可返回 `native: { crateVersion, gitRev, dirty, protocolVersion }`；这些字段描述当前 DLL 构建，而不是 CLI 自身版本。
+- `pi-unity --version --json` 返回分开的 `cli` 与 `native` 对象。DLL 与 Unity 包版本不一致时，C# 保持 Bridge 可用，但在 `editorStatus` 追加 `nativeVersionMismatch=1` 并只记录一次警告。
+- Native DLL 内含 `PIUH_BUILD_INFO:` 标记，CI 用它校验 Cargo 版本和协议版本，不比较 DLL hash。
 - 增加请求类型、响应字段为兼容变更；改变帧格式、字段语义、错误码为破坏性变更，必须递增协议版本
 - 本文档与代码不一致时以本文档为准，但应先修代码或文档，不允许长期分歧
