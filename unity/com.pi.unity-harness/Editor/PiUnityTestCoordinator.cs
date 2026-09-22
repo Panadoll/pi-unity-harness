@@ -477,9 +477,18 @@ namespace Pi.UnityHarness.Editor
             return Capabilities.PipelineCommands.DirtyScenePolicy.Apply(action, openScenes, commandName);
         }
 
+        internal static bool HasPendingRequestForReload()
+        {
+#if PI_UNITY_PIPELINE
+            return !string.IsNullOrEmpty(SessionState.GetString(SessionKey_PendingTestRequestId, string.Empty));
+#else
+            return false;
+#endif
+        }
+
         private static bool HasPendingRequest()
         {
-            return !string.IsNullOrEmpty(SessionState.GetString(SessionKey_PendingTestRequestId, string.Empty));
+            return HasPendingRequestForReload();
         }
 
         private static bool IsPipelineTestRunRunning()
