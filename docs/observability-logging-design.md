@@ -66,9 +66,9 @@
 
 - 新增轻命令：`pi-unity mark --skill <name> --event used`，只写一条 `{"kind":"skill.used",…}` 事件。
 - 每条 `skills/pi-unity-*/SKILL.md` 末尾有约定一句：「使用本 skill 时先运行 `pi-unity mark --skill <name> --event used`」。这是软信号，agent 不会每次都跑，**不能当真实用量**。
-- client 归因：pi 扩展 `runPiUnityCli` 注入 env `PI_UNITY_CLIENT=pi-ext`；herdr 启动 agent 时可注入 `PI_UNITY_AGENT` / `PI_UNITY_SESSION_ID`。
-- 粘性 session 是用户级单文件 `sessions/current.json`：多 agent 并行会互相覆盖，只适合单任务分组，不是多 agent 锁。
-- `session start` 必须把注册表写成功才算成功；events 行仍是 best-effort。
+- client 归因：pi 扩展注入 `PI_UNITY_CLIENT=pi-ext` 与 `PI_UNITY_AGENT_ID`；CLI 在缺省时使用 `default`，外部 agent 也可显式设置 `PI_UNITY_SESSION_ID`。
+- 粘性 session 按 `sessions/<projectHash>/<agentId>.json` 隔离；项目未知时使用 `_noproject`，agent id 只保留 `[A-Za-z0-9_-]`。`sessions/current.json` 仅写兼容指针，不再作为读取回退。
+- `session start` 必须把 scoped 注册表与兼容指针写成功才算成功；events 行仍是 best-effort，并带 `projectHash` 与 `agentId`。
 - 说明：skill 的「加载」（agent 读文件）无法从外部硬观测，靠 mark 软约定 + 命令序列行为推断（分析期做）。
 
 ## 五、明确不做（本阶段）

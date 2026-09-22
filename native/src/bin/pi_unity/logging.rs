@@ -148,6 +148,38 @@ pub fn current_session_path(log_root: &Path) -> PathBuf {
     log_root.join("sessions").join("current.json")
 }
 
+fn sanitize_agent_id(value: &str) -> String {
+    let filtered: String = value
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' { ch } else { '_' })
+        .collect();
+    if filtered.is_empty() { "default".to_string() } else { filtered }
+}
+
+pub fn current_agent_id() -> String {
+    nonempty_env("PI_UNITY_AGENT_ID")
+        .map(|value| sanitize_agent_id(&value))
+        .unwrap_or_else(|| "default".to_string())
+}
+
+fn scoped_session_path_for(log_root: &Path, project_root: Option<&Path>, agent_id: &str) -> PathBuf {
+    let project_hash = compute_project_hash(project_root).unwrap_or_else(|| "_noproject".to_string());
+    log_root.join("sessions").join(project_hash).join(format!("{}.json", sanitize_agent_id(agent_id)))
+}
+
+pub fn scoped_session_path(log_root: &Path, project_root: Option<&Path>) -> PathBuf {
+    scoped_session_path_for(log_root, project_root, &current_agent_id())
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct SessionPointer {
+    pointer: String,
+    #[serde(rename = "sessionId")]
+    session_id: String,
+    #[serde(rename = "startedAtMs")]
+    started_at_ms: i64,
+}
+
 // ── Privacy & Redaction ─────────────────────────────────────────────────────
 
 pub fn normalize_project_path(path: &Path) -> String {
@@ -233,15 +265,33 @@ fn nonempty_override(value: Option<&str>) -> Option<String> {
 /// Resolve session from env then the sticky registry. Process env is read here;
 /// tests should call [`resolve_session_with_env`] so they do not mutate globals.
 pub fn resolve_session(log_root: &Path) -> (Option<String>, Option<String>) {
-    resolve_session_with_env(
+    resolve_session_scoped(log_root, None)
+}
+
+pub fn resolve_session_scoped(
+    log_root: &Path,
+    project_root: Option<&Path>,
+) -> (Option<String>, Option<String>) {
+    resolve_session_with_env_scoped(
         log_root,
+        project_root,
         nonempty_env("PI_UNITY_SESSION_ID").as_deref(),
         nonempty_env("PI_UNITY_HOST_SESSION_ID").as_deref(),
     )
 }
 
+#[cfg(test)]
 pub fn resolve_session_with_env(
     log_root: &Path,
+    session_id_env: Option<&str>,
+    host_session_id_env: Option<&str>,
+) -> (Option<String>, Option<String>) {
+    resolve_session_with_env_scoped(log_root, None, session_id_env, host_session_id_env)
+}
+
+pub fn resolve_session_with_env_scoped(
+    log_root: &Path,
+    project_root: Option<&Path>,
     session_id_env: Option<&str>,
     host_session_id_env: Option<&str>,
 ) -> (Option<String>, Option<String>) {
@@ -252,8 +302,8 @@ pub fn resolve_session_with_env(
         return (Some(env_sess), host_session_id);
     }
 
-    // 2. Sticky registry file
-    let reg_path = current_session_path(log_root);
+    // 2. Scoped sticky registry. The legacy current.json is deliberately not read.
+    let reg_path = scoped_session_path(log_root, project_root);
     if reg_path.exists() {
         if let Ok(content) = fs::read_to_string(&reg_path) {
             if let Ok(data) = serde_json::from_str::<SessionRegistryData>(&content) {
@@ -274,23 +324,40 @@ pub(crate) fn fast_rand_id() -> String {
     format!("{:x}{:x}", pid, (t ^ (pid as i64)) & 0xffffff)
 }
 
+#[cfg(test)]
 pub fn start_session(
     log_root: &Path,
     task: Option<String>,
     agent_override: Option<String>,
 ) -> Result<SessionRegistryData, String> {
+    start_session_scoped(log_root, None, task, agent_override)
+}
+
+pub fn start_session_scoped(
+    log_root: &Path,
+    project_root: Option<&Path>,
+    task: Option<String>,
+    agent_override: Option<String>,
+) -> Result<SessionRegistryData, String> {
+    let agent_id = agent_override
+        .as_deref()
+        .map(sanitize_agent_id)
+        .unwrap_or_else(current_agent_id);
+    start_session_for(log_root, project_root, &agent_id, task, agent_override)
+}
+
+fn start_session_for(
+    log_root: &Path,
+    project_root: Option<&Path>,
+    agent_id: &str,
+    task: Option<String>,
+    agent_override: Option<String>,
+) -> Result<SessionRegistryData, String> {
     let now = now_ms();
     let session_id = format!("sess-{}-{}", now, fast_rand_id());
-    let agent = agent_override.or_else(|| {
-        std::env::var("PI_UNITY_AGENT").ok().and_then(|s| {
-            let t = s.trim().to_string();
-            if t.is_empty() {
-                None
-            } else {
-                Some(t)
-            }
-        })
-    });
+    let agent = agent_override
+        .or_else(|| nonempty_env("PI_UNITY_AGENT_ID"))
+        .or_else(|| nonempty_env("PI_UNITY_AGENT"));
 
     let reg_data = SessionRegistryData {
         session_id: session_id.clone(),
@@ -299,7 +366,7 @@ pub fn start_session(
         started_at_ms: now,
     };
 
-    let reg_path = current_session_path(log_root);
+    let reg_path = scoped_session_path_for(log_root, project_root, agent_id);
     if let Some(parent) = reg_path.parent() {
         let _ = fs::create_dir_all(parent);
     }
@@ -308,8 +375,14 @@ pub fn start_session(
     fs::write(&reg_path, json_bytes).map_err(|e| {
         format!("failed to write session registry {}: {e}", reg_path.display())
     })?;
+    let pointer = SessionPointer {
+        pointer: reg_path.strip_prefix(log_root).unwrap_or(&reg_path).to_string_lossy().replace('\\', "/"),
+        session_id: session_id.clone(),
+        started_at_ms: now,
+    };
+    fs::write(current_session_path(log_root), serde_json::to_vec_pretty(&pointer).map_err(|e| e.to_string())?)
+        .map_err(|e| format!("failed to write session pointer: {e}"))?;
 
-    // Emit session.start event (best-effort; registry write already succeeded)
     let event = json!({
         "v": LOG_FORMAT_VERSION,
         "kind": "session.start",
@@ -320,15 +393,26 @@ pub fn start_session(
         "sessionId": session_id,
         "task": task,
         "agent": agent,
+        "agentId": sanitize_agent_id(agent_id),
+        "projectHash": compute_project_hash(project_root),
     });
 
     append_event_line(log_root, &event);
-
     Ok(reg_data)
 }
 
+#[cfg(test)]
 pub fn end_session(log_root: &Path) -> Result<Option<String>, String> {
-    let reg_path = current_session_path(log_root);
+    end_session_scoped(log_root, None)
+}
+
+pub fn end_session_scoped(log_root: &Path, project_root: Option<&Path>) -> Result<Option<String>, String> {
+    let agent_id = current_agent_id();
+    end_session_for(log_root, project_root, &agent_id)
+}
+
+fn end_session_for(log_root: &Path, project_root: Option<&Path>, agent_id: &str) -> Result<Option<String>, String> {
+    let reg_path = scoped_session_path_for(log_root, project_root, agent_id);
     let mut ended_id = None;
 
     if reg_path.exists() {
@@ -338,6 +422,9 @@ pub fn end_session(log_root: &Path) -> Result<Option<String>, String> {
             }
         }
         let _ = fs::remove_file(&reg_path);
+    }
+    if ended_id.is_some() {
+        let _ = fs::remove_file(current_session_path(log_root));
     }
 
     if let Some(ref sid) = ended_id {
@@ -350,6 +437,8 @@ pub fn end_session(log_root: &Path) -> Result<Option<String>, String> {
             "client": resolve_client_name(),
             "pid": std::process::id(),
             "sessionId": sid,
+            "agentId": sanitize_agent_id(agent_id),
+            "projectHash": compute_project_hash(project_root),
         });
         append_event_line(log_root, &event);
     }
@@ -375,6 +464,8 @@ pub fn record_mark(log_root: &Path, skill: &str, event_type: &str) {
         "pid": std::process::id(),
         "sessionId": session_id,
         "hostSessionId": host_session_id,
+        "agentId": current_agent_id(),
+        "projectHash": None::<String>,
         "skill": skill,
         "event": event_type,
     });
@@ -414,6 +505,8 @@ pub struct CallEvent {
     pub session_id: Option<String>,
     #[serde(rename = "hostSessionId")]
     pub host_session_id: Option<String>,
+    #[serde(rename = "agentId")]
+    pub agent_id: String,
     pub subcommand: String,
     #[serde(rename = "projectHash")]
     pub project_hash: Option<String>,
@@ -740,6 +833,38 @@ mod tests {
         // Resolved is now None
         let (sess4, _) = resolve_session(&root);
         assert!(sess4.is_none());
+    }
+
+    #[test]
+    fn session_slots_are_isolated_by_project_and_agent() {
+        let root = test_dir("sess_scoped");
+        let project_a = Path::new("F:/Projects/A");
+        let project_b = Path::new("F:/Projects/B");
+        let session_a = start_session_for(&root, Some(project_a), "agent:A", None, None).unwrap();
+        let session_b = start_session_for(&root, Some(project_a), "agent B", None, None).unwrap();
+        let session_c = start_session_for(&root, Some(project_b), "agent:A", None, None).unwrap();
+        let path_a = scoped_session_path_for(&root, Some(project_a), "agent:A");
+        let path_b = scoped_session_path_for(&root, Some(project_a), "agent B");
+        let path_c = scoped_session_path_for(&root, Some(project_b), "agent:A");
+
+        assert_ne!(path_a, path_b);
+        assert_ne!(path_a, path_c);
+        assert_eq!(serde_json::from_str::<SessionRegistryData>(&fs::read_to_string(path_a).unwrap()).unwrap().session_id, session_a.session_id);
+        assert_eq!(serde_json::from_str::<SessionRegistryData>(&fs::read_to_string(path_b).unwrap()).unwrap().session_id, session_b.session_id);
+        assert_eq!(serde_json::from_str::<SessionRegistryData>(&fs::read_to_string(path_c).unwrap()).unwrap().session_id, session_c.session_id);
+        assert_eq!(end_session_for(&root, Some(project_a), "agent:A").unwrap(), Some(session_a.session_id));
+    }
+
+    #[test]
+    fn legacy_current_json_is_a_pointer_and_is_not_read() {
+        let root = test_dir("sess_pointer");
+        let data = start_session(&root, None, None).unwrap();
+        let pointer: Value = serde_json::from_str(&fs::read_to_string(current_session_path(&root)).unwrap()).unwrap();
+        assert_eq!(pointer["sessionId"], data.session_id);
+        assert!(pointer["pointer"].as_str().unwrap().ends_with("_noproject/default.json"));
+
+        fs::remove_file(scoped_session_path(&root, None)).unwrap();
+        assert!(resolve_session(&root).0.is_none(), "legacy pointer must never be a read fallback");
     }
 
     #[test]

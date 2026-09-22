@@ -28,8 +28,9 @@ use client::{CliError, HarnessClient};
 use commands::{execute_harness_command, handle_skills_command};
 use discovery::{resolve_project_root, resolve_project_root_fast};
 use logging::{
-    append_event_line, compute_project_hash, end_session, lazy_cleanup_old_traces, log_root_dir,
-    now_ms, record_mark, resolve_client_name, resolve_session, start_session, timestamp_utc,
+    append_event_line, compute_project_hash, end_session_scoped, lazy_cleanup_old_traces,
+    log_root_dir, now_ms, record_mark, resolve_session_scoped, resolve_client_name,
+    current_agent_id, start_session_scoped, timestamp_utc,
     CallEvent, CallEventFlags, CallEventPhases, TraceRecorder, DEFAULT_VERSION, LOG_FORMAT_VERSION,
 };
 use output::{emit_value, MAX_SAFE_RESPONSE_CHARS};
@@ -78,7 +79,8 @@ async fn main() -> ExitCode {
         &format!("pi-unity CLI started (subcommand: {})", subcommand_name),
     );
 
-    let (session_id, host_session_id) = resolve_session(&log_root);
+    let initial_project = resolve_project_root_fast(cli.project_path.as_deref()).ok();
+    let (session_id, host_session_id) = resolve_session_scoped(&log_root, initial_project.as_deref());
 
     let call_base = CallContext {
         json_mode,
@@ -120,7 +122,8 @@ async fn main() -> ExitCode {
         Some(Commands::Session(session_args)) => match session_args.action {
             SessionSubcommands::Start(start_args) => {
                 recorder.record("session", "Starting sticky session");
-                match start_session(&log_root, start_args.task, start_args.agent) {
+                let project = resolve_project_root_fast(cli.project_path.as_deref()).ok();
+                match start_session_scoped(&log_root, project.as_deref(), start_args.task, start_args.agent) {
                     Ok(data) => Ok(emit_value(
                         &json!({
                             "session": data.session_id,
@@ -133,7 +136,8 @@ async fn main() -> ExitCode {
             }
             SessionSubcommands::End => {
                 recorder.record("session", "Ending sticky session");
-                match end_session(&log_root) {
+                let project = resolve_project_root_fast(cli.project_path.as_deref()).ok();
+                match end_session_scoped(&log_root, project.as_deref()) {
                     Ok(Some(id)) => Ok(emit_value(
                         &json!({
                             "session": id,
@@ -698,6 +702,7 @@ fn handle_exit(result: Result<String, CliError>, ctx: CallContext<'_>) -> ExitCo
         host_session_id: ctx.host_session_id,
         subcommand: ctx.subcommand,
         project_hash: compute_project_hash(ctx.project_root),
+        agent_id: current_agent_id(),
         exit_code,
         duration_ms,
         phases: CallEventPhases {
