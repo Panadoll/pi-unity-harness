@@ -74,7 +74,16 @@ namespace Pi.UnityHarness.Editor
                 flags += ";nativeVersionMismatch=1";
             var pendingReloads = PiUnityReloadOperationRegistry.PendingNames();
             if (pendingReloads.Count > 0)
-                flags += ";resuming=" + string.Join(",", pendingReloads.ToArray());
+            {
+                var names = new StringBuilder();
+                for (int i = 0; i < pendingReloads.Count; i++)
+                {
+                    if (i > 0)
+                        names.Append(",");
+                    names.Append(pendingReloads[i]);
+                }
+                flags += ";resuming=" + names.ToString();
+            }
 
             return mode + rest + flags;
         }
