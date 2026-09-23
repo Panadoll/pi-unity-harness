@@ -11,14 +11,24 @@ namespace Pi.UnityHarness.Editor.Tests
     {
         private static string FindFixtureRoot()
         {
-            string current = Path.GetFullPath(
-                Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "../../../../../../protocol/fixtures"));
+            // Prefer the package location resolved by Unity; walk upward from it to the repo root.
+            string current = null;
+            try
+            {
+                var package = UnityEditor.PackageManager.PackageInfo.FindForAssembly(typeof(ProtocolFixtureTests).Assembly);
+                if (!string.IsNullOrEmpty(package?.resolvedPath))
+                    current = Path.GetFullPath(package.resolvedPath);
+            }
+            catch { /* PackageInfo unavailable outside the editor context */ }
+
+            if (string.IsNullOrEmpty(current))
+                current = Path.GetFullPath(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "../../../../../../protocol/fixtures"));
             while (!string.IsNullOrEmpty(current))
             {
                 string candidate = Path.Combine(current, "protocol", "fixtures");
                 if (Directory.Exists(candidate)) return candidate;
                 string parent = Directory.GetParent(current)?.FullName;
-                if (parent == current) break;
+                if (parent == current || string.IsNullOrEmpty(parent)) break;
                 current = parent;
             }
             Assert.Ignore("protocol fixtures are unavailable in a registry-installed package");
@@ -62,9 +72,9 @@ namespace Pi.UnityHarness.Editor.Tests
         public void ResponseHelpersKeepPipeCorrelationField()
         {
             JObject success = JObject.Parse(PiUnityJsonHelper.SuccessJson("fixture-1", "null"));
-            Assert.That(success["reply_to"], Is.EqualTo("fixture-1"));
+            Assert.That((string)success["reply_to"], Is.EqualTo("fixture-1"));
             Assert.That(success["id"], Is.Null);
-            Assert.That(success["result"], Is.EqualTo(JValue.CreateNull()));
+            Assert.That(success["result"]?.Type, Is.EqualTo(JTokenType.Null));
         }
     }
 }
