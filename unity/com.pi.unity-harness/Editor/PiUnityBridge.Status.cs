@@ -72,7 +72,7 @@ namespace Pi.UnityHarness.Editor
 
             if (s_nativeVersionMismatch)
                 flags += ";nativeVersionMismatch=1";
-            var pendingReloads = PiUnityReloadOperationRegistry.PendingNames();
+            var pendingReloads = PiUnityReloadOperationRegistry.PendingSnapshot;
             if (pendingReloads.Count > 0)
             {
                 var names = new StringBuilder();

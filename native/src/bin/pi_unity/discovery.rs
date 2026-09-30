@@ -152,7 +152,29 @@ pub(crate) fn load_bridge_json(project_root: &Path) -> Result<BridgeJson, CliErr
         CliError::BridgeNotFound(format!("无法解析 {}: {}", bridge_path.display(), e))
     })?;
 
+    if let Some(project) = bridge.project.as_deref() {
+        if !same_project(Path::new(project), project_root) {
+            let shown = |p: &Path| p.display().to_string().trim_start_matches(r"\\?\").to_string();
+            return Err(CliError::ProjectMismatch(format!(
+                "{} 属于工程 {}，不是当前工程 {}",
+                shown(&bridge_path),
+                project,
+                shown(project_root)
+            )));
+        }
+    }
+
     Ok(bridge)
+}
+
+fn same_project(a: &Path, b: &Path) -> bool {
+    fn key(p: &Path) -> String {
+        let resolved = fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+        let s = resolved.to_string_lossy().replace('\\', "/");
+        let s = s.strip_prefix("//?/").unwrap_or(&s);
+        s.trim_end_matches('/').to_lowercase()
+    }
+    key(a) == key(b)
 }
 
 #[cfg(test)]
@@ -166,6 +188,33 @@ mod tests {
         ))
         .unwrap_err();
         assert!(err.message().contains("不存在"));
+    }
+
+    #[test]
+    fn same_project_ignores_separator_case_and_verbatim_prefix() {
+        assert!(same_project(
+            Path::new("F:/UnityProjects/Test"),
+            Path::new(r"\\?\F:\unityprojects\Test\")
+        ));
+        assert!(!same_project(
+            Path::new("F:/UnityProjects/Test"),
+            Path::new(r"F:\UnityProjects\UniGameKit")
+        ));
+    }
+
+    #[test]
+    fn bridge_json_from_another_project_is_rejected() {
+        let root = std::env::temp_dir().join(format!("pi_unity_mismatch_{}", std::process::id()));
+        let dir = root.join("Library/PiUnityHarness");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("bridge.json"),
+            r#"{"project":"Z:/elsewhere/Test","pid":1,"pipe":"p","token":"t","generation":1}"#,
+        )
+        .unwrap();
+        let err = load_bridge_json(&root).unwrap_err();
+        let _ = fs::remove_dir_all(&root);
+        assert_eq!(err.error_type(), "project_mismatch");
     }
 
     #[test]

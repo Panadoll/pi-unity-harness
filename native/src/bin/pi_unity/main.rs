@@ -298,7 +298,8 @@ async fn main() -> ExitCode {
 }
 
 const HOME_PROBE_MS: u64 = 200;
-const MUX_PING_MS: u64 = 5000;
+/// Unity 管道是单客户端的：mux 空闲时必须让出，否则其他 shell 的一次性 CLI 调用只能等到 busy (231)。
+const MUX_IDLE_RELEASE_MS: u64 = 3000;
 
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -315,26 +316,21 @@ async fn run_mux(project_path: Option<&str>) -> ExitCode {
     let stdin = tokio::io::stdin();
     let mut lines = BufReader::new(stdin).lines();
     let mut stdout = tokio::io::stdout();
-    let mut ping = tokio::time::interval(Duration::from_millis(MUX_PING_MS));
-    ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut release_at: Option<tokio::time::Instant> = None;
 
     loop {
+        let idle_release = async move {
+            match release_at {
+                Some(at) => tokio::time::sleep_until(at).await,
+                None => std::future::pending().await,
+            }
+        };
         tokio::select! {
-            _ = ping.tick() => {
-                if let Some(ref mut c) = client {
-                    if c.is_connected() {
-                        let connected_before = c.is_connected();
-                        if c.reload_bridge().is_err() {
-                            c.disconnect();
-                        } else if !c.is_connected() {
-                            // token/generation 变了，等下条业务再连
-                        } else if connected_before
-                            && c.send_request("ping", json!({}), 2000).await.is_err()
-                        {
-                            c.disconnect();
-                        }
-                    }
+            _ = idle_release => {
+                if let Some(c) = client.as_mut() {
+                    c.disconnect();
                 }
+                release_at = None;
             }
             read = lines.next_line() => {
                 match read {
@@ -343,6 +339,10 @@ async fn run_mux(project_path: Option<&str>) -> ExitCode {
                             continue;
                         }
                         let reply = handle_mux_line(&line, &mut client, &mut project_root, project_path).await;
+                        release_at = client
+                            .as_ref()
+                            .filter(|c| c.is_connected())
+                            .map(|_| tokio::time::Instant::now() + Duration::from_millis(MUX_IDLE_RELEASE_MS));
                         if write_mux_stdout(&mut stdout, &reply.0).await.is_err() {
                             break;
                         }
@@ -696,6 +696,12 @@ fn handle_exit(result: Result<String, CliError>, ctx: CallContext<'_>) -> ExitCo
         Ok(_) => (0, None),
         Err(e) => (e.exit_code(), Some(e.error_type())),
     };
+    if let Err(e) = &result {
+        ctx.recorder.record(
+            "error",
+            &format!("[{}] {}", e.error_type(), truncate_chars_safe(e.message(), 2000)),
+        );
+    }
 
     let trace_id = ctx.recorder.flush_trace_if_needed(ctx.log_root, exit_code, ctx.trace_flag);
     let request_ids = ctx
@@ -809,6 +815,8 @@ fn handle_error(err: &CliError, json_mode: bool, project_root: Option<&Path>) {
                     message: message.clone(),
                 },
                 CliError::Busy(_) => CliError::Busy(msg),
+                CliError::StaleBridge(_) => CliError::StaleBridge(msg),
+                CliError::ProjectMismatch(_) => CliError::ProjectMismatch(msg),
                 CliError::JobFinished {
                     code,
                     snapshot,

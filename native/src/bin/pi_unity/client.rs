@@ -12,8 +12,7 @@ use super::EXPECTED_PROTOCOL_VERSION;
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct BridgeJson {
-    #[allow(dead_code)]
-    project: Option<String>,
+    pub(crate) project: Option<String>,
     pid: Option<u32>,
     pipe: String,
     token: String,
@@ -35,6 +34,10 @@ pub(crate) enum CliError {
     Broker { code: String, message: String },
     /// 管道忙（ERROR_PIPE_BUSY / 231）：单客户端架构下已有客户端占用。
     Busy(String),
+    /// bridge.json 记录的 Unity 进程已退出（Editor 重启中或已关闭）。
+    StaleBridge(String),
+    /// bridge.json 的 project 字段不是当前解析出的工程（复制 Library 或旧文件残留）。
+    ProjectMismatch(String),
     /// 查询成功，但 job 已终态失败。snapshot 是已整形的 job 视图。
     JobFinished {
         code: String,
@@ -54,6 +57,8 @@ impl CliError {
             | CliError::ProtocolMismatch { .. }
             | CliError::Broker { .. }
             | CliError::Busy(_)
+            | CliError::StaleBridge(_)
+            | CliError::ProjectMismatch(_)
             | CliError::JobFinished { .. } => 1,
         }
     }
@@ -68,6 +73,8 @@ impl CliError {
             CliError::ProtocolMismatch { .. } => "protocol_mismatch".to_string(),
             CliError::Broker { code, .. } => code.clone(),
             CliError::Busy(_) => "busy".to_string(),
+            CliError::StaleBridge(_) => "stale_bridge".to_string(),
+            CliError::ProjectMismatch(_) => "project_mismatch".to_string(),
             CliError::JobFinished { code, .. } => code.clone(),
         }
     }
@@ -82,6 +89,8 @@ impl CliError {
             CliError::ProtocolMismatch { .. } => "Protocol version mismatch",
             CliError::Broker { message, .. } => message,
             CliError::Busy(msg) => msg,
+            CliError::StaleBridge(msg) => msg,
+            CliError::ProjectMismatch(msg) => msg,
             CliError::JobFinished { message, .. } => message,
         }
     }
@@ -95,8 +104,15 @@ impl CliError {
             ],
             CliError::Timeout(_) => vec!["pi-unity status".to_string()],
             CliError::Busy(_) => vec![
-                "同一时间只允许一个客户端连接 Unity 管道（单客户端架构）".to_string(),
-                "等待当前请求完成或稍后重试，不要并发多个 pi-unity 客户端".to_string(),
+                "占用者可能是另一个正在执行的 pi-unity 请求，稍后重试 pi-unity status".to_string(),
+                "持续 busy 时检查旧版 pi-unity.exe mux 常驻进程（新版 mux 空闲 3 秒即释放管道）".to_string(),
+            ],
+            CliError::StaleBridge(_) => vec![
+                "Unity Editor 重启中：等待加载完成，bridge.json 会自动刷新".to_string(),
+                "pi-unity --project-path <path> status".to_string(),
+            ],
+            CliError::ProjectMismatch(_) => vec![
+                "删除这个残留的 bridge.json，或用 --project-path 指向正在运行的 Unity 工程".to_string(),
             ],
             CliError::ExecutionFailed(_)
             | CliError::Other(_)
@@ -493,20 +509,41 @@ impl HarnessClient {
 
         let connect_fut = async {
             let start = Instant::now();
+            let mut busy_retries = 0u32;
             loop {
                 match ClientOptions::new().open(&pipe_name_clone) {
-                    Ok(client) => return Ok::<_, CliError>(client),
+                    Ok(client) => {
+                        if busy_retries > 0 {
+                            recorder.record(
+                                "pipe",
+                                &format!(
+                                    "Pipe busy (231) cleared after {} retries, {}ms",
+                                    busy_retries,
+                                    start.elapsed().as_millis()
+                                ),
+                            );
+                        }
+                        return Ok::<_, CliError>(client);
+                    }
                     // 231 = ERROR_PIPE_BUSY：消耗调用方剩余连接预算重试，预算耗尽归类为 busy。
                     Err(e) if e.raw_os_error() == Some(231) => {
                         let remaining = remaining_ms(deadline);
                         if remaining < 100 {
+                            let waited_ms = start.elapsed().as_millis();
+                            recorder.record(
+                                "pipe",
+                                &format!("Pipe busy (231) gave up after {} retries, {}ms", busy_retries, waited_ms),
+                            );
                             return Err(CliError::Busy(format!(
-                                "Named Pipe {} 忙（错误 231）：同一时间只允许一个客户端连接 Unity 管道，等待当前请求完成或稍后重试",
-                                pipe_name_clone
+                                "Named Pipe {} 忙（错误 231）：另一个客户端占着 Unity 管道（单客户端架构），已等待 {}ms",
+                                pipe_name_clone, waited_ms
                             )));
                         }
+                        busy_retries += 1;
                         recorder.add_reconnect();
-                        recorder.record("pipe", "Pipe busy (231), backing off 50ms...");
+                        if busy_retries == 1 {
+                            recorder.record("pipe", "Pipe busy (231), retrying every 50ms...");
+                        }
                         tokio::time::sleep(Duration::from_millis(50.min(remaining))).await;
                         continue;
                     }
@@ -527,6 +564,12 @@ impl HarnessClient {
                             );
                             tokio::time::sleep(Duration::from_millis(100.min(remaining))).await;
                             continue;
+                        }
+                        if let (true, false, Some(pid)) = (metadata_ok, pid_alive, broker_pid) {
+                            return Err(CliError::StaleBridge(format!(
+                                "bridge.json 记录的 Unity 进程 (pid {}) 已退出，管道 {} 不存在",
+                                pid, pipe_name_clone
+                            )));
                         }
                         return Err(CliError::BridgeNotFound(format!(
                             "无法连接 Named Pipe {}: {}",
@@ -929,7 +972,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("pi-unity-busy-{pid}-{stamp}"));
         write_bridge_at(&root, &pipe_name, "busy-secret-token", Some(pid));
         let recorder = Arc::new(TraceRecorder::new("busy-test"));
-        let mut client = HarnessClient::new(root.clone(), recorder).unwrap();
+        let mut client = HarnessClient::new(root.clone(), recorder.clone()).unwrap();
         let started = Instant::now();
         let err = client
             .send_request("status", json!({}), 500)
@@ -940,6 +983,17 @@ mod tests {
             matches!(err, CliError::Busy(_)),
             "231 预算耗尽应归类 busy，实际 {err:?}"
         );
+        let pipe_steps: Vec<String> = recorder
+            .steps
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|s| s.phase == "pipe")
+            .map(|s| s.message.clone())
+            .collect();
+        assert_eq!(pipe_steps.len(), 2, "busy 重试只记首次和汇总: {pipe_steps:?}");
+        assert!(pipe_steps[1].contains("gave up after"), "{pipe_steps:?}");
+        assert!(recorder.reconnects.load(std::sync::atomic::Ordering::SeqCst) > 2);
         let msg = err.message();
         assert!(
             msg.contains("单客户端")
@@ -1002,7 +1056,7 @@ mod tests {
             .send_request("status", json!({}), 2000)
             .await
             .unwrap_err();
-        assert!(matches!(err, CliError::BridgeNotFound(_)));
+        assert!(matches!(err, CliError::StaleBridge(_)), "PID 已死应报 stale_bridge，实际 {err:?}");
         assert!(
             started.elapsed() < Duration::from_millis(800),
             "PID 已死不重试，应快速失败"

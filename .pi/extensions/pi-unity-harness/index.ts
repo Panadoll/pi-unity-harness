@@ -4,7 +4,7 @@ import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, write
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { paths, PathConversionError } from "./paths.ts";
+import { paths, PathConversionError, withWslEnvForwarding } from "./paths.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -971,6 +971,10 @@ export default function (pi: ExtensionAPI, opts: UnityHarnessExtensionOptions = 
       activeProjectPath = undefined;
     }
     sessionCwd = ctx.cwd;
+    // 写进 process.env 而不是只传给 mux：agent 在 bash 里直接调用的 pi-unity 也要能关联到本会话。
+    const hostSessionId = ctx.sessionManager?.getSessionId?.();
+    if (hostSessionId) process.env.PI_UNITY_HOST_SESSION_ID = hostSessionId;
+    if (paths.wsl) process.env.WSLENV = withWslEnvForwarding(process.env);
     await stopSessionMux();
     if (settings.enabled) {
       startSessionMux(ctx.cwd, explicitProjectPath);

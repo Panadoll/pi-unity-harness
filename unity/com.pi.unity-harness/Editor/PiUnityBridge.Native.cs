@@ -40,7 +40,34 @@ namespace Pi.UnityHarness.Editor
         private static extern int pi_unity_poll_request(byte[] buffer, int bufferLen, ref int outRequiredLen);
 
         [DllImport(NativeDll, CallingConvention = CallingConvention.Cdecl)]
+        private static extern int pi_unity_job_try_start(byte[] id, int idLen);
+
+        [DllImport(NativeDll, CallingConvention = CallingConvention.Cdecl)]
+        private static extern int pi_unity_job_cancellation_requested(byte[] id, int idLen);
+
+        [DllImport(NativeDll, CallingConvention = CallingConvention.Cdecl)]
+        private static extern int pi_unity_job_report_progress(byte[] id, int idLen, byte[] progress, int progressLen);
+
+        [DllImport(NativeDll, CallingConvention = CallingConvention.Cdecl)]
         private static extern void pi_unity_complete_request(byte[] id, int idLen, byte[] response, int responseLen);
+        internal static bool TryStartPipelineJob(string jobId)
+        {
+            byte[] bytes = Utf8(jobId);
+            return pi_unity_job_try_start(bytes, bytes.Length) == 1;
+        }
+
+        internal static bool IsPipelineJobCancellationRequested(string jobId)
+        {
+            byte[] bytes = Utf8(jobId);
+            return pi_unity_job_cancellation_requested(bytes, bytes.Length) == 1;
+        }
+
+        internal static bool ReportPipelineJobProgress(string jobId, string progressJson)
+        {
+            byte[] idBytes = Utf8(jobId);
+            byte[] progressBytes = Utf8(progressJson);
+            return pi_unity_job_report_progress(idBytes, idBytes.Length, progressBytes, progressBytes.Length) == 1;
+        }
 
         [DllImport("user32.dll")]
         private static extern bool PostMessage(IntPtr hWnd, uint msg, UIntPtr wParam, IntPtr lParam);
@@ -111,6 +138,7 @@ namespace Pi.UnityHarness.Editor
             try
             {
                 long nowTicks = DateTime.UtcNow.Ticks;
+                PiUnityReloadOperationRegistry.RefreshPendingSnapshot();
                 string status = CurrentEditorStatus();
                 Volatile.Write(ref s_lastMainThreadEditorStatus, status);
                 Interlocked.Exchange(ref s_lastMainThreadPumpUtcTicks, nowTicks);

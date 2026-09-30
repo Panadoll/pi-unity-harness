@@ -26,6 +26,14 @@ test("PathBoundary injects the default agent id for mux processes", () => {
   assert.equal(boundary.env("pi-unity", { PI_UNITY_AGENT_ID: "agent-a" }, "/tmp/project").PI_UNITY_AGENT_ID, "agent-a");
 });
 
+test("PathBoundary forwards session env across the WSL boundary only for Windows CLIs", () => {
+  const boundary = new PathBoundary({ platform: "linux", wsl: true, translate: () => "F:\\p" });
+  const env = boundary.env("pi-unity.exe", { WSLENV: "WT_SESSION:PI_UNITY_TRACE/u:", PI_UNITY_HOST_SESSION_ID: "s1", PI_UNITY_TRACE: "1" }, "/mnt/f/p");
+  assert.equal(env.WSLENV, "WT_SESSION:PI_UNITY_TRACE/u:PI_UNITY_CLIENT:PI_UNITY_AGENT_ID:PI_UNITY_HOST_SESSION_ID:UNITY_PROJECT_PATH");
+  assert.equal(env.UNITY_PROJECT_PATH, "F:\\p");
+  assert.equal(boundary.env("pi-unity", { WSLENV: "WT_SESSION" }).WSLENV, "WT_SESSION");
+});
+
 test("PathBoundary rewrites only typed path arguments", () => {
   const boundary = new PathBoundary({
     platform: "linux",

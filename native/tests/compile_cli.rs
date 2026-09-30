@@ -4,22 +4,20 @@
 
 #![cfg(windows)]
 
+mod common;
+
 use std::fs;
 use std::path::PathBuf;
-use std::process::Command;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use common::cli;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::windows::named_pipe::{PipeMode, ServerOptions};
 
 static PIPE_SEQ: AtomicU64 = AtomicU64::new(0);
-
-fn bin_exe() -> PathBuf {
-    env!("CARGO_BIN_EXE_pi-unity").into()
-}
 
 fn unique_leaf(tag: &str) -> String {
     let pid = std::process::id();
@@ -141,7 +139,7 @@ async fn compile_failure_exits_1_compiled_false_and_never_polls_status() {
 
     let project = bridge_dir.clone();
     let output = tokio::task::spawn_blocking(move || {
-        Command::new(bin_exe())
+        cli()
             .args([
                 "--project-path",
                 project.to_str().unwrap(),
@@ -192,7 +190,7 @@ async fn mux_compile_failure_keeps_compiled_false_in_error_envelope() {
 
     let project = bridge_dir.clone();
     let out = tokio::task::spawn_blocking(move || {
-        let mut child = Command::new(bin_exe())
+        let mut child = cli()
             .args(["--project-path", project.to_str().unwrap(), "mux"])
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())

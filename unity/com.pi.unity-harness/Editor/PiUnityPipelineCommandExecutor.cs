@@ -104,7 +104,7 @@ namespace Pi.UnityHarness.Editor
 
             try
             {
-                CommandInfo command = CommandRegistry.DiscoverCommands().FirstOrDefault(c => string.Equals(c.Name, commandName, StringComparison.Ordinal));
+                CommandInfo command = FindCommand(commandName);
                 if (command == null)
                 {
                     string message = BuildCommandNotFoundMessage(commandName, CommandRegistry.DiscoverCommands());
@@ -142,7 +142,8 @@ namespace Pi.UnityHarness.Editor
                 object rawResult;
                 try
                 {
-                    rawResult = command.Method.Invoke(null, boundParameters);
+                    object server = FindLivePipelineServer();
+                    rawResult = InvokeBoundCommand(command, boundParameters, server, timeoutMs);
                 }
                 catch (TargetInvocationException ex)
                 {
@@ -168,6 +169,229 @@ namespace Pi.UnityHarness.Editor
             completeJson(requestId, PiUnityJsonHelper.ErrorJson(requestId, "pipeline_unavailable", "com.unity.pipeline is not installed or PI_UNITY_PIPELINE is not defined."));
 #endif
         }
+        public static void ExecuteJob(string jobId, string commandName, string parametersJson, int timeoutMs)
+        {
+#if PI_UNITY_PIPELINE
+            if (string.IsNullOrEmpty(jobId) || !PiUnityBridge.TryStartPipelineJob(jobId))
+                return;
+
+            Task.Run(async () =>
+            {
+                try
+                {
+                    object server = FindLivePipelineServer();
+                    if (server == null)
+                        throw new InvalidOperationException("Pipeline server is not available for detached command execution.");
+
+                    CommandInfo command = CommandRegistry.DiscoverCommands()
+                        .FirstOrDefault(c => string.Equals(c.Name, commandName, StringComparison.Ordinal));
+                    if (command == null)
+                        throw new InvalidOperationException(BuildCommandNotFoundMessage(commandName, CommandRegistry.DiscoverCommands()));
+                    string forbiddenReason = GetForbiddenReason(command);
+                    if (forbiddenReason != null)
+                        throw new InvalidOperationException(forbiddenReason);
+
+                    JObject parameters;
+                    if (!TryParseParameters(parametersJson, out parameters, out string parseError))
+                        throw new ArgumentException(parseError);
+
+                    object registry = GetPropertyValue(server, "JobRegistry");
+                    if (registry == null)
+                        throw new MissingMemberException("Unity Pipeline JobRegistry is unavailable.");
+                    MethodInfo tryCreate = registry.GetType().GetMethod("TryCreate", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                    if (tryCreate == null)
+                        throw new MissingMethodException("Unity Pipeline JobRegistry.TryCreate is unavailable.");
+                    // 先验证入口，避免创建无法执行的官方 queued 记录。
+                    MethodInfo runJob = server.GetType().BaseType?.GetMethods(BindingFlags.Instance | BindingFlags.NonPublic)
+                        .FirstOrDefault(m => m.Name == "RunJobDetached" && m.GetParameters().Length == 3);
+                    if (runJob == null)
+                        throw new MissingMethodException("Unity Pipeline RunJobDetached is unavailable.");
+                    Type requestType = runJob.GetParameters()[2].ParameterType;
+                    object request = Activator.CreateInstance(requestType, true);
+                    SetPropertyValue(request, "Command", commandName);
+                    SetPropertyValue(request, "Parameters", parameters);
+                    SetPropertyValue(request, "Job", true);
+                    SetPropertyValue(request, "Timeout", timeoutMs > 0 ? (int?)timeoutMs : null);
+                    object[] createArgs = { commandName, null };
+                    if (!(bool)tryCreate.Invoke(registry, createArgs))
+                        throw new InvalidOperationException("Unity Pipeline detached job queue is full.");
+                    object record = createArgs[1];
+                    // 非主线程命令可能在 Invoke 内同步阻塞；监控必须独立运行。
+                    Task officialJob = (Task)runJob.Invoke(server, new[] { record, command, request });
+                    await MonitorOfficialJob(officialJob, server, registry, record, jobId).ConfigureAwait(false);
+                    JObject status = ReadOfficialJobStatus(server, record);
+                    string state = status.Value<string>("state") ?? "failed";
+                    if (string.Equals(state, "completed", StringComparison.OrdinalIgnoreCase))
+                        PiUnityBridge.CompleteJson(jobId, SuccessCommandJson(jobId, commandName, status["result"]));
+                    else
+                        PiUnityBridge.CompleteJson(jobId, PiUnityJsonHelper.ErrorJson(jobId, OfficialJobErrorType(state, status), OfficialJobError(status)));
+                }
+                catch (Exception ex)
+                {
+                    Exception inner = ex is TargetInvocationException && ex.InnerException != null ? ex.InnerException : ex;
+                    PiUnityBridge.CompleteJson(jobId, PiUnityJsonHelper.ErrorJson(jobId, "command_error", FormatException(commandName, inner)));
+                }
+            });
+#else
+            PiUnityBridge.CompleteJson(jobId, PiUnityJsonHelper.ErrorJson(jobId, "pipeline_unavailable", "com.unity.pipeline is not installed or PI_UNITY_PIPELINE is not defined."));
+#endif
+        }
+#if PI_UNITY_PIPELINE
+        internal static CommandInfo FindCommand(string name)
+        {
+            return CommandRegistry.DiscoverCommands().FirstOrDefault(c => string.Equals(c.Name, name, StringComparison.Ordinal));
+        }
+
+        /// <summary>
+        /// 主线程同步调用。不走 server.ExecuteCommand：它对后台命令做 Task.Run + await，续体要回主线程，
+        /// 主线程在这里等它就会让 Editor 永久卡死。
+        /// </summary>
+        internal static object InvokeCommand(CommandInfo command, JObject parameters)
+        {
+            if (!TryBindParameters(command, parameters, out object[] values, out string error))
+                throw new ArgumentException(error);
+            object result = InvokeCommandMethod(command, values);
+            Task task = result as Task;
+            if (task == null)
+                return result;
+            if (!task.IsCompleted)
+                throw new InvalidOperationException("Pipeline command '" + command.Name + "' is asynchronous; use InvokeCommandAsync instead of blocking the Unity main thread.");
+            return CompletedTaskResult(task);
+        }
+
+        internal static async Task<object> InvokeCommandAsync(CommandInfo command, JObject parameters)
+        {
+            if (!TryBindParameters(command, parameters, out object[] values, out string error))
+                throw new ArgumentException(error);
+            object result = InvokeBoundCommand(command, values, FindLivePipelineServer(), 60000);
+            Task task = result as Task;
+            if (task == null)
+                return result;
+            await task;
+            return CompletedTaskResult(task);
+        }
+
+        private static object CompletedTaskResult(Task task)
+        {
+            task.GetAwaiter().GetResult();
+            PropertyInfo resultProperty = task.GetType().GetProperty("Result", BindingFlags.Instance | BindingFlags.Public);
+            return resultProperty == null ? null : resultProperty.GetValue(task, null);
+        }
+
+        private static object InvokeBoundCommand(CommandInfo command, object[] values, object server, int timeoutMs)
+        {
+            MethodInfo execute = server?.GetType().BaseType?.GetMethods(BindingFlags.Instance | BindingFlags.NonPublic)
+                .FirstOrDefault(m => m.Name == "ExecuteCommand" && m.GetParameters().Length == 3);
+            if (execute != null)
+                return execute.Invoke(server, new object[] { command, values, timeoutMs > 0 ? timeoutMs : 60000 });
+            return InvokeCommandMethod(command, values);
+        }
+
+        private static object InvokeCommandMethod(CommandInfo command, object[] values)
+        {
+            PropertyInfo target = typeof(CommandInfo).GetProperty("Target", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            return command.Method.Invoke(target?.GetValue(command, null), values);
+        }
+
+        private static object FindFieldOrPropertyValue(object value, string name)
+        {
+            if (value == null) return null;
+            FieldInfo field = value.GetType().GetField(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            if (field != null) return field.GetValue(value);
+            return GetPropertyValue(value, name);
+        }
+
+        private static object FindLivePipelineServer()
+        {
+            foreach (Assembly assembly in AppDomain.CurrentDomain.GetAssemblies())
+            {
+                Type startup = assembly.GetType("Unity.Pipeline.Editor.PipelineServerStartup", false);
+                PropertyInfo property = startup?.GetProperty("Server", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+                object server = property?.GetValue(null, null);
+                if (server != null) return server;
+            }
+            return null;
+        }
+
+        private static async Task MonitorOfficialJob(Task job, object server, object registry, object record, string jobId)
+        {
+            MethodInfo requestCancel = registry.GetType().GetMethod("RequestCancel", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            bool cancellationForwarded = false;
+            while (!job.IsCompleted)
+            {
+                if (!cancellationForwarded && PiUnityBridge.IsPipelineJobCancellationRequested(jobId) && requestCancel != null)
+                {
+                    try
+                    {
+                        object id = FindFieldOrPropertyValue(record, "Id");
+                        object[] cancelArgs = { id, null };
+                        cancellationForwarded = (bool)requestCancel.Invoke(registry, cancelArgs);
+                    }
+                    catch { }
+                }
+                if (ReferenceEquals(FindFieldOrPropertyValue(registry, "CurrentRunning"), record))
+                    ReportOfficialProgress(server, jobId);
+                await Task.WhenAny(job, Task.Delay(50)).ConfigureAwait(false);
+            }
+            await job.ConfigureAwait(false);
+        }
+
+        private static JObject ReadOfficialJobStatus(object server, object record)
+        {
+            MethodInfo build = server.GetType().BaseType?.GetMethod("BuildJobResponse", BindingFlags.Instance | BindingFlags.NonPublic);
+            if (build == null)
+                throw new MissingMethodException("Unity Pipeline BuildJobResponse is unavailable.");
+            string json = JsonConvert.SerializeObject(build.Invoke(server, new object[] { record, null }));
+            return JObject.Parse(json);
+        }
+
+        private static void ReportOfficialProgress(object server, string jobId)
+        {
+            try
+            {
+                PropertyInfo progressProperty = server.GetType().BaseType?.GetProperty("Progress", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                object progress = progressProperty?.GetValue(server, null);
+                object snapshot = progress?.GetType().GetProperty("Current", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)?.GetValue(progress, null);
+                if (snapshot == null) return;
+                Type type = snapshot.GetType();
+                if (!(bool)(type.GetField("HasReport")?.GetValue(snapshot) ?? false)) return;
+                JObject value = new JObject
+                {
+                    ["title"] = ToJToken(type.GetField("Title")?.GetValue(snapshot)),
+                    ["info"] = ToJToken(type.GetField("Info")?.GetValue(snapshot)),
+                    ["current"] = ToJToken(type.GetField("Current")?.GetValue(snapshot)),
+                    ["total"] = ToJToken(type.GetField("Total")?.GetValue(snapshot)),
+                    ["progress"] = ToJToken(type.GetField("Progress01")?.GetValue(snapshot)),
+                };
+                PiUnityBridge.ReportPipelineJobProgress(jobId, value.ToString(Formatting.None));
+            }
+            catch { }
+        }
+
+        private static object GetPropertyValue(object value, string name)
+        {
+            return value?.GetType().GetProperty(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)?.GetValue(value, null);
+        }
+
+        private static void SetPropertyValue(object target, string name, object value)
+        {
+            PropertyInfo property = target.GetType().GetProperty(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            if (property == null) throw new MissingMemberException(target.GetType().FullName, name);
+            property.SetValue(target, value, null);
+        }
+
+        private static string OfficialJobError(JObject status)
+        {
+            return status.Value<string>("errorDetails") ?? status.Value<string>("error") ?? "Pipeline detached job failed.";
+        }
+
+        private static string OfficialJobErrorType(string state, JObject status)
+        {
+            if (string.Equals(state, "canceled", StringComparison.OrdinalIgnoreCase)) return "canceled";
+            return string.IsNullOrEmpty(status.Value<string>("error")) ? "command_error" : status.Value<string>("error");
+        }
+#endif
+
 
 #if PI_UNITY_PIPELINE
         internal static bool IsCommandVisible(CommandInfo command)
@@ -326,8 +550,10 @@ namespace Pi.UnityHarness.Editor
             JToken schema = JValue.CreateNull();
             try
             {
-                string schemaText = JsonSchemaGenerator.GenerateCommandSchema(command);
-                if (!string.IsNullOrWhiteSpace(schemaText))
+                Type generatorType = typeof(CommandInfo).Assembly.GetType("Unity.Pipeline.Commands.JsonSchemaGenerator");
+                MethodInfo generate = generatorType?.GetMethod("GenerateCommandSchema", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+                string schemaText = generate?.Invoke(null, new object[] { command }) as string;
+                if (!string.IsNullOrEmpty(schemaText))
                     schema = JObject.Parse(schemaText);
             }
             catch (Exception ex)

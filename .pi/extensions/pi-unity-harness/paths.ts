@@ -18,6 +18,21 @@ export function detectWsl(): boolean {
     && Boolean(process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP || /microsoft/i.test(release()));
 }
 
+// WSL 只把 WSLENV 列出的变量带进 Windows 进程；这里只放非路径值（UNITY_PROJECT_PATH 已由 cliPath 转成 Windows 形式）。
+const WSL_FORWARDED_ENV = [
+  "PI_UNITY_CLIENT", "PI_UNITY_AGENT", "PI_UNITY_AGENT_ID", "PI_UNITY_SESSION_ID",
+  "PI_UNITY_HOST_SESSION_ID", "PI_UNITY_TRACE", "UNITY_PROJECT_PATH",
+];
+
+export function withWslEnvForwarding(env: NodeJS.ProcessEnv): string {
+  const listed = (env.WSLENV ?? "").split(":").filter(Boolean);
+  const names = new Set(listed.map((entry) => entry.split("/")[0]));
+  for (const key of WSL_FORWARDED_ENV) {
+    if (env[key] !== undefined && !names.has(key)) listed.push(key);
+  }
+  return listed.join(":");
+}
+
 export class PathBoundary {
   readonly platform: NodeJS.Platform;
   readonly wsl: boolean;
@@ -117,6 +132,7 @@ export class PathBoundary {
     };
     const path = project ?? env.UNITY_PROJECT_PATH;
     if (path) result.UNITY_PROJECT_PATH = this.cliPath(path, bin);
+    if (this.windowsCli(bin)) result.WSLENV = withWslEnvForwarding(result);
     return result;
   }
 }

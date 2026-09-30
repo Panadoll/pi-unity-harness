@@ -2,11 +2,11 @@ using System;
 using System.Text;
 #if PI_UNITY_PIPELINE
 using System.IO;
+using System.Reflection;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
-using Unity.Pipeline;
-using Unity.Pipeline.Editor.Commands;
+using Unity.Pipeline.Models;
 using UnityEditor;
 using UnityEngine;
 #endif
@@ -37,25 +37,19 @@ namespace Pi.UnityHarness.Editor
         internal static Func<bool> IsPlayingProvider = () => EditorApplication.isPlaying;
 
         /// <summary>
-        /// 可注入的“pipeline 测试运行中”检测委托（默认走 TestCommands.GetTestStatus）。
-        /// EditMode 测试本身运行在 pipeline 测试运行器中，若不注入会误判为 busy。
-        /// </summary>
+        /// 可注入的“pipeline 测试运行中”检测委托（默认读取 test_status 命令）。
         internal static Func<bool> PipelineTestRunRunningProvider = () => IsPipelineTestRunRunning();
 
-        /// <summary>
-        /// 可注入的测试段执行委托（默认走 TestCommands.RunTests）。测试替身可避免真实启动测试执行。
-        /// 签名与 TestCommands.RunTests 前 5 个参数一致（asyncTests 恒为 true）。
-        /// </summary>
-        internal static Func<string, string, string, bool, int, Task<TestExecutionResponse>> RunTestsInvoker;
+        /// <summary>可注入的测试段执行委托，返回官方公共响应基类。</summary>
+        internal static Func<string, string, string, bool, int, Task<CommandExecutionResponse>> RunTestsInvoker;
 
         private static Action<string, string> s_completeJson;
         private static bool s_updateRegistered;
         private static double s_lastPollAt;
         private static long s_noTestsFirstSeenUtcTicks;
-        private static Task<TestExecutionResponse> s_startTask;
+        private static Task<CommandExecutionResponse> s_startTask;
         private static string s_startSegment;
 #endif
-
         public static void StartRunTests(string requestId, string parametersJson, int timeoutMs, Action<string, string> completeJson)
         {
 #if PI_UNITY_PIPELINE
@@ -188,7 +182,7 @@ namespace Pi.UnityHarness.Editor
 
             if (IsTimedOut())
             {
-                try { TestCommands.CancelTests(); } catch { }
+                try { InvokePipelineCommand("cancel_tests", new JObject()); } catch { }
                 CompleteError("timeout", "run_tests exceeded requested timeout");
                 return;
             }
@@ -225,7 +219,15 @@ namespace Pi.UnityHarness.Editor
                 s_startSegment = segmentMode;
                 s_startTask = RunTestsInvoker != null
                     ? RunTestsInvoker(segmentMode, filter, filterType, includeExplicit, timeout)
-                    : TestCommands.RunTests(segmentMode, filter, filterType, includeExplicit, true, timeout);
+                    : InvokePipelineCommandAsync("run_tests", new JObject
+                    {
+                        ["mode"] = segmentMode,
+                        ["filter"] = filter,
+                        ["filter_type"] = filterType,
+                        ["include_explicit"] = includeExplicit,
+                        ["async_tests"] = true,
+                        ["timeout"] = timeout,
+                    });
                 if (s_startTask.IsCompleted)
                     HandleStartTask();
             }
@@ -237,53 +239,43 @@ namespace Pi.UnityHarness.Editor
 
         private static void HandleStartTask()
         {
-            Task<TestExecutionResponse> task = s_startTask;
+            Task<CommandExecutionResponse> task = s_startTask;
             string segment = s_startSegment;
             s_startTask = null;
             s_startSegment = null;
 
             if (task == null)
                 return;
-
             if (task.IsCanceled)
             {
                 CompleteError("cancelled", "run_tests " + segment + " segment start was cancelled");
                 return;
             }
-
             if (task.IsFaulted)
             {
                 Exception ex = task.Exception != null ? task.Exception.GetBaseException() : null;
                 CompleteError("command_error", "run_tests " + segment + " segment start failed: " + (ex != null ? ex.Message : "unknown error"));
                 return;
             }
-
-            TestExecutionResponse response = task.Result;
+            CommandExecutionResponse response = task.Result;
             if (response != null && !response.Success)
-            {
-                CompleteError("command_error", response.Error ?? response.Message ?? ("run_tests " + segment + " segment failed to start"));
-            }
+                CompleteError("command_error", response.Error ?? response.ErrorDetails ?? ("run_tests " + segment + " segment failed to start"));
         }
 
         private static void PollStatus()
         {
             JObject status;
-            string statusJson = TestCommands.GetTestStatus();
-            if (string.IsNullOrWhiteSpace(statusJson))
+            try
             {
-                status = new JObject { ["status"] = "no_tests" };
+                object raw = InvokePipelineCommand("test_status", new JObject());
+                status = raw as JObject ?? JObject.Parse(raw as string ?? "{}");
+                if (status == null || !status.HasValues)
+                    status = new JObject { ["status"] = "no_tests" };
             }
-            else
+            catch (Exception ex)
             {
-                try
-                {
-                    status = JObject.Parse(statusJson);
-                }
-                catch (Exception ex)
-                {
-                    CompleteError("command_error", "Invalid test_status JSON: " + ex.Message);
-                    return;
-                }
+                CompleteError("command_error", "Invalid test_status response: " + ex.Message);
+                return;
             }
 
             string state = ReadString(status, "status", "no_tests").ToLowerInvariant();
@@ -493,12 +485,10 @@ namespace Pi.UnityHarness.Editor
 
         private static bool IsPipelineTestRunRunning()
         {
-            string statusJson = TestCommands.GetTestStatus();
-            if (string.IsNullOrWhiteSpace(statusJson))
-                return false;
             try
             {
-                JObject status = JObject.Parse(statusJson);
+                object raw = InvokePipelineCommand("test_status", new JObject());
+                JObject status = raw as JObject ?? JObject.Parse(raw as string ?? "{}");
                 return string.Equals(ReadString(status, "status", string.Empty), "running", StringComparison.OrdinalIgnoreCase);
             }
             catch
@@ -507,6 +497,24 @@ namespace Pi.UnityHarness.Editor
             }
         }
 
+        private static Unity.Pipeline.Commands.CommandInfo RequirePipelineCommand(string name)
+        {
+            Unity.Pipeline.Commands.CommandInfo command = PiUnityPipelineCommandExecutor.FindCommand(name);
+            if (command == null)
+                throw new InvalidOperationException("Pipeline command not found: " + name);
+            return command;
+        }
+
+        private static object InvokePipelineCommand(string name, JObject parameters)
+        {
+            return PiUnityPipelineCommandExecutor.InvokeCommand(RequirePipelineCommand(name), parameters);
+        }
+
+        private static async Task<CommandExecutionResponse> InvokePipelineCommandAsync(string name, JObject parameters)
+        {
+            object raw = await PiUnityPipelineCommandExecutor.InvokeCommandAsync(RequirePipelineCommand(name), parameters);
+            return raw as CommandExecutionResponse ?? new CommandExecutionResponse { Success = true, Result = raw };
+        }
         private static void CompleteSuccess(JObject value)
         {
             string id = SessionState.GetString(SessionKey_PendingTestRequestId, string.Empty);

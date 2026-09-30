@@ -1,13 +1,11 @@
-use std::fs;
-use std::path::PathBuf;
-use std::process::Command;
+mod common;
 
-fn bin_exe() -> PathBuf {
-    env!("CARGO_BIN_EXE_pi-unity").into()
-}
+use std::fs;
+
+use common::cli;
 
 fn run_cli(args: &[&str]) -> (i32, String, String) {
-    let output = Command::new(bin_exe())
+    let output = cli()
         .args(args)
         .output()
         .expect("run pi-unity");
@@ -67,7 +65,7 @@ fn eval_missing_code_is_usage() {
 fn session_end_without_session_is_noop() {
     let dir = std::env::temp_dir().join(format!("pi-unity-session-{}", std::process::id()));
     let _ = fs::create_dir_all(&dir);
-    let output = Command::new(bin_exe())
+    let output = cli()
         .args(["session", "end"])
         .env("PI_UNITY_LOG_DIR", &dir)
         .output()
@@ -127,7 +125,7 @@ fn missing_project_json_exitcode_matches_process() {
 fn ping_does_not_register_hooks() {
     let home = std::env::temp_dir().join(format!("pi-unity-nohook-{}", std::process::id()));
     let _ = fs::create_dir_all(&home);
-    let output = Command::new(bin_exe())
+    let output = cli()
         .args(["ping"])
         .env("HOME", &home)
         .env("USERPROFILE", &home)
