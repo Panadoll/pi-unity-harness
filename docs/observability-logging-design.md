@@ -73,11 +73,21 @@
 
 ## 五、明确不做（本阶段）
 
-- L2 `pi-unity analyze` 聚合命令、L3 AHE 进化闭环——数据先积累，分析后做。
 - broker 请求帧加 `client` 字段（CLI 日志已覆盖归因，保持零协议变更）。
 - 宿主 transcript 导入器、宿主原生 hooks（除扩展一行 env 注入外）。
 
-## 六、验收标准
+## 六、L2 聚合分析
+
+可复现的只读聚合器位于 `scripts/analyze-logs.py`。它读取 `events-*.jsonl`（支持月度轮转文件），按 `errorType`、子命令、日期、失败率、耗时分位数和 `reconnects` 桶输出报告；默认日志根目录遵循 CLI 的 `PI_UNITY_LOG_DIR`、`USERPROFILE`、`HOME` 优先级，也可显式传入文件或目录。
+
+```bash
+python3 scripts/analyze-logs.py /path/to/.pi-unity/logs
+python3 scripts/analyze-logs.py /path/to/events-2026-09.jsonl --json
+```
+
+坏 JSON 行会被跳过并计入 `malformedRows`，非 `kind=call` 事件会被忽略并计入 `ignoredRows`。该工具不读取 trace 内容，不推断不存在的 session 关联；日志中的敏感字段仍按 L1 设计处理。
+
+## 七、验收标准
 
 1. 无 Unity 环境执行任意命令（含发现失败 exit 2），events 文件都有对应行且字段完整。
 2. 日志目录设为只读后，CLI 主流程行为与退出码完全不变（best-effort 验证）。
@@ -87,7 +97,7 @@
 6. `mark` 命令落 `skill.used` 事件；经 pi 扩展发起的调用行 `client = "pi-ext"`。
 7. `cargo test` 通过；logging 模块有纯单元测试（轮转命名、脱敏、行格式、session 解析优先级）。
 
-## 七、实现对照
+## 八、实现对照
 
 - `native/src/bin/pi_unity/logging.rs`：路径、轮转、session、mark、call 事件、trace recorder。
 - `native/src/bin/pi_unity/main.rs`：`main` / `handle_exit` 统一落行（含发现失败）；`--trace` 全局参数。
