@@ -23,6 +23,7 @@
                 audit_action_id: 1,
                 request_type: "execute_code".to_string(),
                 action: "execute_code".to_string(),
+                detached_job: false,
             }
         }
 
@@ -287,6 +288,7 @@
                 audit_action_id: 1,
                 request_type: "execute_code".to_string(),
                 action: "execute_code".to_string(),
+                detached_job: false,
             });
 
             broker.reap_timeouts();
@@ -312,6 +314,7 @@
                     audit_action_id: 1,
                     request_type: "execute_code".to_string(),
                     action: "execute_code".to_string(),
+                    detached_job: false,
                 },
             );
 
@@ -432,4 +435,297 @@
             assert_eq!(timestamp_utc(951_782_400_123), "2000-02-29T00:00:00.123Z");
             assert_eq!(date_utc(951_782_400_123), "2000-02-29");
         }
+
+        fn submit_job(broker: &Broker, name: &str, timeout: i64) -> Value {
+            let (tx, mut rx) = mpsc::channel(4);
+            *broker.writer.lock().unwrap() = Some(tx);
+            let line = format!(
+                r#"{{"id":"submit","type":"command_submit","token":"token","timeoutMs":5000,"payload":{{"name":"{name}","parametersJson":"{{\"token\":\"secret\"}}","executionTimeoutMs":{timeout}}}}}"#
+            );
+            broker.handle_line(line.as_bytes());
+            response_json(rx.try_recv().unwrap())
+        }
+
+        #[test]
+        fn detached_job_survives_disconnect_and_cancel_is_cooperative() {
+            let broker = test_broker("job_disconnect");
+            broker.set_managed_state(MANAGED_STATE_READY, 1, Some("editing".to_string()));
+            let submitted = submit_job(&broker, "eval_file", 300_000);
+            let job_id = submitted["result"]["jobId"].as_str().unwrap().to_string();
+            assert_eq!(submitted["result"]["state"], "queued");
+            assert!(broker.audit_directory().join(format!("{}.jsonl", date_utc(now_ms()))).exists());
+            let audit = fs::read_to_string(broker.audit_file_path()).unwrap();
+            assert!(!audit.contains("secret"));
+
+            broker.fail_all_pending("client_disconnected");
+            assert_eq!(broker.jobs.status(&job_id, now_ms()).unwrap()["state"], "queued");
+
+            let mut buffer = vec![0u8; 1024];
+            let mut required = 0;
+            assert_eq!(broker.poll_request(buffer.as_mut_ptr(), buffer.len() as i32, &mut required), 1);
+            assert_eq!(broker.job_try_start(&job_id), 1);
+            assert_eq!(broker.job_try_start("other"), 0);
+            let (tx, mut rx) = mpsc::channel(4);
+            *broker.writer.lock().unwrap() = Some(tx);
+            broker.handle_line(format!(r#"{{"id":"cancel","type":"command_cancel","token":"token","payload":{{"jobId":"{job_id}"}}}}"#).as_bytes());
+            let canceled = response_json(rx.try_recv().unwrap());
+            assert_eq!(canceled["result"]["state"], "running");
+            assert_eq!(canceled["result"]["cancellationRequested"], true);
+            assert_eq!(broker.job_cancellation_requested(&job_id), 1);
+
+            broker.complete_request(&job_id, br#"{"ok":false,"error_type":"canceled","error":"stopped"}"#.to_vec());
+            assert!(rx.try_recv().is_err());
+            let done = broker.jobs.status(&job_id, now_ms()).unwrap();
+            assert_eq!(done["state"], "canceled");
+            broker.complete_request(&job_id, br#"{"ok":true,"result":{"value":1}}"#.to_vec());
+            assert_eq!(broker.jobs.status(&job_id, now_ms()).unwrap()["state"], "canceled");
+        }
+
+        #[test]
+        fn queued_cancel_reload_and_result_limit_are_terminal() {
+            let broker = test_broker("job_terminal");
+            broker.set_managed_state(MANAGED_STATE_READY, 1, Some("editing".to_string()));
+            let queued = submit_job(&broker, "run_script", 300_000);
+            let queued_id = queued["result"]["jobId"].as_str().unwrap().to_string();
+            let (tx, mut rx) = mpsc::channel(4);
+            *broker.writer.lock().unwrap() = Some(tx);
+            broker.handle_line(format!(r#"{{"id":"cancel-q","type":"command_cancel","token":"token","payload":{{"jobId":"{queued_id}"}}}}"#).as_bytes());
+            assert_eq!(response_json(rx.try_recv().unwrap())["result"]["state"], "canceled");
+            assert_eq!(broker.job_try_start(&queued_id), 0);
+
+            let running = submit_job(&broker, "wait_for", 300_000);
+            let running_id = running["result"]["jobId"].as_str().unwrap().to_string();
+            let mut buffer = vec![0u8; 4096];
+            let mut required = 0;
+            assert_eq!(broker.poll_request(buffer.as_mut_ptr(), buffer.len() as i32, &mut required), 1);
+            assert_eq!(broker.job_try_start(&running_id), 1);
+            broker.set_managed_state(MANAGED_STATE_RELOADING, 2, Some("reloading".to_string()));
+            let interrupted = broker.jobs.status(&running_id, now_ms()).unwrap();
+            assert_eq!(interrupted["state"], "interrupted");
+            assert_eq!(interrupted["errorType"], "interrupted");
+
+            broker.set_managed_state(MANAGED_STATE_READY, 3, Some("editing".to_string()));
+            let large = submit_job(&broker, "eval_file", 300_000);
+            let large_id = large["result"]["jobId"].as_str().unwrap().to_string();
+            let mut buffer = vec![0u8; 4096];
+            let mut required = 0;
+            assert_eq!(broker.poll_request(buffer.as_mut_ptr(), buffer.len() as i32, &mut required), 1);
+            assert_eq!(broker.job_try_start(&large_id), 1);
+            broker.complete_request(&large_id, vec![b'x'; jobs::JOB_RESULT_LIMIT + 1]);
+            let failed = broker.jobs.status(&large_id, now_ms()).unwrap();
+            assert_eq!(failed["state"], "failed");
+            assert_eq!(failed["errorType"], "result_too_large");
+            let (tx, mut rx) = mpsc::channel(4);
+            *broker.writer.lock().unwrap() = Some(tx);
+            broker.handle_line(br#"{"id":"missing","type":"command_status","token":"token","payload":{"jobId":"missing"}}"#);
+            let missing = response_json(rx.try_recv().unwrap());
+            assert_eq!(missing["ok"], false);
+            assert_eq!(missing["error_type"], "job_not_found");
+        }
+
+
+        #[test]
+        fn job_queue_timeout_and_retention_are_bounded() {
+            let broker = test_broker("job_bounds");
+            broker.set_managed_state(MANAGED_STATE_READY, 1, Some("editing".to_string()));
+            for _ in 0..jobs::JOB_QUEUE_LIMIT { assert_eq!(submit_job(&broker, "eval_file", 300_000)["ok"], true); }
+            let (tx, mut rx) = mpsc::channel(4);
+            *broker.writer.lock().unwrap() = Some(tx);
+            broker.handle_line(br#"{"id":"full","type":"command_submit","token":"token","payload":{"name":"eval_file","parametersJson":"{}"}}"#);
+            let full = response_json(rx.try_recv().unwrap());
+            assert_eq!(full["ok"], false);
+            assert_eq!(full["error_type"], "queue_full");
+        }
+
+        #[test]
+        fn queued_execution_timeout_and_retention_are_queryable_then_dropped() {
+            let store = jobs::test_store();
+            let submitted = store.submit("client", &json!({"payload": {"name": "wait_for", "parametersJson": "{}", "executionTimeoutMs": 1}}), 1_000, 7).unwrap();
+            let job_id = submitted.snapshot["jobId"].as_str().unwrap();
+            let timed_out = store.status(job_id, 1_002).unwrap();
+            assert_eq!(timed_out["state"], "failed");
+            assert_eq!(timed_out["errorType"], "timeout");
+            assert!(store.status(job_id, 1_002 + jobs::JOB_RETENTION_MS + 1).is_none());
+        }
+        fn poll_job_line(broker: &Broker) -> String {
+            let mut buffer = vec![0u8; 8192];
+            let mut required = 0;
+            assert_eq!(
+                broker.poll_request(buffer.as_mut_ptr(), buffer.len() as i32, &mut required),
+                1
+            );
+            String::from_utf8(buffer[..required as usize].to_vec()).unwrap()
+        }
+
+        #[test]
+        fn buffered_job_blocks_next_dispatch_until_it_finishes() {
+            let broker = test_broker("job_serial");
+            broker.set_managed_state(MANAGED_STATE_READY, 1, Some("editing".to_string()));
+            let first = submit_job(&broker, "eval_file", 300_000);
+            let second = submit_job(&broker, "run_script", 300_000);
+            let first_id = first["result"]["jobId"].as_str().unwrap().to_string();
+            let second_id = second["result"]["jobId"].as_str().unwrap().to_string();
+
+            let delivered = poll_job_line(&broker);
+            assert!(delivered.contains(&first_id));
+            assert_eq!(broker.poll_request(std::ptr::null_mut(), 0, std::ptr::null_mut()), 0);
+            assert_eq!(broker.job_try_start(&first_id), 1);
+            assert_eq!(broker.job_try_start(&second_id), 0);
+            assert_eq!(broker.jobs.status(&second_id, now_ms()).unwrap()["state"], "queued");
+
+            broker.complete_request(&first_id, br#"{"ok":true,"result":{"value":1}}"#.to_vec());
+            let next = poll_job_line(&broker);
+            assert!(next.contains(&second_id));
+            assert!(!next.contains("\"value\":1"));
+            assert_eq!(broker.job_try_start(&second_id), 1);
+        }
+
+        #[test]
+        fn queued_cancel_behind_buffered_job_is_terminal_without_dispatch() {
+            let store = jobs::test_store();
+            let first = store
+                .submit(
+                    "client",
+                    &json!({"payload": {"name": "eval_file", "parametersJson": "{}"}}),
+                    3_000,
+                    1,
+                )
+                .unwrap();
+            let second = store
+                .submit(
+                    "client",
+                    &json!({"payload": {"name": "run_script", "parametersJson": "{}"}}),
+                    3_001,
+                    2,
+                )
+                .unwrap();
+            let first_id = first.snapshot["jobId"].as_str().unwrap().to_string();
+            let second_id = second.snapshot["jobId"].as_str().unwrap().to_string();
+            assert_eq!(store.take_dispatchable(3_001).unwrap().id, first_id);
+            let canceled = store.cancel(&second_id, 3_002).unwrap();
+            assert_eq!(canceled["state"], "canceled");
+            assert!(store.take_dispatchable(3_002).is_none());
+            assert_eq!(store.status(&second_id, 3_002).unwrap()["state"], "canceled");
+            assert_eq!(store.try_start(&first_id, 3_002), true);
+        }
+
+
+        #[test]
+        fn buffered_timeout_is_terminal_and_releases_the_slot() {
+            let store = jobs::test_store();
+            let first = store
+                .submit(
+                    "client",
+                    &json!({"payload": {"name": "wait_for", "parametersJson": "{}", "executionTimeoutMs": 10}}),
+                    1_000,
+                    1,
+                )
+                .unwrap();
+            let first_id = first.snapshot["jobId"].as_str().unwrap().to_string();
+            let delivered = store.take_dispatchable(1_000).unwrap();
+            assert_eq!(delivered.id, first_id);
+            let second = store
+                .submit(
+                    "client",
+                    &json!({"payload": {"name": "eval_file", "parametersJson": "{}"}}),
+                    1_001,
+                    2,
+                )
+                .unwrap();
+            let second_id = second.snapshot["jobId"].as_str().unwrap().to_string();
+            assert!(store.take_dispatchable(1_005).is_none());
+
+            let timed_out = store.status(&first_id, 1_011).unwrap();
+            assert_eq!(timed_out["state"], "failed");
+            assert_eq!(timed_out["errorType"], "timeout");
+            assert_eq!(store.try_start(&first_id, 1_011), false);
+
+            let next = store.take_dispatchable(1_011).unwrap();
+            assert_eq!(next.id, second_id);
+            assert_eq!(store.try_start(&second_id, 1_011), true);
+        }
+
+        #[test]
+        fn running_timeout_stays_running_until_the_real_return() {
+            let store = jobs::test_store();
+            let submitted = store
+                .submit(
+                    "client",
+                    &json!({"payload": {"name": "wait_for", "parametersJson": "{}", "executionTimeoutMs": 5}}),
+                    2_000,
+                    3,
+                )
+                .unwrap();
+            let job_id = submitted.snapshot["jobId"].as_str().unwrap().to_string();
+            assert!(store.take_dispatchable(2_000).is_some());
+            assert!(store.try_start(&job_id, 2_000));
+            let waiting = store.status(&job_id, 2_006).unwrap();
+            assert_eq!(waiting["state"], "running");
+            assert_eq!(waiting["cancellationRequested"], true);
+            assert!(store.take_dispatchable(2_006).is_none());
+            assert!(store.complete(
+                &job_id,
+                br#"{"ok":true,"result":{"late":true}}"#,
+                2_007
+            ));
+            let done = store.status(&job_id, 2_007).unwrap();
+            assert_eq!(done["state"], "failed");
+            assert_eq!(done["errorType"], "timeout");
+            assert!(done["result"].is_null());
+        }
+
+        #[test]
+        fn repeated_cancel_and_unknown_job_keep_correlation() {
+            let broker = test_broker("job_cancel_corr");
+            broker.set_managed_state(MANAGED_STATE_READY, 1, Some("editing".to_string()));
+            let submitted = submit_job(&broker, "eval_file", 300_000);
+            let job_id = submitted["result"]["jobId"].as_str().unwrap().to_string();
+            let (tx, mut rx) = mpsc::channel(4);
+            *broker.writer.lock().unwrap() = Some(tx);
+            broker.handle_line(
+                format!(
+                    r#"{{"id":"cancel-1","type":"command_cancel","token":"token","payload":{{"jobId":"{job_id}"}}}}"#
+                )
+                .as_bytes(),
+            );
+            let first = response_json(rx.try_recv().unwrap());
+            assert_eq!(first["reply_to"], "cancel-1");
+            assert_eq!(first["result"]["state"], "canceled");
+            broker.handle_line(
+                format!(
+                    r#"{{"id":"cancel-2","type":"command_cancel","token":"token","payload":{{"jobId":"{job_id}"}}}}"#
+                )
+                .as_bytes(),
+            );
+            let second = response_json(rx.try_recv().unwrap());
+            assert_eq!(second["reply_to"], "cancel-2");
+            assert_eq!(second["result"]["state"], "canceled");
+            assert_eq!(second["result"]["errorType"], "canceled");
+            broker.handle_line(
+                br#"{"id":"gone","type":"command_status","token":"token","payload":{"jobId":"missing"}}"#,
+            );
+            let missing = response_json(rx.try_recv().unwrap());
+            assert_eq!(missing["reply_to"], "gone");
+            assert_eq!(missing.get("id"), None);
+            assert_eq!(missing["error_type"], "job_not_found");
+        }
+
+        #[test]
+        fn oversized_submit_is_rejected_without_queueing() {
+            let broker = test_broker("job_submit_size");
+            broker.set_managed_state(MANAGED_STATE_READY, 1, Some("editing".to_string()));
+            let (tx, mut rx) = mpsc::channel(4);
+            *broker.writer.lock().unwrap() = Some(tx);
+            let padding = "x".repeat(REQUEST_BUFFER_LIMIT);
+            let line = format!(
+                r#"{{"id":"big","type":"command_submit","token":"token","payload":{{"name":"eval_file","parametersJson":"{padding}"}}}}"#
+            );
+            broker.handle_line(line.as_bytes());
+            let rejected = response_json(rx.try_recv().unwrap());
+            assert_eq!(rejected["reply_to"], "big");
+            assert_eq!(rejected["error_type"], "request_too_large");
+            assert_eq!(broker.jobs.active_len(), 0);
+        }
+
+
 

@@ -12,6 +12,74 @@ use super::output::format_safe_output_with_opts;
 use super::schema::{self, ViewOptions};
 use super::usage;
 
+const JOB_CAPABILITY: &str = "pipeline-jobs-v1";
+const PROGRESS_CAPABILITY: &str = "pipeline-progress-v1";
+const DEFAULT_JOB_TIMEOUT_MS: u64 = 300_000;
+const MAX_JOB_TIMEOUT_MS: u64 = 86_400_000;
+
+fn require_job_capabilities(client: &HarnessClient, progress: bool) -> Result<(), CliError> {
+    let caps = client.capabilities();
+    let missing_jobs = !caps.iter().any(|c| c == JOB_CAPABILITY);
+    let missing_progress = progress && !caps.iter().any(|c| c == PROGRESS_CAPABILITY);
+    if missing_jobs || missing_progress {
+        let needed = if missing_jobs && missing_progress {
+            format!("{JOB_CAPABILITY},{PROGRESS_CAPABILITY}")
+        } else if missing_jobs {
+            JOB_CAPABILITY.to_string()
+        } else {
+            PROGRESS_CAPABILITY.to_string()
+        };
+        return Err(CliError::Broker {
+            code: "capability_unsupported".to_string(),
+            message: format!(
+                "当前 broker 没有 {needed}，不能提交或查询 detached job（已拒绝，未等待）"
+            ),
+        });
+    }
+    Ok(())
+}
+
+fn validate_job_timeout(ms: u64) -> Result<(), CliError> {
+    if (1..=MAX_JOB_TIMEOUT_MS).contains(&ms) {
+        Ok(())
+    } else {
+        Err(usage::usage_error(
+            format!("--job-timeout 必须在 1..{MAX_JOB_TIMEOUT_MS}，收到 {ms}"),
+            &["pi-unity pipeline <name> --job --job-timeout 300000"],
+        ))
+    }
+}
+
+/// --job-timeout 只能和 --job 一起出现，且必须在执行超时范围内。连接前调用。
+pub(crate) fn validate_pipeline_job_flags(
+    job: bool,
+    job_timeout: Option<u64>,
+) -> Result<(), CliError> {
+    if job_timeout.is_some() && !job {
+        Err(usage::usage_error(
+            "--job-timeout 只能和 --job 一起用",
+            &["pi-unity pipeline <name> --job --job-timeout 300000"],
+        ))
+    } else if let Some(ms) = job_timeout.filter(|_| job) {
+        validate_job_timeout(ms)
+    } else {
+        Ok(())
+    }
+}
+
+/// 提交 payload。执行预算只在这里，不进入请求 timeoutMs。
+pub(crate) fn job_submit_payload(
+    name: &str,
+    parameters_json: &str,
+    execution_timeout_ms: u64,
+) -> Value {
+    json!({
+        "name": name,
+        "parametersJson": parameters_json,
+        "executionTimeoutMs": execution_timeout_ms,
+    })
+}
+
 pub(crate) fn parse_param_pairs(
     pairs: &[String],
     explicit_json: Option<&str>,
@@ -431,6 +499,93 @@ async fn send_pipeline_command(
     .await
 }
 
+async fn send_pipeline_job(
+    client: &mut HarnessClient,
+    name: &str,
+    params: Value,
+    submission_timeout_ms: u64,
+    execution_timeout_ms: u64,
+    ctx: &FormatCtx<'_>,
+) -> Result<String, CliError> {
+    require_job_capabilities(client, true)?;
+    validate_job_timeout(execution_timeout_ms)?;
+    let params_json_str = serde_json::to_string(&params).unwrap_or_else(|_| "{}".to_string());
+    recorder_job(ctx, name);
+    // timeoutMs 只覆盖提交往返。执行预算在 payload，不拿提交超时去等 job 结束。
+    send_and_format(
+        client,
+        "command_submit",
+        job_submit_payload(name, &params_json_str, execution_timeout_ms),
+        submission_timeout_ms,
+        ctx,
+        &format!("pi-unity pipeline {name} --job --full"),
+        |raw| schema::shape_job(raw, ctx.opts),
+    )
+    .await
+}
+
+fn recorder_job(ctx: &FormatCtx<'_>, name: &str) {
+    ctx.recorder
+        .record("pipeline_job", &format!("Submitting detached job {name}"));
+}
+
+async fn send_pipeline_job_query(
+    client: &mut HarnessClient,
+    action: &PipelineJobAction,
+    job_id: &str,
+    timeout_ms: u64,
+    ctx: &FormatCtx<'_>,
+) -> Result<String, CliError> {
+    if job_id.trim().is_empty() {
+        return Err(usage::usage_error(
+            "pipeline-job 需要 jobId",
+            &[
+                "pi-unity pipeline-job status <jobId>",
+                "pi-unity pipeline-job cancel <jobId>",
+                "pi-unity pipeline-job progress <jobId>",
+            ],
+        ));
+    }
+    let (req_type, verb, needs_progress) = match action {
+        PipelineJobAction::Status => ("command_status", "status", false),
+        PipelineJobAction::Cancel => ("command_cancel", "cancel", false),
+        PipelineJobAction::Progress => ("command_progress", "progress", true),
+    };
+    require_job_capabilities(client, needs_progress)?;
+    ctx.recorder
+        .record("pipeline_job", &format!("{verb} job {job_id}"));
+    let hint = format!("pi-unity pipeline-job {verb} {job_id} --full");
+    let raw = client
+        .send_request(req_type, json!({ "jobId": job_id }), timeout_ms)
+        .await?;
+    let state = raw.get("state").and_then(Value::as_str).unwrap_or("");
+    // 查询已成功。终态失败不能再包进 ok:true，否则调用方会把 job 失败当成执行成功。
+    if !matches!(action, PipelineJobAction::Progress) && schema::job_execution_failed(state) {
+        let shaped = schema::shape_job(&raw, ctx.opts);
+        let error = shaped
+            .get("error")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("job {state}"));
+        let error_type = shaped
+            .get("errorType")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("job_failed");
+        return Err(CliError::JobFinished {
+            code: error_type.to_string(),
+            message: error,
+            snapshot: shaped,
+        });
+    }
+    let shaped = match action {
+        PipelineJobAction::Progress => schema::shape_job_progress(&raw),
+        _ => schema::shape_job(&raw, ctx.opts),
+    };
+    Ok(emit_shaped(ctx, shaped, &hint))
+}
+
 pub(crate) async fn execute_harness_command(
     command: Commands,
     client: &mut HarnessClient,
@@ -649,11 +804,20 @@ pub(crate) async fn execute_harness_command(
 
         Commands::Pipeline(args) => {
             let param_obj = parse_param_pairs(&args.params, args.params_json.as_deref())?;
-            recorder.record(
-                "pipeline",
-                &format!("Executing pipeline command {}", args.name),
-            );
-            send_pipeline_command(client, &args.name, param_obj, args.timeout, &ctx).await
+            if args.job {
+                let execution = args.job_timeout.unwrap_or(DEFAULT_JOB_TIMEOUT_MS);
+                send_pipeline_job(client, &args.name, param_obj, args.timeout, execution, &ctx).await
+            } else {
+                recorder.record(
+                    "pipeline",
+                    &format!("Executing pipeline command {}", args.name),
+                );
+                send_pipeline_command(client, &args.name, param_obj, args.timeout, &ctx).await
+            }
+        }
+
+        Commands::PipelineJob(args) => {
+            send_pipeline_job_query(client, &args.action, &args.job_id, args.timeout, &ctx).await
         }
 
         Commands::RunTests(args) => {
@@ -766,6 +930,7 @@ mod tests {
         }
         fs::write(path, contents).unwrap();
     }
+
 
     #[test]
     fn sync_skill_dir_installs_and_creates_manifest() {

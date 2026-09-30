@@ -2,7 +2,7 @@
 name: pi-unity
 description: >
   通过 pi-unity CLI 驱动已打开的 Unity Editor（status、eval、compile、
-  snapshot、pipeline、run-tests、observe、capture、timeline）。Unity 已打开且
+  snapshot、pipeline、pipeline-job、run-tests、observe、capture、timeline）。Unity 已打开且
   需要检查场景、跑 C#、编译、测试或截 PlayMode 时使用。不要用本 skill 改
   pi-unity-harness 源码树。
 ---
@@ -24,6 +24,8 @@ description: >
 | `pi-unity compile` | 编译并等到 `ready` | [compile.md](references/compile.md) |
 | `pi-unity list-commands` | 列出 `[CliCommand]` | [pipeline.md](references/pipeline.md) |
 | `pi-unity pipeline <name>` | 跑一条 pipeline | [pipeline.md](references/pipeline.md) |
+| `pi-unity pipeline <name> --job` | 提交后立即返回 jobId | [pipeline.md](references/pipeline.md) |
+| `pi-unity pipeline-job status <jobId>` | 查询、取消或读进度 | [pipeline.md](references/pipeline.md) |
 | `pi-unity run-tests` | EditMode / PlayMode | [run-tests.md](references/run-tests.md) |
 | `pi-unity observe` | 多帧画面 | [observe.md](references/observe.md) |
 | `pi-unity capture` | 单张截图 | [capture.md](references/capture.md) |
@@ -49,6 +51,8 @@ pi-unity pipeline input_drag -p from_x=640 -p from_y=200 -p to_x=640 -p to_y=500
 2. 非 UI 或自定义状态：用 `snapshot` / `eval` 探针。
 
 只有视觉 mismatch 或自绘渲染 UI 对不上时才用 `observe` / `capture`，不要每步截图读图。图写到 `Temp/PiUnityHarness/Captures/`，stdout 只给路径，不要把 Base64 倒进终端。`embed:false` 之类标记只是建议，宿主不强制拦截内联图片，不要依赖它省 token。
+
+Unity 6 官方 0.8 与 compat 0.6 命令名不同，以 `list-commands` 为准。官方 Code Reload 是 `codereload_status` / `cleanup_codereload`；compat 才是 `hotreload_status` / `cleanup_hotreload`。长条件若提供 `wait_for`，参数用 `-p async=true`，再查 `wait_status` / `wait_cancel`（`wait_id` 不是 jobId）。console 计数优先用 `console_status`（若 list-commands 提供）。官方 `eval_file` 只接受 `.cs`；Harness 多行 REPL 仍是 `pi-unity eval -f`。`--job-timeout` 必须和 `--job` 一起用。
 
 ## Verify loop
 

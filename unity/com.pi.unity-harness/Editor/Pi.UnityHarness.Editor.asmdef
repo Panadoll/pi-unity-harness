@@ -5,6 +5,7 @@
     "Pi.UnityHarness.Runtime.Vision",
     "Unity.Pipeline",
     "Unity.Pipeline.Editor",
+    "Unity.Pipeline.Attributes",
     "Unity.Nuget.Newtonsoft-Json",
     "UnityEngine.UI",
     "UnityCLILoop.ToolContracts",
@@ -31,7 +32,7 @@
   "versionDefines": [
     {
       "name": "com.unity.pipeline",
-      "expression": "[0.2.0-exp.2,0.7.0)",
+      "expression": "[0.7.0,0.9.0)",
       "define": "PI_UNITY_PIPELINE"
     },
     {

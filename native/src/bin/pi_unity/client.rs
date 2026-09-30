@@ -35,6 +35,12 @@ pub(crate) enum CliError {
     Broker { code: String, message: String },
     /// 管道忙（ERROR_PIPE_BUSY / 231）：单客户端架构下已有客户端占用。
     Busy(String),
+    /// 查询成功，但 job 已终态失败。snapshot 是已整形的 job 视图。
+    JobFinished {
+        code: String,
+        message: String,
+        snapshot: Value,
+    },
 }
 
 impl CliError {
@@ -47,7 +53,8 @@ impl CliError {
             | CliError::Other(_)
             | CliError::ProtocolMismatch { .. }
             | CliError::Broker { .. }
-            | CliError::Busy(_) => 1,
+            | CliError::Busy(_)
+            | CliError::JobFinished { .. } => 1,
         }
     }
 
@@ -61,6 +68,7 @@ impl CliError {
             CliError::ProtocolMismatch { .. } => "protocol_mismatch".to_string(),
             CliError::Broker { code, .. } => code.clone(),
             CliError::Busy(_) => "busy".to_string(),
+            CliError::JobFinished { code, .. } => code.clone(),
         }
     }
 
@@ -74,6 +82,7 @@ impl CliError {
             CliError::ProtocolMismatch { .. } => "Protocol version mismatch",
             CliError::Broker { message, .. } => message,
             CliError::Busy(msg) => msg,
+            CliError::JobFinished { message, .. } => message,
         }
     }
 
@@ -92,9 +101,8 @@ impl CliError {
             CliError::ExecutionFailed(_)
             | CliError::Other(_)
             | CliError::ProtocolMismatch { .. }
-            | CliError::Broker { .. } => {
-                Vec::new()
-            }
+            | CliError::Broker { .. }
+            | CliError::JobFinished { .. } => Vec::new(),
         }
     }
 }
@@ -135,6 +143,7 @@ pub(crate) struct HarnessClient {
     persistent: bool,
     connection: Option<BufReader<NamedPipeClient>>,
     handshake_done: bool,
+    capabilities: Vec<String>,
 }
 
 impl HarnessClient {
@@ -160,6 +169,7 @@ impl HarnessClient {
             persistent: false,
             connection: None,
             handshake_done: false,
+            capabilities: Vec::new(),
         })
     }
 
@@ -179,6 +189,7 @@ impl HarnessClient {
     pub(crate) fn disconnect(&mut self) {
         self.connection = None;
         self.handshake_done = false;
+        self.capabilities.clear();
     }
 
     pub(crate) fn is_connected(&self) -> bool {
@@ -193,9 +204,15 @@ impl HarnessClient {
         {
             self.connection = None;
             self.handshake_done = false;
+            self.capabilities.clear();
         }
         self.bridge = next;
         Ok(())
+    }
+
+    /// 握手结果里的 capability 字符串。未握手或旧 broker 省略该字段时为空。
+    pub(crate) fn capabilities(&self) -> &[String] {
+        &self.capabilities
     }
 
     pub(crate) async fn handshake(&mut self) -> Result<(), CliError> {
@@ -236,6 +253,17 @@ impl HarnessClient {
                 actual: version,
             });
         }
+        self.capabilities = caps
+            .get("capabilities")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
         if self.persistent {
             self.handshake_done = true;
         }

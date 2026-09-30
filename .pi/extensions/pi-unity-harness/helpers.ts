@@ -41,12 +41,40 @@ export const PIPELINE_TOOL_EXCLUDE = new Set([
 export const PIPELINE_SHORTCUT_COMMANDS = new Set([
   "list_tests",
   "reload_file",
-  "reload_file_override",
+  "reload_file_editor_interpreter",
+  "reload_file_player_interpreter",
+  "codereload_status",
 ]);
+
+/** 动态 unity_* 不得覆盖这些静态工具。官方 eval_file 走 unity_pipeline_eval_file。 */
+export const RESERVED_PIPELINE_TOOL_NAMES = new Set([
+  "unity_discover",
+  "unity_ping",
+  "unity_status",
+  "unity_snapshot",
+  "unity_eval",
+  "unity_eval_file",
+  "unity_recompile",
+  "unity_list_commands",
+  "unity_pipeline",
+  "unity_pipeline_job",
+  "unity_run_tests",
+  "unity_observe",
+  "unity_capture",
+  "unity_timeline",
+]);
+
+export function pipelineDynamicToolName(commandName: string): string {
+  const normalized = normalizePipelineToolName(commandName);
+  if (commandName === "eval_file" || RESERVED_PIPELINE_TOOL_NAMES.has(normalized)) {
+    return `unity_pipeline_${commandName.replace(/[^a-zA-Z0-9_]/g, "_").toLowerCase()}`;
+  }
+  return normalized;
+}
 
 export interface TypeBoxLike {
   Unsafe(schema: any): any;
-  Object(properties: Record<string, any>): any;
+  Object(properties: Record<string, any>, options?: { required?: string[] }): any;
   Optional(schema: any): any;
   Boolean(options?: { description?: string }): any;
   Number(options?: { description?: string }): any;
@@ -77,8 +105,12 @@ export function schemaToTypeBox(
   schema: Record<string, unknown> | null | undefined,
   parameters: PipelineParameterInfo[] | undefined,
 ): any {
+  const required = (parameters ?? []).filter((parameter) => parameter.required).map((parameter) => parameter.name);
   if (schema && typeof schema === "object" && schema.type === "object" && schema.properties && typeof schema.properties === "object") {
-    return TypeApi.Unsafe(schema as any);
+    const withRequired = required.length > 0 && !Array.isArray(schema.required)
+      ? { ...schema, required }
+      : schema;
+    return TypeApi.Unsafe(withRequired as any);
   }
 
   const properties: Record<string, any> = {};
@@ -86,7 +118,7 @@ export function schemaToTypeBox(
     const item = parameterToTypeBox(TypeApi, parameter);
     properties[parameter.name] = parameter.required ? item : TypeApi.Optional(item);
   }
-  return TypeApi.Object(properties);
+  return TypeApi.Object(properties, required.length > 0 ? { required } : undefined);
 }
 
 export function isVisiblePipelineCommand(
@@ -117,7 +149,7 @@ export function pipelineCommandSummary(
     name: command.name,
     policy: command.policy ?? { mutability: "write", source: "default" },
     shortcut,
-    shortcutTool: shortcut ? normalizePipelineToolName(command.name) : null,
+    shortcutTool: shortcut ? pipelineDynamicToolName(command.name) : null,
     description: command.description,
     mainThreadRequired: command.mainThreadRequired,
     parameters: command.parameters ?? [],

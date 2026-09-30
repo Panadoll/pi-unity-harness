@@ -3,6 +3,7 @@
     "rootNamespace": "Unity.Pipeline",
     "references": [
         "Unity.InputSystem",
+        "Unity.Pipeline.Attributes",
         "Unity.Pipeline.IlInterpreter"
     ],
     "includePlatforms": [],

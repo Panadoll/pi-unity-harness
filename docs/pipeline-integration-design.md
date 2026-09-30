@@ -1,8 +1,8 @@
 # com.unity.pipeline 集成设计与开发计划
 
 > 状态：实现稿 v1（Phase 0-3 已落地，Phase 4 可选未排期）
-> 目标包版本：`com.unity.pipeline@0.6.0-exp.1`（experimental，API 可能变动；asmdef 兼容范围 `[0.2.0-exp.2,0.7.0)`）
-> 验证项目：本地 Unity 工程（Unity 6000.5.0f1，已安装 embedded `com.unity.pipeline@0.6.0-exp.1`）
+> 目标包版本：`com.unity.pipeline@0.8.0-exp.1`（experimental，API 可能变动；Unity 6 官方兼容范围 `[0.2.0-exp.2,0.9.0)`）
+> 验证项目：本地 Unity 工程（Unity 6000.5.0f1，目标安装 `com.unity.pipeline@0.8.0-exp.1`）
 
 ## 1. 背景与目标
 
@@ -13,12 +13,12 @@
 | 传输 | HTTP（Editor 7800-7849 / Player 7900-7949），**域重载时 server 销毁** | Rust native broker + named pipe，**跨域重载存活** |
 | Unity 版本 | 官方仅 6000.0+；非 6 用仓库内 `com.pi.pipeline.compat` | 2021.3+ |
 | 命令体系 | `[CliCommand]` 属性 + TypeCache 自动发现 + 参数 schema | 硬编码 switch（eval / recompile / status / ping） |
-| 独有能力 | 测试运行、play mode 控制、热重载（in-place ILPostProcessor + override）、dev Player 控制 | 阻塞式跨重载 recompile、后台消息泵唤醒、主线程 eval + validate + coroutine pump |
+| 独有能力 | 测试运行、play mode 控制、Code Reload（官方 0.8：`codereload_status` / `cleanup_codereload`；compat 0.6 仍是 `hotreload_status` / `cleanup_hotreload`，不要混称）、dev Player 控制 | 阻塞式跨重载 recompile、后台消息泵唤醒、主线程 eval + validate + coroutine pump |
 
-> **compat fork**：`unity/com.pi.pipeline.compat` 派生自 `com.unity.pipeline@0.6.0-exp.1`（Companion License）。
-> `/unity-install` 按工程 Unity 主版本选择：`>=6000` → 官方；否则 → 把 compat 复制为 embedded `Packages/com.unity.pipeline`
-> （Unity 2022 的 versionDefines 只认 embedded/registry 包，不认 file: 指向工程外的 local 包）。
-> 两包程序集名同为 `Unity.Pipeline`，**不可同装**。compat 在 Unity 6+ 完整保留官方全部特性（含 Roslyn eval / `run_script`、In-place HotReload、ILPostProcessor CodeGen、IlInterpreter 等）；在 Unity 2021.3/2022.x 下通过条件编译抹平 API 差异并提供兼容降级。
+> **compat fork**：`unity/com.pi.pipeline.compat` 仍派生自 `com.unity.pipeline@0.6.0-exp.1`，仅服务 Unity 2021.3/2022.x；Unity 6 工程必须使用官方 `0.8.0-exp.1`。
+> `/unity-install` 按工程 Unity 主版本选择：`>=6000` → 官方 `0.8.0-exp.1`；否则 → 把 compat 复制为 embedded `Packages/com.unity.pipeline`
+> （Unity 2022 的 versionDefines 只认 embedded/registry 包，不认 `file:` 指向工程外的 local 包）。
+> 两包程序集名同为 `Unity.Pipeline`，**不可同装**。compat 与官方包保持独立版本线，不宣称已同步 0.8 API。
 
 > ⚠️ **平台边界**：harness 当前仅支持 **Windows x64 Editor**——native broker 为
 > Windows 条件编译（`native/src/lib.rs` `#[cfg(windows)]`），插件仅提供
@@ -81,11 +81,11 @@ harness 必须在**未安装** pipeline 的项目（含 2021.3）继续工作，
   "includePlatforms": ["Editor"],
   // 缺失时被 Unity 静默忽略；Newtonsoft 引用是必须的——pipeline 自己的 asmdef
   // 也直接引用 Unity.Nuget.Newtonsoft-Json，executor 使用 JObject/JsonConvert 同理
-  "references": ["Unity.Pipeline", "Unity.Pipeline.Editor", "Unity.Nuget.Newtonsoft-Json"],
+  "references": ["Unity.Pipeline", "Unity.Pipeline.Editor", "Unity.Pipeline.Attributes", "Unity.Nuget.Newtonsoft-Json"],
   "versionDefines": [
     // 注意：裸版本 "0.2" 在 Unity 版本表达式里意为 >= 0.2.0，会匹配未来 0.3/1.0，
     // 重新暴露 exp API 破坏风险。用半开区间锁定到已验证的版本线：
-    { "name": "com.unity.pipeline", "expression": "[0.2.0-exp.2,0.7.0)", "define": "PI_UNITY_PIPELINE" }
+    { "name": "com.unity.pipeline", "expression": "[0.7.0,0.9.0)", "define": "PI_UNITY_PIPELINE" }
   ]
 }
 ```
@@ -311,7 +311,15 @@ supported for 'all' mode"）。coordinator 统一走 async 包装，因此：
    行为降级），并在 `setActiveTools()` 可用的宿主上将其移出活跃集
 6. **安装辅助**：`/unity-install` 增加可选步骤——检测项目 Unity 版本 ≥ 6000.0 且
    未安装 pipeline 时，**询问用户**是否向 `Packages/manifest.json` 添加
-   `com.unity.pipeline@0.6.0-exp.1`（固定版本，exp 包 API 不稳定；asmdef 用半开区间 `[0.2.0-exp.2,0.7.0)` 兼容 0.2/0.3/0.4/0.5/0.6 线）
+   Unity 6 工程的 `com.unity.pipeline@0.8.0-exp.1`；2021.3/2022.x 继续使用本地 compat fork。
+
+动态工具描述跟 `list-commands` 的真实名称走，不把 compat 旧名推荐成官方 0.8：
+
+- Unity 6 官方 Code Reload：`codereload_status` / `cleanup_codereload`。compat 0.6 若仍报出 `hotreload_status` / `cleanup_hotreload`，工具文案标明这是旧分支，不假称新官方。
+- `wait_for` 长等待或条件依赖未发出命令时用 `async=true`，再 `wait_status` / `wait_cancel`。这套 `wait_id` 不是 `unity_pipeline` 的 `jobId`。同步 `wait_for` 占住 exec 队列。
+- `console_status` 只取计数和编译失败标记；`console` 才拉条目。
+- 官方 `eval_file` 注册为 `unity_pipeline_eval_file`（只接受 `.cs`）。Harness REPL 仍是静态 `unity_eval_file`（`pi-unity eval -f`，可跑 `.repl`）。`run_script` 是磁盘脚本入口，不是临时 REPL。
+- `unity_pipeline` 的 `jobTimeoutMs` 必须和 `job=true` 一起传，否则 usage 拒绝，不静默丢弃。终态失败的 `details.result` 保留 native JobFinished snapshot（`jobId` / `state`）。
 
 ### 3.7 与官方 HTTP server 的共存
 
@@ -398,7 +406,7 @@ play mode 能收到失败响应（`cancelled`/`error` 终态）而非超时。
 
 | 风险 | 影响 | 缓解 |
 |---|---|---|
-| pipeline 是 exp 包，`CommandRegistry`/`CommandInfo` API 可能破坏性变更 | 升级即编译错误 | 默认安装固定 `0.6.0-exp.1`；所有引用集中在单一 executor 文件；versionDefines expression 锁定 `[0.2.0-exp.2,0.7.0)`（§3.1） |
+| pipeline 是 exp 包，`CommandRegistry`/`CommandInfo` API 可能破坏性变更 | 升级即编译错误 | Unity 6 默认安装固定 `0.8.0-exp.1`；compat 保持独立的 0.6.0 版本线；所有引用集中在 executor/coordinator 文件；官方 versionDefines expression 锁定 `[0.2.0-exp.2,0.9.0)`（§3.1） |
 | asmdef 迁移破坏 evaluator 的 `Mono.CSharp` 解析 | Phase 0 阻塞 | 预留反射方案兜底（见 Phase 0 风险） |
 | pipeline 命令内部假设 HTTP/`Dispatcher` 上下文 | 个别命令行为异常 | Phase 1 验收逐命令冒烟；异常命令加入路由黑名单 |
 | 所有命令（含 `MainThreadRequired=false`）都在主线程执行（§3.3 第 4 点） | 重 CPU 自定义命令阻塞 Editor update | 先接受简化模型；确有需求再为 `MainThreadRequired=false` 命令加 `Task.Run` 通道 |

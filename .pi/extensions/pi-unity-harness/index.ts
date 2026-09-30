@@ -18,7 +18,7 @@ import {
 
 import {
   filterPipelineCommands,
-  normalizePipelineToolName,
+  pipelineDynamicToolName,
   schemaToTypeBox,
   type PipelineCommandList,
   type TypeBoxLike,
@@ -28,7 +28,11 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 export const Type: TypeBoxLike = {
-  Object: (properties: Record<string, any>) => ({ type: "object", properties }),
+  Object: (properties: Record<string, any>, options?: { required?: string[] }) => ({
+    type: "object",
+    properties,
+    ...(options?.required?.length ? { required: options.required } : {}),
+  }),
   String: (options?: { description?: string }) => ({ type: "string", ...options }),
   Number: (options?: { description?: string }) => ({ type: "number", ...options }),
   Integer: (options?: { description?: string }) => ({ type: "integer", ...options }),
@@ -48,19 +52,20 @@ When changing Unity scripts, scenes, assets, or runtime behavior, close the loop
 4. **Verify**: confirm with unity_snapshot logs, unity_run_tests / unity_pipeline list_tests+run_tests, PlayMode (editor_play/stop), or vision/input probes as appropriate.
 5. **Re-observe**: take a post-change unity_snapshot (or equivalent probe) and compare against the expected outcome.
 
-Prefer unity_eval_file over unity_eval for multi-line or non-trivial C# (write a .repl under Temp/PiUnityHarness/AgentScratch/, then pass that path). Never call AssetDatabase.Refresh or other Domain Reload triggers inside eval — use unity_recompile instead.
+Prefer unity_eval_file over unity_eval for multi-line or non-trivial C# (write a .repl under Temp/PiUnityHarness/AgentScratch/, then pass that path). unity_eval_file is the Harness REPL (pi-unity eval -f, accepts .repl); official pipeline eval_file is unity_pipeline_eval_file and only accepts .cs. Never call AssetDatabase.Refresh or other Domain Reload triggers inside eval — use unity_recompile instead.
 
 ### 观察顺序：速度模式优先，截图是升级不是默认
 - UI / 交互任务先走 uitree：unity_pipeline uitree_snapshot -p interactive_only=true 或 uitree_find；树对不上再升 unity_snapshot / unity_eval_file，最后才 unity_observe / unity_capture。
 - 不要默认每步截图：截图占用上下文，capture 结果里的 embed 元数据只是建议、宿主仍可能内联原图；只有画面/坐标/自绘 UI 确实需要核对时才截。
 - 拖拽优先 unity_pipeline input_drag（一次调用内部插值），不要手动拆 start/move/end 坐标步。
 - assets_refresh 是异步的且会触发导入/重载：调用后必须先 unity_recompile 再继续任何 managed 调用。
+- 长命令用 unity_pipeline 的 job=true（jobTimeoutMs 是执行预算，必须和 job=true 一起传，否则 usage 拒绝；timeoutMs 只是提交预算），再用 unity_pipeline_job status/cancel/progress 查同一 mux 上的 job。官方异步命令以 list-commands 为准：run_tests 用 async_tests=true 后查 test_status，package 查 package_status；长条件若提供 wait_for，则用 async=true，再 wait_status/wait_cancel。console 轮询优先用 console_status（若 list-commands 提供），否则用 console 的 cursor。Unity 6 官方 0.8 Code Reload 是 codereload_status / cleanup_codereload（不是 hotreload_status）；compat 0.6 才是 hotreload_status / cleanup_hotreload。console、run_script、reload_file_* 与对应 status 由动态 unity_* 发现，不要手写重复 wrapper。官方 run_script 编译磁盘脚本入口；官方 eval_file 是 unity_pipeline_eval_file（只接受 .cs）；Harness eval 是临时 REPL（unity_eval_file / pi-unity eval -f，可跑 .repl）。
 - Unity 工具只从主会话调用：broker 单客户端，子代理 / 小模型并行不要直接调 unity_*。
 `.trim();
 
 export const HARNESS_PACKAGE_NAME = "com.pi.unity-harness";
 export const PIPELINE_PACKAGE_NAME = "com.unity.pipeline";
-export const PIPELINE_PACKAGE_VERSION = "0.6.0-exp.1";
+export const PIPELINE_PACKAGE_VERSION = "0.8.0-exp.1";
 export const PIPELINE_COMPAT_PACKAGE_NAME = "com.pi.pipeline.compat";
 export const PIPELINE_COMPAT_INPUTSYSTEM_VERSION = "1.7.0";
 
@@ -173,8 +178,8 @@ export interface PipelineInstallStatus {
 export function getPipelineInstallStatus(projectPath: string): PipelineInstallStatus {
   const manifest = readManifest(projectPath);
   const deps = manifest?.dependencies ?? {};
-
   const pipelineManifest = deps[PIPELINE_PACKAGE_NAME];
+  const compatManifest = deps[PIPELINE_COMPAT_PACKAGE_NAME];
   const embeddedPackageJson = join(projectPath, "Packages", PIPELINE_PACKAGE_NAME, "package.json");
   let embeddedVersion: string | undefined;
   let embeddedDisplay: string | undefined;
@@ -189,15 +194,15 @@ export function getPipelineInstallStatus(projectPath: string): PipelineInstallSt
     } catch {}
   }
 
-  if (embeddedVersion !== undefined || pipelineManifest) {
-    const manifestValue = String(pipelineManifest ?? "");
-    const isCompat =
-      (embeddedDisplay ?? "").toLowerCase().includes("compat") ||
-      manifestValue.toLowerCase().includes("compat") ||
-      manifestValue.toLowerCase().includes("pi.pipeline.compat");
+  const manifestValue = String(pipelineManifest ?? compatManifest ?? "");
+  if (embeddedVersion !== undefined || pipelineManifest || compatManifest) {
+    const isCompat = Boolean(compatManifest)
+      || (embeddedDisplay ?? "").toLowerCase().includes("compat")
+      || manifestValue.toLowerCase().includes("compat")
+      || manifestValue.toLowerCase().includes("pi.pipeline.compat");
     return {
       installed: true,
-      packageName: PIPELINE_PACKAGE_NAME,
+      packageName: isCompat ? PIPELINE_COMPAT_PACKAGE_NAME : PIPELINE_PACKAGE_NAME,
       flavor: isCompat ? "compat" : "official",
       version: embeddedVersion ?? manifestValue,
       source: embeddedVersion !== undefined ? "embedded" : manifestValue.startsWith("file:") ? "local" : "registry",
@@ -258,6 +263,10 @@ export function installOfficialUnityPipeline(projectPath: string): { ok: boolean
   const manifest = readManifest(projectPath);
   if (!manifest) {
     return { ok: false, message: `Cannot find or parse Packages/manifest.json: ${projectPath}` };
+  }
+  const embeddedPath = join(projectPath, "Packages", PIPELINE_PACKAGE_NAME, "package.json");
+  if (existsSync(embeddedPath)) {
+    return { ok: false, message: `Refusing to replace embedded ${PIPELINE_PACKAGE_NAME}; remove or upgrade Packages/${PIPELINE_PACKAGE_NAME} manually before selecting the official registry package.` };
   }
   manifest.dependencies ??= {};
   delete manifest.dependencies[PIPELINE_COMPAT_PACKAGE_NAME];
@@ -591,13 +600,14 @@ export async function runPiUnityCli(
 
 function formatResult(cliRes: CliExecutionResult): { content: Array<{ type: "text"; text: string }>; details: unknown } {
   if (!cliRes.ok) {
-    const payload = {
+    const payload: Record<string, unknown> = {
       ok: false,
       error: cliRes.error || "pi-unity command failed",
       error_type: cliRes.error_type,
       help: cliRes.help ?? [],
       exitCode: cliRes.exitCode ?? 1,
     };
+    if (cliRes.result !== undefined) payload.result = cliRes.result;
     const text = cliRes.text || JSON.stringify(payload, null, 2);
     const err = new Error(text) as Error & { details?: unknown };
     err.details = payload;
@@ -627,6 +637,76 @@ export function pushViewArgs(args: string[], params: { fields?: unknown; full?: 
   }
   if (params.full === true) args.push("--full");
 }
+function commandGuidance(commandName: string): string {
+  if (commandName === "eval_file") {
+    return " 这是官方 pipeline eval_file（只接受 .cs）。Harness REPL 用静态 unity_eval_file（pi-unity eval -f，可跑 .repl），不要混用。";
+  }
+  if (commandName === "run_script") {
+    return " 官方脚本：编译磁盘 .cs 并执行命名静态入口，不是 Harness 临时 REPL。";
+  }
+  if (commandName === "console" || commandName === "console_status" || commandName === "test_status" || commandName === "package_status") {
+    return commandName === "console_status"
+      ? " 官方 console_status 只返回计数和编译失败标记，不拉条目。console 用于拉条目；run_tests 的 async_tests=true 用 test_status 轮询，不是 unity_pipeline job。"
+      : " 官方状态命令。console 拉条目；若 list-commands 提供 console_status，计数和编译失败标记用它。run_tests 的 async_tests=true 用 test_status 轮询，不是 unity_pipeline job。不要手写 wrapper。";
+  }
+  if (commandName === "wait_for") {
+    return " 官方 wait_for。长等待或条件还依赖未发出的命令时必须 async=true，然后 wait_status / wait_cancel。同步 wait_for 占住 exec 队列，不能和 unity_pipeline job 混为一谈。async wait 不跨域重载，重载后 wait_status 是 not_found。";
+  }
+  if (commandName === "wait_status" || commandName === "wait_cancel") {
+    return " 官方异步 wait 的查询/取消。wait_id 来自 wait_for async=true，不是 unity_pipeline jobId。域重载后 wait_status 返回 not_found。";
+  }
+  if (commandName === "reload_file_editor_interpreter" || commandName === "reload_file_player_interpreter" || commandName === "codereload_status" || commandName === "cleanup_codereload") {
+    return " Unity 6 官方 0.8 Code Reload。状态用 codereload_status，清理用 cleanup_codereload。不要把 compat 0.6 的 hotreload_status / cleanup_hotreload 当成 0.8 名称，也不要走已过时的 reload_file_override shortcut。";
+  }
+  if (commandName === "hotreload_status" || commandName === "cleanup_hotreload") {
+    return " compat 0.6 热重载命令，不是 Unity 6 官方 0.8。官方名称是 codereload_status / cleanup_codereload。";
+  }
+  return "";
+}
+
+function commandPrompt(commandName: string, toolName: string): string {
+  if (commandName.startsWith("uitree_")) {
+    return `UI 任务优先 ${toolName}（速度模式），树对不上再升 unity_snapshot / unity_eval_file。`;
+  }
+  if (commandName === "input_drag") {
+    return `拖拽优先 ${toolName}（一次调用内部插值），不要手动拆 start/move/end。`;
+  }
+  if (commandName.startsWith("input_drag")) {
+    return "手动分步拖拽命令：直接用 unity_pipeline input_drag 一次完成（内部插值）。";
+  }
+  if (commandName === "eval_file") {
+    return "官方 eval_file 用 unity_pipeline_eval_file（.cs）。Harness 多行 REPL 仍用 unity_eval_file。";
+  }
+  if (commandName === "run_script") {
+    return `官方脚本入口用 ${toolName}。不要把它当成 Harness unity_eval_file。`;
+  }
+  if (commandName === "console") {
+    return `${toolName} 拉 console 条目；若 list-commands 提供 unity_console_status，再用它读取计数和编译失败标记。异步测试查 test_status，不是 unity_pipeline job。`;
+  }
+  if (commandName === "console_status") {
+    return `${toolName} 只返回 console 计数和编译失败标记，不拉条目。`;
+  }
+  if (commandName === "test_status" || commandName === "package_status") {
+    return `${toolName} 是官方命令。异步测试用 run_tests async_tests=true 后查 test_status；这和 unity_pipeline job 不是同一套。`;
+  }
+  if (commandName === "wait_for") {
+    return `长等待用 ${toolName} 且 async=true，再用 unity_wait_status / unity_wait_cancel。不要用同步 wait_for 占住队列。域重载会使 wait_id 失效。`;
+  }
+  if (commandName === "wait_status" || commandName === "wait_cancel") {
+    return `${toolName} 处理 wait_for async=true 的 wait_id，不是 unity_pipeline jobId。域重载后是 not_found。`;
+  }
+  if (commandName === "reload_file_editor_interpreter" || commandName === "reload_file_player_interpreter") {
+    return `官方 0.8 Code Reload 用 ${toolName}。状态查 unity_codereload_status，清理用 unity_cleanup_codereload。compat 0.6 才是 hotreload_status。`;
+  }
+  if (commandName === "codereload_status" || commandName === "cleanup_codereload") {
+    return `官方 0.8 Code Reload 用 ${toolName}。不要把 compat 的 hotreload_status / cleanup_hotreload 当成这个命令。`;
+  }
+  if (commandName === "hotreload_status" || commandName === "cleanup_hotreload") {
+    return `${toolName} 只属于 compat 0.6。Unity 6 官方 0.8 用 codereload_status / cleanup_codereload。`;
+  }
+  return `Use ${toolName} to execute the ${commandName} pipeline command.`;
+}
+
 
 const VIEW_FIELDS = {
   fields: Type.String({ description: "追加字段，逗号分隔" }),
@@ -642,6 +722,7 @@ function toolSchema(fields: Record<string, any>, required: string[] = []): any {
         required.includes(name) ? def : Type.Optional(def),
       ]),
     ),
+    required.length > 0 ? { required } : undefined,
   );
 }
 
@@ -838,7 +919,7 @@ export default function (pi: ExtensionAPI, opts: UnityHarnessExtensionOptions = 
         const filtered = filterPipelineCommands(list);
 
         for (const cmd of filtered) {
-          const toolName = normalizePipelineToolName(cmd.name);
+          const toolName = pipelineDynamicToolName(cmd.name);
           if (dynamicallyRegisteredTools.has(toolName)) continue;
           const policyLabel = cmd.policy?.mutability === "destructive"
             ? "[DESTRUCTIVE] "
@@ -849,14 +930,9 @@ export default function (pi: ExtensionAPI, opts: UnityHarnessExtensionOptions = 
             policyLabel + (cmd.description || `Execute Unity Pipeline command: ${cmd.name}`) +
             (/^assets_refresh/.test(cmd.name)
               ? " 注意：assets_refresh 是异步的，不等待导入/域重载完成；下一步任何 managed 调用前先 unity_recompile。"
-              : "");
-          const promptSnippet = cmd.name.startsWith("uitree_")
-            ? `UI 任务优先 ${toolName}（速度模式），树对不上再升 unity_snapshot / unity_eval_file。`
-            : cmd.name === "input_drag"
-              ? `拖拽优先 ${toolName}（一次调用内部插值），不要手动拆 start/move/end。`
-              : cmd.name.startsWith("input_drag")
-                ? `手动分步拖拽命令：直接用 unity_pipeline input_drag 一次完成（内部插值）。`
-                : `Use ${toolName} to execute the ${cmd.name} pipeline command.`;
+              : "") +
+            commandGuidance(cmd.name);
+          const promptSnippet = commandPrompt(cmd.name, toolName);
 
           try {
             const schema = schemaToTypeBox(Type, cmd.schema, cmd.parameters);
@@ -1327,8 +1403,10 @@ export default function (pi: ExtensionAPI, opts: UnityHarnessExtensionOptions = 
     label: "Unity Pipeline",
     description:
       "Execute a registered Unity Pipeline [CliCommand] via pi-unity pipeline. Omit command/name to list available commands." +
+      " job=true 只提交 detached job（timeoutMs 是提交预算，jobTimeoutMs 是执行预算，默认 300000），返回 job snapshot，不是命令结果。" +
+      " jobTimeoutMs 不带 job=true 会被拒绝，不会静默丢掉。" +
       " UI 交互先 uitree_*，拖拽优先 input_drag；assets_refresh 异步，调用后先 unity_recompile 再继续 managed 调用。",
-    promptSnippet: "Use unity_pipeline to run pipeline commands like uitree_*, assets_*, input_*, etc.",
+    promptSnippet: "Use unity_pipeline to run pipeline commands. For long work set job=true, then unity_pipeline_job status/cancel/progress. timeoutMs is only the submit budget. jobTimeoutMs without job=true is a usage error.",
     parameters: toolSchema({
       command: Type.String({ description: "Name of the pipeline command to execute (alias for name)." }),
       name: Type.String({ description: "Name of the pipeline command to execute." }),
@@ -1342,18 +1420,65 @@ export default function (pi: ExtensionAPI, opts: UnityHarnessExtensionOptions = 
         description: "Parameters object passed to the pipeline command.",
         additionalProperties: true,
       }),
-      timeoutMs: Type.Number({ description: "Timeout in milliseconds, default 30000" }),
+      job: Type.Boolean({ description: "提交 detached job，不等待命令执行完成。默认 false。" }),
+      jobTimeoutMs: Type.Number({ description: "job 执行预算毫秒，默认 300000，范围 1..86400000。必须和 job=true 一起传；单独传会被 usage 拒绝，不会静默丢掉。不是提交超时。" }),
+      timeoutMs: Type.Number({ description: "同步调用的等待毫秒，默认 30000。job=true 时只是提交预算，不是执行超时。" }),
       ...VIEW_FIELDS,
     }),
     async execute(_toolCallId, params, signal) {
       const cmdName = (params.name || params.command || "").trim();
       if (!cmdName) return runTool(["list-commands"], { timeoutMs: toolTimeout(params, 15000), signal });
+      if (params.jobTimeoutMs !== undefined && params.job !== true) {
+        return formatResult({
+          ok: false,
+          error: "--job-timeout 只能和 --job 一起用",
+          error_type: "usage",
+          exitCode: 2,
+          help: ["pi-unity pipeline <name> --job --job-timeout 300000"],
+        });
+      }
       const args = ["pipeline", cmdName];
       const paramObj = params.parameters || params.params;
       if (paramObj) args.push("--params-json", JSON.stringify(paramObj));
+      if (params.job === true) {
+        args.push("--job");
+        pushArg(args, "--job-timeout", params.jobTimeoutMs);
+      }
       pushArg(args, "--timeout", params.timeoutMs);
       pushViewArgs(args, params);
-      return runTool(args, { timeoutMs: toolTimeout(params, 30000), signal });
+      const fallback = 30000;
+      return runTool(args, { timeoutMs: toolTimeout(params, fallback), signal });
+    },
+  });
+
+  // ---- unity_pipeline_job ----
+  pi.registerTool({
+    name: "unity_pipeline_job",
+    label: "Unity Pipeline Job",
+    description:
+      "Query, cancel, or read progress for a pipe-native detached pipeline job via pi-unity pipeline-job." +
+      " status 返回完整 snapshot；progress 返回 {jobId,state,active,progress}；cancel 对 running 只设置 cancellationRequested，不宣称已停止。" +
+      " 查询成功与 job 执行失败分开：终态失败时 details.result 仍保留 JobFinished snapshot，可查 jobId/state。不走 HTTP。",
+    promptSnippet: "Use unity_pipeline_job with action status|cancel|progress and the jobId returned by unity_pipeline job=true.",
+    parameters: toolSchema({
+      action: Type.String({ description: "status、cancel 或 progress。" }),
+      jobId: Type.String({ description: "unity_pipeline job=true 返回的 jobId。" }),
+      timeoutMs: Type.Number({ description: "查询超时毫秒，默认 5000。" }),
+      ...VIEW_FIELDS,
+    }, ["action", "jobId"]),
+    async execute(_toolCallId, params, signal) {
+      const action = String(params.action ?? "").trim();
+      const jobId = String(params.jobId ?? "").trim();
+      if (action !== "status" && action !== "cancel" && action !== "progress") {
+        return formatResult({ ok: false, error: "action must be status, cancel, or progress", error_type: "usage", exitCode: 2 });
+      }
+      if (!jobId) {
+        return formatResult({ ok: false, error: "jobId is required", error_type: "usage", exitCode: 2 });
+      }
+      const args = ["pipeline-job", action, jobId];
+      pushArg(args, "--timeout", params.timeoutMs);
+      pushViewArgs(args, params);
+      return runTool(args, { timeoutMs: toolTimeout(params, 5000), signal });
     },
   });
 

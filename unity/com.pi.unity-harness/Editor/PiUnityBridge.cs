@@ -54,6 +54,7 @@ namespace Pi.UnityHarness.Editor
             public string filePath;
             public string name;
             public string parametersJson;
+            public string jobId;
             public int maxDepth = -1;
             public int maxNodes = -1;
             public int logLimit = -1;
@@ -334,6 +335,9 @@ namespace Pi.UnityHarness.Editor
                 case "command":
                     ExecutePipelineCommand(request);
                     return;
+                case "command_job":
+                    ExecutePipelineCommandJob(request);
+                    return;
                 default:
                     CompleteError(request.id, "unsupported_request_type", "usage");
                     return;
@@ -415,12 +419,22 @@ namespace Pi.UnityHarness.Editor
                 request.timeoutMs,
                 CompleteJson);
         }
+        private static void ExecutePipelineCommandJob(NativeRequest request)
+        {
+            if (request.payload == null || string.IsNullOrEmpty(request.payload.jobId))
+                return;
+            PiUnityPipelineCommandExecutor.ExecuteJob(
+                request.payload.jobId,
+                request.payload.name,
+                request.payload.parametersJson,
+                request.timeoutMs);
+        }
         private static void CompleteError(string id, string error, string errorType = "usage")
         {
             CompleteJson(id, PiUnityJsonHelper.ErrorJson(id, errorType, error));
         }
 
-        private static void CompleteJson(string id, string json)
+        internal static void CompleteJson(string id, string json)
         {
             byte[] idBytes = Utf8(id ?? string.Empty);
             byte[] responseBytes = Utf8(json ?? string.Empty);
