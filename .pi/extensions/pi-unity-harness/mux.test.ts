@@ -1050,3 +1050,161 @@ test("dynamic refresh: project switch ignores delayed old discovery", async () =
     env.cleanup();
   }
 });
+
+test("dynamic official eval_file does not replace Harness unity_eval_file", async () => {
+  const children: FakeChild[] = [];
+  const env = fakeMuxSetup(children);
+  try {
+    await startSession(env.pi, env.base);
+    await waitForFrames(children[0], 1);
+    reply(children[0], 0, {
+      ok: true,
+      exitCode: 0,
+      result: fakeCommandList(["eval_file", "run_script", "console", "console_status", "wait_for", "wait_status", "reload_file_editor_interpreter", "codereload_status", "cleanup_codereload", "hotreload_status", "test_status"]),
+    });
+    await tick();
+    const harness = env.pi.tools.filter((t) => t.name === "unity_eval_file");
+    const official = env.pi.tools.find((t) => t.name === "unity_pipeline_eval_file");
+    assert.equal(harness.length, 1);
+    assert.match(harness[0].description, /pi-unity eval -f/);
+    assert.ok(official);
+    assert.match(official.promptSnippet, /unity_pipeline_eval_file/);
+    assert.equal(env.pi.tools.some((t) => t.name === "unity_run_script"), true);
+    assert.equal(env.pi.tools.some((t) => t.name === "unity_console"), true);
+    assert.equal(env.pi.tools.some((t) => t.name === "unity_console_status"), true);
+    assert.equal(env.pi.tools.some((t) => t.name === "unity_wait_for"), true);
+    assert.equal(env.pi.tools.some((t) => t.name === "unity_wait_status"), true);
+    assert.equal(env.pi.tools.some((t) => t.name === "unity_test_status"), true);
+    assert.equal(env.pi.tools.some((t) => t.name === "unity_codereload_status"), true);
+    assert.equal(env.pi.tools.some((t) => t.name === "unity_cleanup_codereload"), true);
+    const codeReload = env.pi.tools.find((t) => t.name === "unity_codereload_status");
+    assert.ok(codeReload);
+    assert.equal(codeReload.description.includes("状态用 hotreload_status"), false);
+    assert.equal(env.pi.tools.some((t) => t.name === "unity_hotreload_status"), true);
+    assert.equal(env.pi.tools.some((t) => t.name === "unity_reload_file_override"), false);
+
+    const exec = official.execute("id", { file: "AgentScripts/Probe.cs" });
+    await waitForFrames(children[0], 2);
+    assert.deepEqual(children[0].frames[1].argv, ["pipeline", "eval_file", "--params-json", JSON.stringify({ file: "AgentScripts/Probe.cs" })]);
+    reply(children[0], 1, { ok: true, exitCode: 0, result: { value: 1 } });
+    await exec;
+  } finally {
+    const mux = getActiveMux();
+    if (mux) await mux.shutdown();
+    env.cleanup();
+  }
+});
+
+test("unity_pipeline job submits then status and cancel stay on the same mux", async () => {
+  const children: FakeChild[] = [];
+  const env = fakeMuxSetup(children);
+  try {
+    await startSession(env.pi, env.base);
+    await waitForFrames(children[0], 1);
+    reply(children[0], 0, { ok: false, exitCode: 1, error: "offline" });
+
+    const pipeline = env.pi.tools.find((t) => t.name === "unity_pipeline");
+    const job = env.pi.tools.find((t) => t.name === "unity_pipeline_job");
+    assert.ok(pipeline && job);
+    assert.deepEqual(job.parameters.required, ["action", "jobId"]);
+    assert.equal(pipeline.parameters.required, undefined);
+    const evalTool = env.pi.tools.find((t) => t.name === "unity_eval");
+    assert.deepEqual(evalTool.parameters.required, ["code"]);
+
+    const submit = pipeline.execute("id", {
+      name: "bake_lighting",
+      parameters: { confirm: true },
+      job: true,
+      jobTimeoutMs: 120000,
+      timeoutMs: 4000,
+    });
+    await waitForFrames(children[0], 2);
+    assert.deepEqual(children[0].frames[1].argv, [
+      "pipeline",
+      "bake_lighting",
+      "--params-json",
+      JSON.stringify({ confirm: true }),
+      "--job",
+      "--job-timeout",
+      "120000",
+      "--timeout",
+      "4000",
+    ]);
+    reply(children[0], 1, { ok: true, exitCode: 0, result: { jobId: "job-1", state: "queued" } });
+    const submitted = await submit;
+    assert.equal(submitted.details.jobId, "job-1");
+
+    // 启动期发现失败后，首个成功业务会触发一次立即补试；先消费这条同 mux 请求。
+    await waitForFrames(children[0], 3);
+    assert.deepEqual(children[0].frames[2].argv, ["list-commands", "--full"]);
+    reply(children[0], 2, { ok: false, exitCode: 1, error: "still offline" });
+
+    const status = job.execute("id", { action: "status", jobId: "job-1" });
+    await waitForFrames(children[0], 4);
+    assert.deepEqual(children[0].frames[3].argv, ["pipeline-job", "status", "job-1"]);
+    reply(children[0], 3, { ok: true, exitCode: 0, result: { jobId: "job-1", state: "running" } });
+    await status;
+
+    const cancel = job.execute("id", { action: "cancel", jobId: "job-1", timeoutMs: 1500 });
+    await waitForFrames(children[0], 5);
+    assert.deepEqual(children[0].frames[4].argv, ["pipeline-job", "cancel", "job-1", "--timeout", "1500"]);
+    reply(children[0], 4, { ok: true, exitCode: 0, result: { jobId: "job-1", state: "running", cancellationRequested: true } });
+    await cancel;
+    assert.equal(children.length, 1);
+  } finally {
+    const mux = getActiveMux();
+    if (mux) await mux.shutdown();
+    env.cleanup();
+  }
+});
+
+test("unity_pipeline rejects jobTimeoutMs without job and keeps failed job snapshot", async () => {
+  const children: FakeChild[] = [];
+  const env = fakeMuxSetup(children);
+  try {
+    await startSession(env.pi, env.base);
+    await waitForFrames(children[0], 1);
+    reply(children[0], 0, { ok: false, exitCode: 1, error: "offline" });
+    const pipeline = env.pi.tools.find((t) => t.name === "unity_pipeline");
+    assert.ok(pipeline);
+    await assert.rejects(
+      () => pipeline.execute("id", { name: "eval_file", jobTimeoutMs: 1000 }),
+      (err: Error & { details?: { error_type?: string; exitCode?: number } }) => {
+        assert.equal(err.details?.error_type, "usage");
+        assert.equal(err.details?.exitCode, 2);
+        assert.match(err.message, /--job-timeout/);
+        return true;
+      },
+    );
+    assert.equal(children[0].frames.length, 1);
+
+    const failed = pipeline.execute("id", { name: "eval_file", job: true, jobTimeoutMs: 1000 });
+    await waitForFrames(children[0], 2);
+    assert.deepEqual(children[0].frames[1].argv, [
+      "pipeline",
+      "eval_file",
+      "--job",
+      "--job-timeout",
+      "1000",
+    ]);
+    reply(children[0], 1, {
+      ok: false,
+      exitCode: 1,
+      error: "job failed",
+      error_type: "timeout",
+      result: { jobId: "job-9", state: "failed" },
+    });
+    await assert.rejects(
+      () => failed,
+      (err: Error & { details?: { result?: { jobId?: string; state?: string } } }) => {
+        assert.equal(err.details?.result?.jobId, "job-9");
+        assert.equal(err.details?.result?.state, "failed");
+        return true;
+      },
+    );
+  } finally {
+    const mux = getActiveMux();
+    if (mux) await mux.shutdown();
+    env.cleanup();
+  }
+});

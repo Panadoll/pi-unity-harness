@@ -151,11 +151,11 @@ namespace Pi.UnityHarness.Editor.Tests
             typeof(PiUnityTestCoordinator).GetField(
                 nameof(PiUnityTestCoordinator.RunTestsInvoker),
                 BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public)
-                .SetValue(null, (System.Func<string, string, string, bool, int, System.Threading.Tasks.Task<Unity.Pipeline.TestExecutionResponse>>)(
+                .SetValue(null, (System.Func<string, string, string, bool, int, System.Threading.Tasks.Task<Unity.Pipeline.Models.CommandExecutionResponse>>)(
                 (mode, filter, filterType, includeExplicit, timeout) =>
                 {
                     invokerCalled = true;
-                    var response = new Unity.Pipeline.TestExecutionResponse { Success = true };
+                    var response = new Unity.Pipeline.Models.CommandExecutionResponse { Success = true };
                     return System.Threading.Tasks.Task.FromResult(response);
                 }));
 

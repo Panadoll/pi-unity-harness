@@ -44,7 +44,8 @@ mux 持有一条 Unity Named Pipe，已连接时每 5 秒 ping，broker 15 秒�
 | `pi-unity compile` | `--timeout <ms>` | 触发编译并等到 ready |
 | `pi-unity snapshot` | `--depth` `--max-nodes` `--fields` `--full` | 场景层级（默认 path,name,active）、选中、日志 |
 | `pi-unity list-commands` | `--full` | 列出 Pipeline 命令（默认 name,summary） |
-| `pi-unity pipeline <name>` | `-p <key=val>` `--params-json` | 执行 Pipeline `[CliCommand]` |
+| `pi-unity pipeline <name>` | `-p <key=val>` `--params-json` `--job` `--job-timeout` | 执行 Pipeline `[CliCommand]`；`--job` 只提交。`--job-timeout` 不能单独出现 |
+| `pi-unity pipeline-job` | `status\|cancel\|progress <jobId>` | 查同一 pipe job。终态失败仍带回 snapshot |
 | `pi-unity run-tests` | `--mode <edit\|play>` `--filter` | EditMode / PlayMode 测试 |
 | `pi-unity observe` | `--frames` `--interval` `--overlay` | 多帧捕获 + dHash，stdout 只给路径 |
 | `pi-unity capture` | `--mode` `--out` | 单张视口截图 |

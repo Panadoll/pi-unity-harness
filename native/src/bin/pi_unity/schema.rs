@@ -476,6 +476,68 @@ pub fn shape_generic(raw: &Value, opts: &ViewOptions) -> Value {
     }
     v
 }
+/// detached job 的默认列。不含 ok：查询本身成功，执行成败由 state/error 表达。
+pub fn shape_job(raw: &Value, opts: &ViewOptions) -> Value {
+    let state = pick_str(raw, &["state"]);
+    let mut out = Map::new();
+    out.insert("jobId".into(), json!(pick_str(raw, &["jobId"])));
+    out.insert("command".into(), json!(pick_str(raw, &["command"])));
+    out.insert(
+        "state".into(),
+        json!(if state.is_empty() { "unknown" } else { &state }),
+    );
+    out.insert(
+        "cancellationRequested".into(),
+        json!(pick_bool(raw, &["cancellationRequested"])),
+    );
+    let error = pick_str(raw, &["error"]);
+    let error_type = pick_str(raw, &["errorType"]);
+    if !error.is_empty() || opts.full {
+        out.insert("error".into(), json!(error));
+    }
+    if !error_type.is_empty() || opts.full {
+        out.insert("errorType".into(), json!(error_type));
+    }
+    if opts.full || raw.get("result").is_some() {
+        out.insert(
+            "result".into(),
+            raw.get("result").cloned().unwrap_or(Value::Null),
+        );
+    }
+    if opts.full || raw.get("progress").map(|v| !v.is_null()).unwrap_or(false) {
+        out.insert(
+            "progress".into(),
+            raw.get("progress").cloned().unwrap_or(Value::Null),
+        );
+    }
+    if opts.full {
+        for key in ["enqueuedAtMs", "startedAtMs", "completedAtMs"] {
+            if let Some(v) = raw.get(key) {
+                out.insert(key.to_string(), v.clone());
+            }
+        }
+    }
+    let mut shaped = Value::Object(out);
+    append_requested_fields(&mut shaped, raw, opts);
+    shaped
+}
+
+pub fn job_execution_failed(state: &str) -> bool {
+    matches!(state, "failed" | "canceled" | "cancelled" | "interrupted")
+}
+
+pub fn shape_job_progress(raw: &Value) -> Value {
+    let state = {
+        let value = pick_str(raw, &["state"]);
+        if value.is_empty() { "unknown".to_string() } else { value }
+    };
+    json!({
+        "jobId": pick_str(raw, &["jobId"]),
+        "state": state,
+        "active": pick_bool(raw, &["active"]),
+        "progress": raw.get("progress").cloned().unwrap_or(Value::Null),
+    })
+}
 
 pub fn apply_field_truncation(val: &mut Value, opts: &ViewOptions) -> bool {
     if opts.full {
@@ -711,5 +773,67 @@ mod tests {
         );
         assert_eq!(slim["actions"][0]["id"], "1");
         assert_eq!(slim["actions"][0]["durationMs"], 12);
+    }
+
+    #[test]
+    fn job_failed_keeps_state_and_error_without_claiming_success() {
+        let raw = json!({
+            "jobId": "job-9",
+            "command": "eval_file",
+            "state": "failed",
+            "cancellationRequested": false,
+            "error": "boom",
+            "errorType": "command_error",
+            "result": {"value": null, "output": ""}
+        });
+        let out = shape_job(&raw, &ViewOptions::default());
+        assert_eq!(out["jobId"], "job-9");
+        assert_eq!(out["state"], "failed");
+        assert_eq!(out["error"], "boom");
+        assert_eq!(out["errorType"], "command_error");
+        assert_eq!(out["result"]["output"], "");
+        assert!(out.get("ok").is_none());
+        assert!(job_execution_failed("failed"));
+        assert!(!job_execution_failed("completed"));
+        assert!(!job_execution_failed("running"));
+    }
+
+    #[test]
+    fn job_progress_keeps_null_progress() {
+        let out = shape_job_progress(&json!({
+            "jobId": "job-1",
+            "state": "queued",
+            "active": false,
+            "progress": null
+        }));
+        assert_eq!(out["state"], "queued");
+        assert_eq!(out["active"], false);
+        assert!(out["progress"].is_null());
+    }
+
+    #[test]
+    fn failed_job_query_payload_keeps_state_apart_from_query_success() {
+        let raw = json!({
+            "jobId": "job-9",
+            "command": "eval_file",
+            "state": "failed",
+            "cancellationRequested": false,
+            "error": "boom",
+            "errorType": "timeout",
+            "result": {"value": 1, "output": "partial"}
+        });
+        let snapshot = shape_job(&raw, &ViewOptions::default());
+        let err = crate::client::CliError::JobFinished {
+            code: "timeout".into(),
+            message: "boom".into(),
+            snapshot,
+        };
+        let payload = crate::usage::error_payload(&err);
+        assert_eq!(payload["ok"], false);
+        assert_eq!(payload["exitCode"], 1);
+        assert_eq!(payload["error_type"], "timeout");
+        assert_eq!(payload["result"]["state"], "failed");
+        assert_eq!(payload["result"]["jobId"], "job-9");
+        assert_eq!(payload["result"]["result"]["value"], 1);
     }
 }

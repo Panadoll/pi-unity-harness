@@ -138,3 +138,66 @@ fn ping_does_not_register_hooks() {
     let _ = output;
     let _ = fs::remove_dir_all(home);
 }
+
+#[test]
+fn pipeline_help_discovers_job_flags() {
+    let (code, stdout, _stderr) = run_cli(&["pipeline", "--help"]);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("--job"));
+    assert!(stdout.contains("--job-timeout"));
+    assert!(stdout.contains("--timeout"));
+}
+
+#[test]
+fn pipeline_job_help_discovers_actions() {
+    let (code, stdout, _stderr) = run_cli(&["pipeline-job", "--help"]);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("status"));
+    assert!(stdout.contains("cancel"));
+    assert!(stdout.contains("progress"));
+    assert!(stdout.contains("--timeout"));
+}
+
+#[test]
+fn pipeline_unknown_flag_is_exit_2_before_connect() {
+    let started = std::time::Instant::now();
+    let (code, stdout, stderr) = run_cli(&["pipeline", "eval_file", "--stat"]);
+    assert_eq!(code, 2);
+    assert!(stdout.contains("error:"));
+    assert!(stdout.contains("--stat") || stdout.contains("未知"));
+    assert!(stdout.contains("--job"));
+    assert!(!stderr.contains("[pi-unity error]"));
+    assert!(
+        started.elapsed().as_millis() < 2000,
+        "未知 flag 必须在连接前拒绝"
+    );
+}
+
+#[test]
+fn job_timeout_without_job_is_usage_before_connect() {
+    let (code, stdout, _stderr) = run_cli(&[
+        "pipeline",
+        "eval_file",
+        "--job-timeout",
+        "1000",
+        "--project-path",
+        "Z:/NonExistentPath_XYZ_123",
+    ]);
+    assert_eq!(code, 2);
+    assert!(stdout.contains("--job-timeout"));
+    assert!(!stdout.contains("bridge_not_found"));
+}
+
+#[test]
+fn pipeline_job_missing_id_is_usage() {
+    let (code, stdout, _stderr) = run_cli(&["pipeline-job", "status"]);
+    assert_eq!(code, 2);
+    assert!(stdout.contains("error:"));
+}
+
+#[test]
+fn pipeline_job_unknown_action_is_exit_2() {
+    let (code, stdout, _stderr) = run_cli(&["pipeline-job", "wait", "job-1"]);
+    assert_eq!(code, 2);
+    assert!(stdout.contains("error:") || stdout.contains("未知"));
+}

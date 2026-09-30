@@ -70,9 +70,15 @@ pub(crate) enum Commands {
 
     /// 跑一条 pipeline
     #[command(
-        after_help = "示例:\n  pi-unity pipeline gameobject_find -p name=\"Main Camera\"\n  pi-unity pipeline uitree_find -p query=\"Start Game\""
+        after_help = "示例:\n  pi-unity pipeline gameobject_find -p name=\"Main Camera\"\n  pi-unity pipeline uitree_find -p query=\"Start Game\"\n  pi-unity pipeline eval_file --job --job-timeout 600000 -p path=\"Temp/probe.cs\""
     )]
     Pipeline(PipelineArgs),
+
+    /// 查询、取消或读取 detached job
+    #[command(
+        after_help = "示例:\n  pi-unity pipeline-job status <jobId>\n  pi-unity pipeline-job cancel <jobId>\n  pi-unity pipeline-job progress <jobId>"
+    )]
+    PipelineJob(PipelineJobArgs),
 
     /// EditMode / PlayMode 测试
     #[command(
@@ -131,6 +137,7 @@ impl Commands {
             Commands::Snapshot(_) => "snapshot",
             Commands::ListCommands(_) => "list-commands",
             Commands::Pipeline(_) => "pipeline",
+            Commands::PipelineJob(_) => "pipeline-job",
             Commands::RunTests(_) => "run-tests",
             Commands::Observe(_) => "observe",
             Commands::Capture(_) => "capture",
@@ -255,6 +262,32 @@ pub(crate) struct PipelineArgs {
     pub(crate) params_json: Option<String>,
     /// 超时毫秒
     #[arg(long, default_value_t = 30000)]
+    pub(crate) timeout: u64,
+    /// 提交后立即返回 jobId，不阻塞到执行结束
+    #[arg(long)]
+    pub(crate) job: bool,
+    /// job 执行超时毫秒，默认 300000；只能和 --job 一起用
+    #[arg(long)]
+    pub(crate) job_timeout: Option<u64>,
+}
+
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq)]
+pub(crate) enum PipelineJobAction {
+    /// 完整 job snapshot
+    Status,
+    /// 请求取消；running 只标记，不宣称已停止
+    Cancel,
+    /// 进度摘要
+    Progress,
+}
+
+#[derive(Args, Debug)]
+pub(crate) struct PipelineJobArgs {
+    #[arg(value_enum)]
+    pub(crate) action: PipelineJobAction,
+    pub(crate) job_id: String,
+    /// 查询超时毫秒，默认 5000
+    #[arg(long, default_value_t = 5000)]
     pub(crate) timeout: u64,
 }
 

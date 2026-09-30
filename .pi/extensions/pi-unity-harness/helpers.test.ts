@@ -5,18 +5,19 @@ import {
   normalizePipelineToolName,
   parameterToTypeBox,
   pipelineCommandSummary,
+  pipelineDynamicToolName,
   schemaToTypeBox,
   type TypeBoxLike,
 } from "./helpers.ts";
 
 const mockTypeBox: TypeBoxLike = {
-  Unsafe: (schema) => ({ kind: "unsafe", schema }),
-  Object: (properties) => ({ kind: "object", properties }),
-  Optional: (schema) => ({ kind: "optional", schema }),
-  Boolean: (options) => ({ kind: "boolean", ...options }),
-  Number: (options) => ({ kind: "number", ...options }),
-  Integer: (options) => ({ kind: "integer", ...options }),
-  String: (options) => ({ kind: "string", ...options }),
+  Unsafe: (schema) => schema,
+  Object: (properties, options) => ({ type: "object", properties, ...(options?.required ? { required: options.required } : {}) }),
+  Optional: (schema) => schema,
+  Boolean: (options) => ({ type: "boolean", ...options }),
+  Number: (options) => ({ type: "number", ...options }),
+  Integer: (options) => ({ type: "integer", ...options }),
+  String: (options) => ({ type: "string", ...options }),
 };
 
 test("normalizePipelineToolName normalizes mixed characters", () => {
@@ -24,45 +25,50 @@ test("normalizePipelineToolName normalizes mixed characters", () => {
   assert.equal(normalizePipelineToolName("assets.find-all"), "unity_assets_find_all");
 });
 
-test("schemaToTypeBox uses unsafe path for valid object schema", () => {
+test("schemaToTypeBox keeps an upstream required list", () => {
   const schema = {
     type: "object",
-    properties: {
-      id: { type: "string" },
-    },
+    properties: { file: { type: "string" } },
+    required: ["file"],
   };
-  const result = schemaToTypeBox(mockTypeBox, schema, undefined);
-  assert.deepEqual(result, {
-    kind: "unsafe",
-    schema,
-  });
+  const result = schemaToTypeBox(mockTypeBox, schema, [{ name: "file", required: true, type: "String" }]);
+  assert.deepEqual(result.required, ["file"]);
 });
 
-test("schemaToTypeBox builds object from parameters when schema is absent", () => {
+test("schemaToTypeBox writes required when parameters say so and schema omits it", () => {
+  const result = schemaToTypeBox(mockTypeBox, {
+    type: "object",
+    properties: { file: { type: "string" } },
+  }, [{ name: "file", required: true, type: "String" }]);
+  assert.deepEqual(result.required, ["file"]);
+});
+
+test("schemaToTypeBox puts required names on the object when schema is absent", () => {
   const result = schemaToTypeBox(mockTypeBox, null, [
     { name: "id", required: true, type: "String", description: "Target ID" },
     { name: "count", required: false, type: "Int32", description: "Count" },
   ]);
+  assert.deepEqual(result.required, ["id"]);
+  assert.equal(result.properties.id.type, "string");
+  assert.equal(result.properties.count.type, "integer");
+});
 
-  assert.deepEqual(result, {
-    kind: "object",
-    properties: {
-      id: { kind: "string", description: "Target ID" },
-      count: { kind: "optional", schema: { kind: "integer", description: "Count" } },
-    },
-  });
+test("official eval_file does not take the Harness tool name", () => {
+  assert.equal(pipelineDynamicToolName("eval_file"), "unity_pipeline_eval_file");
+  assert.equal(pipelineDynamicToolName("run_script"), "unity_run_script");
+  assert.equal(pipelineDynamicToolName("reload_file_override"), "unity_reload_file_override");
 });
 
 test("parameterToTypeBox prefers jsonType over misleading CLR names", () => {
-  assert.equal(parameterToTypeBox(mockTypeBox, { name: "flag", jsonType: "boolean", typeFullName: "System.String" }).kind, "boolean");
-  assert.equal(parameterToTypeBox(mockTypeBox, { name: "count", jsonType: "integer", typeFullName: "System.String" }).kind, "integer");
+  assert.equal(parameterToTypeBox(mockTypeBox, { name: "flag", jsonType: "boolean", typeFullName: "System.String" }).type, "boolean");
+  assert.equal(parameterToTypeBox(mockTypeBox, { name: "count", jsonType: "integer", typeFullName: "System.String" }).type, "integer");
 });
 
 test("parameterToTypeBox maps scalar types", () => {
-  assert.equal(parameterToTypeBox(mockTypeBox, { name: "flag", type: "Boolean" }).kind, "boolean");
-  assert.equal(parameterToTypeBox(mockTypeBox, { name: "num", type: "Int32" }).kind, "integer");
-  assert.equal(parameterToTypeBox(mockTypeBox, { name: "val", type: "Single" }).kind, "number");
-  assert.equal(parameterToTypeBox(mockTypeBox, { name: "txt", type: "String" }).kind, "string");
+  assert.equal(parameterToTypeBox(mockTypeBox, { name: "flag", type: "Boolean" }).type, "boolean");
+  assert.equal(parameterToTypeBox(mockTypeBox, { name: "num", type: "Int32" }).type, "integer");
+  assert.equal(parameterToTypeBox(mockTypeBox, { name: "val", type: "Single" }).type, "number");
+  assert.equal(parameterToTypeBox(mockTypeBox, { name: "txt", type: "String" }).type, "string");
 });
 
 test("filterPipelineCommands hides runtime and excluded commands", () => {
@@ -83,15 +89,11 @@ test("filterPipelineCommands hides runtime and excluded commands", () => {
   assert.equal(filterPipelineCommands(list, new Set(), true).some((command) => command.name === "danger"), true);
 });
 
-test("pipelineCommandSummary exposes shortcut info", () => {
-  const cmd = {
-    name: "list_tests",
-    description: "List tests",
-    parameters: [],
-  };
-
-  const summary = pipelineCommandSummary(cmd, false);
-  assert.equal(summary.name, "list_tests");
-  assert.equal(summary.shortcut, true);
-  assert.equal(summary.shortcutTool, "unity_list_tests");
+test("pipelineCommandSummary shortcut follows the official name, not the override alias", () => {
+  const official = pipelineCommandSummary({ name: "codereload_status", parameters: [] }, false);
+  assert.equal(official.shortcut, true);
+  assert.equal(official.shortcutTool, "unity_codereload_status");
+  assert.equal(pipelineCommandSummary({ name: "reload_file_override", parameters: [] }).shortcut, false);
+  assert.equal(pipelineCommandSummary({ name: "hotreload_status", parameters: [] }).shortcut, false);
 });
+

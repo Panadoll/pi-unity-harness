@@ -1,6 +1,6 @@
 # Compat Upstream Boundary
 
-TODO: determine and record the exact upstream Unity Pipeline repository/package version before the next compat sync. Until then `UPSTREAM_VERSION` is `unknown`.
+上游基线：`com.unity.pipeline@0.6.0-exp.1`，revision `27af91a943315a5702ac7679241399b649d6a20d`（官方内部仓库地址保留在 `package.json`）。Unity 6 工程不使用此 compat，改用官方 `com.unity.pipeline@0.8.0-exp.1`。
 
 ## Patch Inventory
 
@@ -10,6 +10,8 @@ TODO: determine and record the exact upstream Unity Pipeline repository/package 
 | `Runtime/IlInterpreter/HostBinding.cs` | Unity Pipeline interpreter `HostBinding.cs` | rewrite | Local compat copy used by the harness; exact upstream revision is not recorded yet. | TODO: establish upstream provenance |
 | `Runtime/Common/BasePipelineServer.cs` | Unity Pipeline server `BasePipelineServer.cs` | rewrite | Local compat copy used by the harness; exact upstream revision is not recorded yet. | TODO: establish upstream provenance |
 | `Runtime/HotReload/InPlaceReloadProcessor.cs` | Unity Pipeline hot-reload `InPlaceReloadProcessor.cs` | rewrite | Local compat copy used by the harness; exact upstream revision is not recorded yet. | TODO: establish upstream provenance |
+| `Runtime/Attributes/CliCommandAttribute.cs` | Unity Pipeline `Runtime/Attributes/CliCommandAttribute.cs` | moved/synced | Keep command attributes in the standalone Attributes assembly, matching the official package layout while retaining the compat API. | Pipeline 0.8 assembly split |
+| `Runtime/Attributes/CliArgAttribute.cs` | Unity Pipeline `Runtime/Attributes/CliArgAttribute.cs` | moved/synced | Keep command attributes in the standalone Attributes assembly, matching the official package layout while retaining the compat API. | Pipeline 0.8 assembly split |
 
 ## Fully Local Files
 

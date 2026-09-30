@@ -147,3 +147,32 @@ pub unsafe extern "C" fn pi_unity_emit_event(
         let _ = (event_type, event_type_len, payload, payload_len);
     }
 }
+
+#[no_mangle]
+pub unsafe extern "C" fn pi_unity_job_try_start(id: *const u8, id_len: i32) -> c_int {
+    #[cfg(windows)]
+    { crate::imp::job_try_start(&string_from_raw(id, id_len)) }
+    #[cfg(not(windows))]
+    { let _ = (id, id_len); 0 }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn pi_unity_job_cancellation_requested(id: *const u8, id_len: i32) -> c_int {
+    #[cfg(windows)]
+    { crate::imp::job_cancellation_requested(&string_from_raw(id, id_len)) }
+    #[cfg(not(windows))]
+    { let _ = (id, id_len); 1 }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn pi_unity_job_report_progress(
+    id: *const u8,
+    id_len: i32,
+    progress: *const u8,
+    progress_len: i32,
+) -> c_int {
+    #[cfg(windows)]
+    { crate::imp::job_report_progress(&string_from_raw(id, id_len), &string_from_raw(progress, progress_len)) }
+    #[cfg(not(windows))]
+    { let _ = (id, id_len, progress, progress_len); 0 }
+}

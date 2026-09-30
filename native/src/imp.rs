@@ -16,13 +16,14 @@ const HEARTBEAT_TIMEOUT_MS: i64 = 5_000; const REQUEST_TIMEOUT_MS: i64 = 60_000;
 const CLIENT_HEARTBEAT_TIMEOUT_MS: i64 = 15_000; const AUDIT_SCHEMA_VERSION: u64 = 1;
 const AUDIT_FILE_MAX_BYTES: u64 = 5 * 1024 * 1024; const AUDIT_VALUE_MAX_CHARS: usize = 4096;
 const AUDIT_QUERY_MAX_EVENTS: usize = 20_000; const AUDIT_QUERY_DEFAULT_LIMIT: usize = 50;
-const AUDIT_QUERY_MAX_LIMIT: usize = 200; const CAPABILITIES: [&str; 12] = [
+const AUDIT_QUERY_MAX_LIMIT: usize = 200; const CAPABILITIES: [&str; 14] = [
 "native-broker", "direct-status",
 "reload-stable-pipe", "state-plane-v1",
 "background-runner", "focus-state",
 "heartbeat-timeout", "request-timeout",
 "client-heartbeat-timeout", "context-snapshot-v1",
 "action-timeline-v1", "modal-probe-v1",
+"pipeline-jobs-v1", "pipeline-progress-v1",
 ]; const MODAL_PROBE_INTERVAL_MS: i64 = 500;
 const YOLO_AUTO_CLICK_COOLDOWN_MS: i64 = 8_000; fn native_info() -> Value {
 json!({ "crateVersion": env!("CARGO_PKG_VERSION"),
@@ -132,7 +133,7 @@ r"Local\PiUnityHarnessState_{}", project_key_hash(project_path)
 id: String, line: Vec<u8>,
 enqueued_at_ms: i64, delivered_at_ms: i64,
 timeout_ms: i64, audit_action_id: u64,
-request_type: String, action: String,
+request_type: String, action: String, detached_job: bool,
 } struct EditorObservation {
 status: String, focus_state: String,
 window_state: String, }
@@ -152,7 +153,7 @@ editor_status: Mutex<String>, pending: Mutex<VecDeque<ManagedRequest>>,
 in_flight: Mutex<HashMap<String, ManagedRequest>>, writer: Mutex<Option<mpsc::Sender<Vec<u8>>>>,
 state_plane: Mutex<Option<StatePlane>>, next_audit_action_id: AtomicU64,
 audit_io: Mutex<()>, modal_observation: Mutex<ModalObservation>,
-yolo_mode: AtomicI32, last_auto_click_ms: AtomicI64,
+yolo_mode: AtomicI32, last_auto_click_ms: AtomicI64, jobs: jobs::JobStore,
 } impl Broker {
 fn new(project_path: String, pipe_name: String, token: String) -> Self { let state_plane_name = state_plane_name(&project_path);
 let state_plane = StatePlane::create(&state_plane_name); Self {
@@ -165,7 +166,7 @@ editor_status: Mutex::new("starting".to_string()), pending: Mutex::new(VecDeque:
 in_flight: Mutex::new(HashMap::new()), writer: Mutex::new(None),
 state_plane: Mutex::new(state_plane), next_audit_action_id: AtomicU64::new((now_ms().max(0) as u64).saturating_mul(1000)),
 audit_io: Mutex::new(()), modal_observation: Mutex::new(ModalObservation::default()),
-yolo_mode: AtomicI32::new(YoloMode::Off as i32), last_auto_click_ms: AtomicI64::new(0),
+yolo_mode: AtomicI32::new(YoloMode::Off as i32), last_auto_click_ms: AtomicI64::new(0), jobs: jobs::JobStore::new(),
 } }
 fn derive_lifecycle(&self, now: i64) -> LifecycleSnapshot { let managed = self.managed_state_name();
 let modal_present = self .modal_observation
@@ -313,7 +314,7 @@ unsafe { SendMessageW(hwnd, BM_CLICK, 0, 0);
 let now = now_ms(); let heartbeat_timed_out = self.is_heartbeat_timed_out_at(now);
 let mut lines: Vec<Vec<u8>> = Vec::new(); if let Ok(mut pending) = self.pending.lock() {
 let mut kept = VecDeque::new(); while let Some(request) = pending.pop_front() {
-if now.saturating_sub(request.enqueued_at_ms) > request.timeout_ms { let response =
+if !request.detached_job && now.saturating_sub(request.enqueued_at_ms) > request.timeout_ms { let response =
 self.error_line(&request.id, "request_timeout_before_dispatch"); self.append_audit_completed(&request, &response);
 lines.push(response); } else {
 kept.push_back(request); }
@@ -324,8 +325,8 @@ let expired: Vec<String> = in_flight .iter()
 .filter_map(|(id, request)| { let age_start = if request.delivered_at_ms > 0 {
 request.delivered_at_ms } else {
 request.enqueued_at_ms };
-if (heartbeat_timed_out && now.saturating_sub(age_start) > HEARTBEAT_TIMEOUT_MS)
-|| now.saturating_sub(age_start) > request.timeout_ms {
+if !request.detached_job && ((heartbeat_timed_out && now.saturating_sub(age_start) > HEARTBEAT_TIMEOUT_MS)
+|| now.saturating_sub(age_start) > request.timeout_ms) {
 Some(id.clone()) } else {
 None }
 }) .collect();
@@ -365,8 +366,10 @@ if generation > 0 { self.managed_generation.store(generation, Ordering::SeqCst);
 if let Some(status) = editor_status {
 if let Ok(mut guard) = self.editor_status.lock() { *guard = status;
 } }
-self.last_heartbeat_ms.store(now_ms(), Ordering::SeqCst); if state != MANAGED_STATE_READY {
-self.fail_all_pending(self.managed_error()); }
+self.last_heartbeat_ms.store(now_ms(), Ordering::SeqCst); if state == MANAGED_STATE_RELOADING || state == MANAGED_STATE_QUITTING {
+self.jobs.interrupt_incomplete(now_ms()); }
+if state != MANAGED_STATE_READY { self.fail_all_pending(self.managed_error());
+}
 self.publish_status_snapshot(); }
 fn heartbeat(&self, generation: i64) { if generation > 0 {
 self.managed_generation.store(generation, Ordering::SeqCst); }
@@ -387,7 +390,7 @@ lines.push(response); }
 self.send_line(line); }
 self.publish_status_snapshot(); }
 fn has_active_work(&self) -> bool { let pending = self.pending.lock().map(|q| q.len()).unwrap_or(0);
-let in_flight = self.in_flight.lock().map(|m| m.len()).unwrap_or(0); pending > 0 || in_flight > 0
+let in_flight = self.in_flight.lock().map(|m| m.len()).unwrap_or(0); pending > 0 || in_flight > 0 || self.jobs.active_len() > 0
 } fn send_line(&self, bytes: Vec<u8>) {
 if let Ok(guard) = self.writer.lock() { if let Some(tx) = guard.as_ref() {
 let _ = tx.try_send(bytes); }
@@ -439,7 +442,11 @@ self.complete_direct_audit(&request, &response); self.send_line(response);
 id, json!({
 "protocolVersion": NATIVE_PROTOCOL_VERSION, "capabilities": CAPABILITIES,
 "native": native_info() }),
-)), _ => {
+)), "command_submit" | "command_status" | "command_cancel" | "command_progress" => {
+if req_type == "command_submit" && text.len() > REQUEST_BUFFER_LIMIT { self.send_line(self.typed_error_line(id, "request_too_large", "request_too_large"));
+return; }
+self.handle_job_command(id, req_type, &value);
+} _ => {
 if self.managed_state.load(Ordering::SeqCst) != MANAGED_STATE_READY { self.send_line(self.error_line(id, self.managed_error()));
 return; }
 
@@ -450,7 +457,7 @@ let request = ManagedRequest { id: id.to_string(),
 line: text.as_bytes().to_vec(), enqueued_at_ms: now_ms(),
 delivered_at_ms: 0, timeout_ms: request_timeout_ms(&value),
 audit_action_id, request_type: req_type.to_string(),
-action, };
+action, detached_job: false, };
 self.append_audit_started(&request, &value); if let Ok(mut pending) = self.pending.lock() {
 pending.push_back(request); }
 self.publish_status_snapshot(); }
@@ -458,26 +465,38 @@ self.publish_status_snapshot(); }
 fn poll_request( &self,
 buffer: *mut u8, buffer_len: i32,
 out_required_len: *mut i32, ) -> i32 {
-self.reap_timeouts(); let request = {
+self.reap_timeouts(); if let Some(request) = self.jobs.take_dispatchable(now_ms()) {
+return self.copy_polled_request(request, buffer, buffer_len, out_required_len); }
+let request = {
 let mut pending = match self.pending.lock() { Ok(pending) => pending,
 Err(_) => return 0, };
 pending.pop_front() };
 let Some(request) = request else { return 0;
-}; let required = request.line.len() as i32;
+}; self.copy_polled_request(request, buffer, buffer_len, out_required_len)
+}
+fn copy_polled_request( &self,
+mut request: ManagedRequest, buffer: *mut u8,
+buffer_len: i32, out_required_len: *mut i32,
+) -> i32 { let required = request.line.len() as i32;
 unsafe { if !out_required_len.is_null() {
 *out_required_len = required; }
 } if buffer.is_null() || buffer_len < required {
-if let Ok(mut pending) = self.pending.lock() { pending.push_front(request);
+if request.detached_job { self.jobs.requeue_undelivered(&request.id);
+} else if let Ok(mut pending) = self.pending.lock() { pending.push_front(request);
 } return -1;
 }
 unsafe {
 std::ptr::copy_nonoverlapping(request.line.as_ptr(), buffer, request.line.len()); }
-
-if let Ok(mut in_flight) = self.in_flight.lock() { let mut delivered = request;
-delivered.delivered_at_ms = now_ms(); in_flight.insert(delivered.id.clone(), delivered);
-} self.publish_status_snapshot();
-1 }
-fn complete_request(&self, id: &str, response: Vec<u8>) { let request = self
+if request.detached_job { self.jobs.note_delivered(&request.id);
+self.publish_status_snapshot(); return 1;
+}
+request.delivered_at_ms = now_ms(); if let Ok(mut in_flight) = self.in_flight.lock() {
+in_flight.insert(request.id.clone(), request); }
+self.publish_status_snapshot(); 1
+}
+fn complete_request(&self, id: &str, response: Vec<u8>) { if self.jobs.complete(id, &response, now_ms()) {
+self.publish_status_snapshot(); return;
+} let request = self
 .in_flight .lock()
 .ok() .and_then(|mut in_flight| in_flight.remove(id));
 let Some(request) = request else { self.publish_status_snapshot();
@@ -493,9 +512,41 @@ action: &str, value: &Value,
 id: id.to_string(), line: Vec::new(),
 enqueued_at_ms: now_ms(), delivered_at_ms: now_ms(),
 timeout_ms: request_timeout_ms(value), audit_action_id: self.next_audit_action_id.fetch_add(1, Ordering::Relaxed),
-request_type: request_type.to_string(), action: action.to_string(),
+request_type: request_type.to_string(), action: action.to_string(), detached_job: false,
 }; self.append_audit_started(&request, value);
 request }
+fn handle_job_command(&self, id: &str, req_type: &str, value: &Value) { let now = now_ms();
+match req_type { "command_submit" => self.handle_job_submit(id, value, now),
+"command_status" => self.reply_job_query(id, self.jobs.status(&job_id_of(value), now)), "command_cancel" => self.reply_job_query(id, self.jobs.cancel(&job_id_of(value), now)),
+"command_progress" => self.reply_job_query(id, self.jobs.progress(&job_id_of(value), now)), _ => self.send_line(self.error_line(id, "unsupported_job_command")),
+} }
+fn handle_job_submit(&self, id: &str, value: &Value, now: i64) { if self.managed_state.load(Ordering::SeqCst) != MANAGED_STATE_READY {
+self.send_line(self.error_line(id, self.managed_error())); return;
+} let audit_action_id = self.next_audit_action_id.fetch_add(1, Ordering::Relaxed);
+match self.jobs.submit(id, value, now, audit_action_id) { Ok(prepared) => {
+self.append_audit_started(&prepared.audit, value); let response = self.ok_line(id, prepared.snapshot);
+self.complete_direct_audit(&prepared.audit, &response); self.send_line(response);
+} Err(error) => {
+let (message, error_type) = match error { jobs::SubmitError::MissingCommand => ("missing_command", "invalid_request"),
+jobs::SubmitError::InvalidTimeout => ("invalid_execution_timeout", "invalid_request"), jobs::SubmitError::QueueFull => ("queue_full", "queue_full"),
+}; self.send_line(self.typed_error_line(id, message, error_type));
+} }
+self.publish_status_snapshot(); }
+fn reply_job_query(&self, id: &str, snapshot: Option<Value>) { match snapshot {
+Some(result) => self.send_line(self.ok_line(id, result)), None => self.send_line(self.typed_error_line(id, "job_not_found", "job_not_found")),
+} }
+fn typed_error_line(&self, reply_to: &str, error: &str, error_type: &str) -> Vec<u8> { let mut bytes = serde_json::to_vec(&json!({
+"reply_to": reply_to, "ok": false,
+"error": error, "error_type": error_type,
+})) .unwrap_or_default();
+bytes.push(b'\n'); bytes
+}
+fn job_try_start(&self, id: &str) -> i32 { if self.jobs.try_start(id, now_ms()) { 1 } else { 0 }
+}
+fn job_cancellation_requested(&self, id: &str) -> i32 { if self.jobs.cancellation_requested(id, now_ms()) { 1 } else { 0 }
+}
+fn job_report_progress(&self, id: &str, progress_json: &str) -> i32 { if self.jobs.report_progress(id, progress_json, now_ms()) { 1 } else { 0 }
+}
 fn complete_direct_audit(&self, request: &ManagedRequest, response: &[u8]) { self.append_audit_completed(request, response);
 } fn append_audit_started(&self, request: &ManagedRequest, value: &Value) {
 let input = audit_input(value); self.append_audit_event(&json!({
@@ -892,4 +943,17 @@ let mut line = serde_json::to_vec(&json!({ "type": "event",
 })) .unwrap_or_default();
 line.push(b'\n'); broker.send_line(line);
 } }
+pub fn job_try_start(id: &str) -> i32 { broker().map(|broker| broker.job_try_start(id)).unwrap_or(0)
+}
+pub fn job_cancellation_requested(id: &str) -> i32 { broker()
+.map(|broker| broker.job_cancellation_requested(id)) .unwrap_or(1)
+}
+pub fn job_report_progress(id: &str, progress_json: &str) -> i32 { broker()
+.map(|broker| broker.job_report_progress(id, progress_json)) .unwrap_or(0)
+}
+fn job_id_of(value: &Value) -> String { value
+.get("payload") .and_then(|payload| payload.get("jobId"))
+.and_then(Value::as_str) .unwrap_or("")
+.to_string() }
+mod jobs;
 #[cfg(test)] mod tests;

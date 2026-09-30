@@ -101,7 +101,7 @@ async fn main() -> ExitCode {
         start_instant,
     };
 
-    if let Some(Commands::Eval(ref args)) = cli.command {
+    if let Some(Commands::Eval(args)) = &cli.command {
         if args.code.is_none() && args.file.is_none() {
             return handle_exit(
                 Err(usage::usage_error(
@@ -113,6 +113,11 @@ async fn main() -> ExitCode {
                 )),
                 call_base.clone(),
             );
+        }
+    }
+    if let Some(Commands::Pipeline(args)) = &cli.command {
+        if let Err(err) = commands::validate_pipeline_job_flags(args.job, args.job_timeout) {
+            return handle_exit(Err(err), call_base.clone());
         }
     }
 
@@ -436,6 +441,13 @@ fn parse_mux_command(argv: &[String]) -> Result<MuxParsed, CliError> {
                             "pi-unity eval \"<code>\"",
                             "pi-unity eval -f Temp/PiUnityHarness/AgentScratch/probe.repl",
                         ],
+                    ))
+                }
+                Some(Commands::Pipeline(args)) => {
+                    commands::validate_pipeline_job_flags(args.job, args.job_timeout)?;
+                    Ok(MuxParsed::Command(
+                        Commands::Pipeline(args),
+                        ViewOptions::from_parts(&parsed.fields, parsed.full),
                     ))
                 }
                 Some(cmd) => Ok(MuxParsed::Command(
@@ -797,6 +809,15 @@ fn handle_error(err: &CliError, json_mode: bool, project_root: Option<&Path>) {
                     message: message.clone(),
                 },
                 CliError::Busy(_) => CliError::Busy(msg),
+                CliError::JobFinished {
+                    code,
+                    snapshot,
+                    ..
+                } => CliError::JobFinished {
+                    code: code.clone(),
+                    message: msg,
+                    snapshot: snapshot.clone(),
+                },
             },
             json_mode,
         )
@@ -806,6 +827,7 @@ fn handle_error(err: &CliError, json_mode: bool, project_root: Option<&Path>) {
 
 #[cfg(test)]
 mod tests {
+    use super::args::PipelineJobAction;
     use super::client::normalize_pipe_name;
     use super::commands::parse_param_pairs;
     use super::output::{format_safe_output, is_base64_data, strip_large_base64_and_save};
@@ -954,6 +976,39 @@ mod tests {
         let err = parse_mux_command(&["--trace".into(), "status".into()]).unwrap_err();
         assert_eq!(err.exit_code(), 2);
         assert!(err.message().contains("--trace"));
+    }
+
+    #[test]
+    fn mux_job_timeout_without_job_is_usage() {
+        let err = parse_mux_command(&[
+            "pipeline".into(),
+            "eval_file".into(),
+            "--job-timeout".into(),
+            "1000".into(),
+        ])
+        .unwrap_err();
+        assert_eq!(err.exit_code(), 2);
+        assert!(err.message().contains("--job-timeout"));
+    }
+
+    #[test]
+    fn mux_pipeline_job_parses_status() {
+        let parsed = parse_mux_command(&[
+            "pipeline-job".into(),
+            "status".into(),
+            "job-1".into(),
+            "--timeout".into(),
+            "1500".into(),
+        ])
+        .unwrap();
+        match parsed {
+            MuxParsed::Command(Commands::PipelineJob(args), _) => {
+                assert!(matches!(args.action, PipelineJobAction::Status));
+                assert_eq!(args.job_id, "job-1");
+                assert_eq!(args.timeout, 1500);
+            }
+            other => panic!("expected pipeline-job, got {other:?}"),
+        }
     }
 
     #[test]

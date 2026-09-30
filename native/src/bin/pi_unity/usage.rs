@@ -49,6 +49,11 @@ pub fn error_payload(err: &CliError) -> serde_json::Value {
             obj.insert("result".into(), json!({ "expected": expected, "actual": actual }));
         }
     }
+    if let CliError::JobFinished { snapshot, .. } = err {
+        if let Some(obj) = payload.as_object_mut() {
+            obj.insert("result".into(), snapshot.clone());
+        }
+    }
     // 编译失败诊断：standalone 与 mux 共用此载荷。匹配编译失败码时附加
     // compiled:false 与错误摘要，调用方直接读 compiled 即可，无需再解析文本。
     if let CliError::Broker { code, message } = err {
@@ -88,7 +93,8 @@ pub fn valid_flags(subcommand: &str) -> &'static str {
         "compile" => "--timeout (--help 永远合法)",
         "snapshot" => "--depth, --max-nodes, --log-limit, --log-level, --timeout, --fields, --full (--help 永远合法)",
         "list-commands" => "--timeout, --fields, --full (--help 永远合法)",
-        "pipeline" => "<name>, -p/--param, --params-json, --timeout (--help 永远合法)",
+        "pipeline" => "<name>, -p/--param, --params-json, --timeout, --job, --job-timeout (--help 永远合法)",
+        "pipeline-job" => "status|cancel|progress, <jobId>, --timeout (--help 永远合法)",
         "run-tests" => "--mode, --filter, --timeout (--help 永远合法)",
         "observe" => "--frames, --interval, --overlay, --timeout (--help 永远合法)",
         "capture" => "--mode, --out, --timeout (--help 永远合法)",
@@ -189,6 +195,7 @@ fn extract_quoted(text: &str) -> Option<&str> {
 fn infer_subcommand(text: &str) -> &'static str {
     const NAMES: &[&str] = &[
         "list-commands",
+        "pipeline-job",
         "run-tests",
         "snapshot",
         "pipeline",
