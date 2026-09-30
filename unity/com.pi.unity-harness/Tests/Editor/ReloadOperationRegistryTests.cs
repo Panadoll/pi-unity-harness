@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using NUnit.Framework;
 using Pi.UnityHarness.Editor;
 
@@ -39,6 +40,37 @@ namespace Pi.UnityHarness.Editor.Tests
 
             Assert.IsTrue(secondCalled);
             CollectionAssert.AreEqual(new[] { "second" }, PiUnityReloadOperationRegistry.PendingNames());
+        }
+
+        private sealed class ThreadRecordingOperation : IReloadAwareOperation
+        {
+            public readonly List<int> QueryThreadIds = new List<int>();
+            public string Name { get { return "recording"; } }
+            public bool HasPendingRequest()
+            {
+                lock (QueryThreadIds)
+                    QueryThreadIds.Add(Thread.CurrentThread.ManagedThreadId);
+                return true;
+            }
+            public void BeforeReload() { }
+            public void ResumeAfterReload() { }
+        }
+
+        [Test]
+        public void PendingSnapshotIsReadableOffMainThreadWithoutQueryingOperations()
+        {
+            int mainThreadId = Thread.CurrentThread.ManagedThreadId;
+            var operation = new ThreadRecordingOperation();
+            PiUnityReloadOperationRegistry.Register(operation);
+            PiUnityReloadOperationRegistry.RefreshPendingSnapshot();
+
+            IReadOnlyList<string> seen = null;
+            var reader = new Thread(() => seen = PiUnityReloadOperationRegistry.PendingSnapshot);
+            reader.Start();
+            reader.Join();
+
+            CollectionAssert.AreEqual(new[] { "recording" }, seen);
+            CollectionAssert.AreEqual(new[] { mainThreadId }, operation.QueryThreadIds);
         }
 
         [Test]

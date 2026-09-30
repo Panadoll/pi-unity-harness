@@ -1,3 +1,5 @@
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -10,8 +12,39 @@ fn command_output(program: &str, args: &[&str]) -> Option<String> {
     (!value.is_empty()).then_some(value)
 }
 
+/// CLI 与 cdylib 共用这个值：status 据此发现 bin/pi-unity.exe 和 Unity 已加载的 DLL 来自不同源码。
+fn source_hash() -> String {
+    fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
+        let Ok(entries) = fs::read_dir(dir) else { return };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                collect(&path, out);
+            } else {
+                out.push(path);
+            }
+        }
+    }
+    let mut files = vec![PathBuf::from("Cargo.toml")];
+    collect(Path::new("src"), &mut files);
+    files.sort();
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for file in files {
+        let name = file.to_string_lossy().replace('\\', "/");
+        let body = fs::read(&file).unwrap_or_default();
+        for byte in name.as_bytes().iter().chain(&[0u8]).chain(&body) {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+    }
+    format!("{hash:016x}")
+}
+
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=src");
+    println!("cargo:rerun-if-changed=Cargo.toml");
+    println!("cargo:rustc-env=PI_UNITY_SRC_HASH={}", source_hash());
     let git_rev = command_output("git", &["rev-parse", "--short", "HEAD"])
         .unwrap_or_else(|| "unknown".to_string());
     let git_dirty = command_output("git", &["status", "--porcelain"])

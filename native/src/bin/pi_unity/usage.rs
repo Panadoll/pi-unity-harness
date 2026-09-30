@@ -24,6 +24,7 @@ pub fn format_version_json() -> String {
             "crateVersion": VERSION,
             "gitRev": env!("PI_UNITY_GIT_REV"),
             "dirty": env!("PI_UNITY_GIT_DIRTY") == "true",
+            "srcHash": env!("PI_UNITY_SRC_HASH"),
             "protocolVersion": super::EXPECTED_PROTOCOL_VERSION,
         }
     })).unwrap()

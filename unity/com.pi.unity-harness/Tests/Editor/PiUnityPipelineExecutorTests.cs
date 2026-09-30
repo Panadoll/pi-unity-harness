@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using System.Threading.Tasks;
 using Newtonsoft.Json.Linq;
 using NUnit.Framework;
 using Pi.UnityHarness.Editor;
@@ -120,6 +121,36 @@ namespace Pi.UnityHarness.Editor.Tests
                 PiUnityPipelineCommandExecutor.BuildCommandNotFoundMessage("scene", longCommand);
             Assert.That(boundedSuggestionMessage.Length, Is.LessThan(200));
             StringAssert.DoesNotContain(longCommandName, boundedSuggestionMessage);
+        }
+
+        [Test]
+        public void InvokeCommand_BackgroundCommandCompletesOnMainThreadWithoutServerRoundTrip()
+        {
+            CommandInfo command = CreateCommand("sample", false);
+
+            object result = PiUnityPipelineCommandExecutor.InvokeCommand(command, JObject.Parse("{\"name\":\"agent\"}"));
+
+            Assert.AreEqual("agent3False", result);
+        }
+
+        [Test]
+        public void InvokeCommand_RejectsPendingTaskInsteadOfBlockingMainThread()
+        {
+            s_pendingCommand = new TaskCompletionSource<string>();
+            MethodInfo method = typeof(PiUnityPipelineExecutorTests).GetMethod(nameof(PendingCommand), BindingFlags.Static | BindingFlags.NonPublic);
+            var command = new CommandInfo("pending", "description", false, method, new List<CommandParameterInfo>());
+
+            var ex = Assert.Throws<System.InvalidOperationException>(() => PiUnityPipelineCommandExecutor.InvokeCommand(command, new JObject()));
+
+            StringAssert.Contains("InvokeCommandAsync", ex.Message);
+            s_pendingCommand.SetResult("done");
+        }
+
+        private static TaskCompletionSource<string> s_pendingCommand;
+
+        private static Task<string> PendingCommand()
+        {
+            return s_pendingCommand.Task;
         }
 
         private static CommandInfo CreateCommand(string name, bool runtimeOnly)

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using UnityEngine;
 
 namespace Pi.UnityHarness.Editor
@@ -60,7 +61,21 @@ namespace Pi.UnityHarness.Editor
             }
         }
 
-        internal static IReadOnlyList<string> PendingNames()
+        private static string[] s_pendingSnapshot = Array.Empty<string>();
+
+        // HasPendingRequest reads SessionState, which Unity only allows on the main thread;
+        // background threads must read this snapshot instead of calling PendingNames.
+        internal static IReadOnlyList<string> PendingSnapshot
+        {
+            get { return Volatile.Read(ref s_pendingSnapshot); }
+        }
+
+        internal static void RefreshPendingSnapshot()
+        {
+            Volatile.Write(ref s_pendingSnapshot, PendingNames().ToArray());
+        }
+
+        internal static List<string> PendingNames()
         {
             var names = new List<string>();
             foreach (IReloadAwareOperation operation in Operations)
@@ -81,6 +96,7 @@ namespace Pi.UnityHarness.Editor
         internal static void ResetForTests()
         {
             Operations.Clear();
+            Volatile.Write(ref s_pendingSnapshot, Array.Empty<string>());
         }
 
         private sealed class CompileReloadOperation : IReloadAwareOperation

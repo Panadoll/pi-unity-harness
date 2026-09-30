@@ -15,6 +15,8 @@ from typing import Any, Iterable
 
 
 ERROR_ORDER = ("bridge_not_found", "compile_error", "busy", "timeout", "usage", "execution_failed")
+# 集成测试的 mock 工程建在系统临时目录下；旧版测试没隔离日志目录，混进了真实日志。
+TEST_PROJECT_MARKERS = ("\\appdata\\local\\temp\\", "/tmp/")
 
 
 def default_log_root() -> Path:
@@ -60,6 +62,23 @@ def load_events(paths: Iterable[Path]) -> tuple[list[dict[str, Any]], int, int]:
     return events, malformed, ignored
 
 
+def is_test_event(event: dict[str, Any], traces_dir: Path) -> bool:
+    """只有带 trace 的调用能判定：trace 里的工程根在临时目录下即视为测试调用。"""
+    trace_id = event.get("traceId")
+    if not isinstance(trace_id, str) or len(trace_id) < 8:
+        return False
+    day = f"{trace_id[:4]}-{trace_id[4:6]}-{trace_id[6:8]}"
+    try:
+        text = (traces_dir / day / f"{trace_id}.log").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    for line in text.splitlines():
+        if "[discover] Project root:" in line:
+            lowered = line.lower()
+            return any(marker in lowered for marker in TEST_PROJECT_MARKERS)
+    return False
+
+
 def parse_time(value: str) -> datetime:
     normalized = value.strip().replace("Z", "+00:00")
     result = datetime.fromisoformat(normalized)
@@ -100,7 +119,9 @@ def ratio(numerator: int, denominator: int) -> float:
     return numerator / denominator * 100 if denominator else 0.0
 
 
-def summarize(events: list[dict[str, Any]], malformed: int, ignored: int, paths: list[Path]) -> dict[str, Any]:
+def summarize(
+    events: list[dict[str, Any]], malformed: int, ignored: int, paths: list[Path], test_rows: int = 0
+) -> dict[str, Any]:
     failures = [event for event in events if event.get("exitCode") != 0]
     errors = Counter(error_name(event) for event in events if error_name(event))
     by_command: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -157,6 +178,7 @@ def summarize(events: list[dict[str, Any]], malformed: int, ignored: int, paths:
         "rows": len(events),
         "malformedRows": malformed,
         "ignoredRows": ignored,
+        "testRows": test_rows,
         "firstUtc": min((event.get("tsUtc", "") for event in events), default=None),
         "lastUtc": max((event.get("tsUtc", "") for event in events), default=None),
         "clients": dict(Counter(event.get("client", "unknown") for event in events)),
@@ -204,8 +226,11 @@ def print_report(report: dict[str, Any], top: int) -> None:
     if report["days"]:
         worst = report["days"][0]
         print(f"worst day by failure rate: {worst['date']} ({worst['failureRatePct']:.1f}%, {worst['failures']}/{worst['count']})")
-    if report["malformedRows"] or report["ignoredRows"]:
-        print(f"skipped: malformed={report['malformedRows']} ignored={report['ignoredRows']}")
+    if report["malformedRows"] or report["ignoredRows"] or report["testRows"]:
+        print(
+            f"skipped: malformed={report['malformedRows']} ignored={report['ignoredRows']} "
+            f"test={report['testRows']}"
+        )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -215,6 +240,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--until", type=parse_time, help="仅统计该 UTC 时间之前的事件")
     parser.add_argument("--top", type=int, default=10, help="显示耗时最高的命令数（默认 10）")
     parser.add_argument("--json", action="store_true", help="输出 JSON 报告")
+    parser.add_argument("--include-test", action="store_true", help="保留工程根在临时目录下的测试调用")
     return parser
 
 
@@ -228,15 +254,20 @@ def main(argv: list[str] | None = None) -> int:
     if not paths:
         parser.error(f"找不到日志文件: {path}")
     events, malformed, ignored = load_events(paths)
+    traces_dir = paths[0].parent / "traces"
     filtered = []
+    test_rows = 0
     for event in events:
         timestamp = event_time(event)
         if args.since and (timestamp is None or timestamp < args.since):
             continue
         if args.until and (timestamp is None or timestamp > args.until):
             continue
+        if not args.include_test and is_test_event(event, traces_dir):
+            test_rows += 1
+            continue
         filtered.append(event)
-    report = summarize(filtered, malformed, ignored, paths)
+    report = summarize(filtered, malformed, ignored, paths, test_rows)
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
     else:

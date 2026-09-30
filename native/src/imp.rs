@@ -28,7 +28,7 @@ const AUDIT_QUERY_MAX_LIMIT: usize = 200; const CAPABILITIES: [&str; 14] = [
 const YOLO_AUTO_CLICK_COOLDOWN_MS: i64 = 8_000; fn native_info() -> Value {
 json!({ "crateVersion": env!("CARGO_PKG_VERSION"),
 "gitRev": env!("PI_UNITY_GIT_REV"), "dirty": env!("PI_UNITY_GIT_DIRTY") == "true",
-"protocolVersion": NATIVE_PROTOCOL_VERSION, })
+"srcHash": env!("PI_UNITY_SRC_HASH"), "protocolVersion": NATIVE_PROTOCOL_VERSION, })
 } #[derive(Clone, Debug, PartialEq)]
 struct LifecycleSnapshot { managed: &'static str,
 transport: &'static str, main_thread: &'static str,

@@ -41,7 +41,17 @@ $binDir = Join-Path $root 'bin'
 New-Item -ItemType Directory -Force -Path $binDir | Out-Null
 
 $cliSource = Join-Path $nativeDir 'target/release/pi-unity.exe'
+$cliDest = Join-Path $binDir 'pi-unity.exe'
 if (Test-Path -LiteralPath $cliSource) {
-  Copy-Item -Force $cliSource (Join-Path $binDir 'pi-unity.exe')
+  Get-ChildItem -LiteralPath $binDir -Filter 'pi-unity.exe.old-*' -ErrorAction SilentlyContinue |
+    ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue }
+  try {
+    Copy-Item -Force $cliSource $cliDest
+  } catch {
+    # 常驻的 pi-unity mux 会锁住 exe；Windows 允许改名正在运行的 exe，已在跑的进程继续用旧映像。
+    Rename-Item -LiteralPath $cliDest -NewName ("pi-unity.exe.old-{0}" -f [DateTime]::UtcNow.Ticks)
+    Copy-Item -Force $cliSource $cliDest
+    Write-Warning 'bin/pi-unity.exe was in use; old binary renamed. Running mux processes keep the old build until restarted.'
+  }
   Write-Host 'pi-unity CLI binary copied to bin/'
 }

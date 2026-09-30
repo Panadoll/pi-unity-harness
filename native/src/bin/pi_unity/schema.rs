@@ -197,13 +197,27 @@ pub fn shape_status(raw: &Value) -> Value {
     } else {
         "none".to_string()
     };
-    json!({
+    let mut shaped = json!({
         "editor": if editor.is_empty() { "unknown" } else { &editor },
         "generation": generation,
         "play": play,
         "modal": modal_text,
         "focus": pick_str(raw, &["focusState"]),
         "editorStatus": editor_status,
+    });
+    if let Some(warning) = build_mismatch(raw, env!("PI_UNITY_SRC_HASH")) {
+        shaped["buildMismatch"] = json!(warning);
+    }
+    shaped
+}
+
+fn build_mismatch(raw: &Value, cli_src_hash: &str) -> Option<String> {
+    let native = raw.get("native")?;
+    let dll_src_hash = native.get("srcHash").and_then(Value::as_str).unwrap_or("unknown");
+    (dll_src_hash != cli_src_hash).then(|| {
+        format!(
+            "pi-unity CLI (src {cli_src_hash}) 与 Unity 已加载的 native DLL (src {dll_src_hash}) 不是同一份源码构建；运行 scripts/build-native.ps1 后重启 Editor"
+        )
     })
 }
 
@@ -624,6 +638,17 @@ mod tests {
             },
         );
         assert_eq!(out, raw);
+    }
+
+    #[test]
+    fn status_flags_cli_and_dll_built_from_different_sources() {
+        let stale = json!({"native": {"srcHash": "aaaa"}});
+        let legacy = json!({"native": {"gitRev": "x"}});
+        let same = json!({"native": {"srcHash": "bbbb"}});
+        assert!(build_mismatch(&stale, "bbbb").unwrap().contains("src aaaa"));
+        assert!(build_mismatch(&legacy, "bbbb").unwrap().contains("src unknown"));
+        assert_eq!(build_mismatch(&same, "bbbb"), None);
+        assert_eq!(build_mismatch(&json!({"managedState": "ready"}), "bbbb"), None);
     }
 
     #[test]

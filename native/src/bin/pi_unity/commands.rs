@@ -712,8 +712,8 @@ pub(crate) async fn execute_harness_command(
                             break;
                         }
                     }
-                    Err(CliError::BridgeNotFound(msg)) => {
-                        return Err(CliError::BridgeNotFound(msg));
+                    Err(e @ (CliError::BridgeNotFound(_) | CliError::StaleBridge(_))) => {
+                        return Err(e);
                     }
                     Err(_) => {}
                 }
