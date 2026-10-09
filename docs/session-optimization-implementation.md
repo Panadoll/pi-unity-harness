@@ -90,7 +90,7 @@ the complete Editor integration. No active Editor was operated for this work.
 - Extension/mux behavior: `.pi/extensions/pi-unity-harness/{index,mux.test}.ts`.
 - Unity behavior/tests: `PiUnityCompileCoordinator.cs`, input backend,
   `VisionJson.cs`, and the corresponding `Tests/Editor` fixtures.
-## 验证轮补记（2026-09-18，真实 Editor：F:/SampleProjects\ctest，2022.3.14f1）
+## 验证轮补记（2026-09-18，真实 Editor：F:\SampleProjects\ctest，2022.3.14f1）
 
 本节记录在真实 Editor 上重跑基线、修复三个真实缺陷的结果。详细证据与未验证项见
 `docs/handoff-session-verification-2026-09-18.md`。
@@ -126,7 +126,7 @@ the complete Editor integration. No active Editor was operated for this work.
 
 ### 环境改动（仓库外，需 review 时知情）
 
-- `F:/SampleProjects\ctest\Packages\manifest.json` 增加 `"testables": ["com.pi.unity-harness"]`，
+- `F:\SampleProjects\ctest\Packages\manifest.json` 增加 `"testables": ["com.pi.unity-harness"]`，
   否则包内测试程序集不进 Test Runner（备份：`Temp/ctest-manifest-backup/manifest.json.orig`）。
 - 清掉 6 个占用单客户端管道的旧 mux 进程；`bin/pi-unity.exe` 已用 release 重新构建。
 - `unity/com.pi.unity-harness/Editor/Plugins/x86_64/pi_unity_harness_native.dll`（7-31 构建）

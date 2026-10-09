@@ -43,7 +43,8 @@ Discovery precedence: explicit selection (`/unity-discover` / `--project-path`) 
 | `pi-unity compile` | `--timeout <ms>` | Compile and wait until ready |
 | `pi-unity snapshot` | `--depth` `--max-nodes` `--fields` `--full` | Hierarchy (default path,name,active), selection, logs |
 | `pi-unity list-commands` | `--full` | Pipeline commands (default name,summary) |
-| `pi-unity pipeline <name>` | `-p <key=val>` `--params-json` | Run a `[CliCommand]` |
+| `pi-unity pipeline <name>` | `-p <key=val>` `--params-json` `--job` `--job-timeout` | Run a `[CliCommand]`; `--job` submits only, and `--job-timeout` requires `--job` |
+| `pi-unity pipeline-job` | `status\|cancel\|progress <jobId>` | Query the same pipe job; terminal failures still return the snapshot |
 | `pi-unity run-tests` | `--mode <edit\|play>` `--filter` | EditMode / PlayMode tests |
 | `pi-unity observe` | `--frames` `--interval` `--overlay` | Multi-frame capture + dHash; paths only |
 | `pi-unity capture` | `--mode` `--out` | Single screenshot |
@@ -75,7 +76,7 @@ Run the build script in the repository root:
 powershell -ExecutionPolicy Bypass -File .\scripts\build-native.ps1
 ```
 
-The compiled `pi-unity.exe` is located in `bin/` and `dist/`:
+The compiled `pi-unity.exe` is located in `bin/`:
 
 ```bash
 # Verify connection
@@ -112,7 +113,7 @@ pi-unity skills install --agents
 ### 1. Storage Layout (`~/.pi-unity/`, overridable via `PI_UNITY_LOG_DIR`)
 - `logs/events-YYYY-MM.jsonl`: Unified event stream (one line per CLI invocation, recording execution time, phases, exit code, and `errorType`, rotated monthly).
 - `logs/traces/YYYY-MM-DD/`: Detailed execution traces (written on failures or when `--trace` / `PI_UNITY_TRACE=1` is active, retained for 7 days).
-- `sessions/current.json`: Sticky session registry (12-hour TTL; one file per user, so parallel agents overwrite each other).
+- `sessions/<projectHash>/<agentId>.json`: Scoped sticky session registry by project and agent (12-hour TTL); `sessions/current.json` is a compatibility pointer and is not used as a read fallback.
 
 ### 2. Session and Skill Tracking Commands
 ```bash
@@ -142,6 +143,6 @@ Core repository code is licensed under the **MIT License** — see [LICENSE](LIC
 This project integrates the following open-source projects and libraries:
 
 - **[UnityCliLoop (Uloop)](https://github.com/hatayama)** (MIT License) - Provides method-level hot reloading (Hot Reload V3) and runtime pause points (Pause Point), located under `unity/com.pi.unity-harness/Vendor/Uloop/`.
-- **[Lib.Harmony](https://github.com/pardeike/Harmony)** by Andreas Pardeike (MIT License) - Provides runtime IL method patching and JIT hooks (vendored as `UnityCliLoop.0Harmony.dll`, see `unity/com.pi.unity-harness/Vendor/Uloop/Editor/PausePoint/Plugins/LICENSE.md`).
-- **[.NET Roslyn Libraries](https://github.com/dotnet/roslyn)** by .NET Foundation (MIT License) - Provides in-memory C# dynamic code analysis and compilation metadata, see `unity/com.pi.unity-harness/Vendor/Uloop/Editor/Compiler/Plugins/CodeAnalysis/LICENSE.md`.
+- **[Lib.Harmony](https://github.com/pardeike/Harmony)** by Andreas Pardeike (MIT License) - Provides runtime IL method patching and JIT hooks (vendored as `UnityCliLoop.0Harmony.dll`, see `unity/com.pi.unity-harness/Vendor/Uloop/Editor/FirstPartyTools/PausePoint/Plugins/LICENSE.md`).
+- **[.NET Roslyn Libraries](https://github.com/dotnet/roslyn)** by .NET Foundation (MIT License) - Provides in-memory C# dynamic code analysis and compilation metadata, see `unity/com.pi.unity-harness/Vendor/Uloop/Editor/FirstPartyTools/ExecuteDynamicCode/Plugins/CodeAnalysis/LICENSE.md`.
 - **Unity.Pipeline** by Unity Technologies - `unity/com.pi.pipeline.compat/` is released under the Unity Package Distribution License — see `unity/com.pi.pipeline.compat/LICENSE.md`.

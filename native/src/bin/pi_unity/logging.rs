@@ -793,12 +793,12 @@ mod tests {
         assert_eq!(hash1.len(), 12); // 6 bytes hex = 12 hex chars
 
         // Backslash vs forward slash vs trailing slash normalisation
-        let path2 = Path::new(r"F:/SampleProjects\GP1\");
+        let path2 = Path::new(r"F:\SampleProjects\GP1\");
         let hash2 = compute_project_hash(Some(path2)).expect("hash should exist");
         assert_eq!(hash1, hash2);
 
         // Case insensitivity
-        let path3 = Path::new("F:/SampleProjects/gp1");
+        let path3 = Path::new("f:/sampleprojects/gp1");
         let hash3 = compute_project_hash(Some(path3)).expect("hash should exist");
         assert_eq!(hash1, hash3);
 

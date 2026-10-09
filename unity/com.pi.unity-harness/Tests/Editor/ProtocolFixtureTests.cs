@@ -1,9 +1,8 @@
 using System;
-using System.Collections.Generic;
 using System.IO;
-using NUnit.Framework;
 using Newtonsoft.Json.Linq;
-using Pi.UnityHarness.Editor;
+using NUnit.Framework;
+using Pi.UnityHarness.Editor.Protocol;
 
 namespace Pi.UnityHarness.Editor.Tests
 {
@@ -11,7 +10,6 @@ namespace Pi.UnityHarness.Editor.Tests
     {
         private static string FindFixtureRoot()
         {
-            // Prefer the package location resolved by Unity; walk upward from it to the repo root.
             string current = null;
             try
             {
@@ -35,46 +33,45 @@ namespace Pi.UnityHarness.Editor.Tests
             return string.Empty;
         }
 
-        private static IEnumerable<TestCaseData> FixtureCases()
+        private static JObject Load(string relative)
         {
-            string root = FindFixtureRoot();
-            foreach (string file in Directory.GetFiles(root, "*.json", SearchOption.AllDirectories))
-            {
-                if (file.EndsWith("error-precedence.json", StringComparison.Ordinal)) continue;
-                yield return new TestCaseData(file);
-            }
-        }
-
-        [Test, TestCaseSource(nameof(FixtureCases))]
-        public void FixtureHasExpectedEnvelopeShape(string path)
-        {
-            JObject fixture = JObject.Parse(File.ReadAllText(path));
-            Assert.That(fixture["description"], Is.Not.Null, path);
-            Assert.That(fixture["direction"], Is.Not.Null, path);
-            Assert.That(fixture["wire"], Is.TypeOf<JObject>(), path);
-            Assert.That(fixture["expect"], Is.TypeOf<JObject>(), path);
-
-            string direction = (string)fixture["direction"];
-            JObject wire = (JObject)fixture["wire"];
-            if (direction == "response" && !Path.GetFileName(path).Equals("missing_reply_to.json", StringComparison.Ordinal))
-            {
-                Assert.That(wire["reply_to"], Is.Not.Null, path);
-                Assert.That(wire["id"], Is.Null, path);
-            }
-            if (direction == "mux" && !Path.GetFileName(path).Equals("err_missing_id.json", StringComparison.Ordinal))
-            {
-                Assert.That(wire["id"], Is.Not.Null, path);
-                Assert.That(wire["reply_to"], Is.Null, path);
-            }
+            return JObject.Parse(File.ReadAllText(Path.Combine(FindFixtureRoot(), relative)));
         }
 
         [Test]
-        public void ResponseHelpersKeepPipeCorrelationField()
+        public void ResponseBuilderKeepsPipeCorrelationAndDoesNotEmitMuxId()
         {
-            JObject success = JObject.Parse(PiUnityJsonHelper.SuccessJson("fixture-1", "null"));
-            Assert.That((string)success["reply_to"], Is.EqualTo("fixture-1"));
+            JObject successFixture = Load(Path.Combine("response", "ok_result_null.json"));
+            string replyTo = (string)successFixture["wire"]["reply_to"];
+            JObject success = JObject.Parse(PipeEnvelope.Success(replyTo, "null"));
+
+            Assert.That((string)success["reply_to"], Is.EqualTo(replyTo));
+            Assert.That((bool)success["ok"], Is.True);
+            Assert.That(success["result"].Type, Is.EqualTo(JTokenType.Null));
             Assert.That(success["id"], Is.Null);
-            Assert.That(success["result"]?.Type, Is.EqualTo(JTokenType.Null));
+
+            JObject errorFixture = Load(Path.Combine("response", "err_usage.json"));
+            JObject error = JObject.Parse(PipeEnvelope.Error(
+                (string)errorFixture["wire"]["reply_to"],
+                (string)errorFixture["wire"]["error_type"],
+                (string)errorFixture["wire"]["error"]));
+            Assert.That((string)error["reply_to"], Is.EqualTo((string)errorFixture["wire"]["reply_to"]));
+            Assert.That((bool)error["ok"], Is.False);
+            Assert.That((string)error["error_type"], Is.EqualTo((string)errorFixture["expect"]["errorType"]));
+            Assert.That((string)error["error"], Is.EqualTo((string)errorFixture["expect"]["message"]));
+            Assert.That(error["id"], Is.Null);
+        }
+
+        [Test]
+        public void ResponseBuilderPreservesUnicodeAndEscapesCorrelation()
+        {
+            const string replyTo = "回复\"\\id";
+            const string message = "错误\n雪";
+            JObject error = JObject.Parse(PipeEnvelope.Error(replyTo, "usage", message));
+
+            Assert.That((string)error["reply_to"], Is.EqualTo(replyTo));
+            Assert.That((string)error["error"], Is.EqualTo(message));
+            Assert.That((string)error["error_type"], Is.EqualTo("usage"));
         }
     }
 }

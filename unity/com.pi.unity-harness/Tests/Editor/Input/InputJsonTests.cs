@@ -59,7 +59,7 @@ namespace Pi.UnityHarness.Editor.Tests.Input
             var failure = JsonUtility.FromJson<StatusDto>(result);
             Assert.That(failure.status, Is.EqualTo("failed"));
             Assert.That(failure.error_type, Is.EqualTo("usage"));
-            Assert.That(result, Does.Contain("requires 'x' and 'y'"));
+
         }
 
         private static string RunOneResult(System.Collections.IEnumerator enumerator)

@@ -3,7 +3,7 @@
 > **文档性质**：已落地的 L0/L1 规格（随 CLI 实现维护）
 > **实现位置**：`native/src/bin/pi_unity/logging.rs` + `native/src/bin/pi_unity/main.rs`（不进入 Unity `cdylib`）
 > **目标**：为「分析运行时日志 → 优化工具 → 持续进化」建立数据基础
-> **范围**：本阶段只做 L0（采集）+ L1（存储）；L2 聚合分析、L3 进化闭环另行立项
+> **范围**：本阶段已落地 L0（采集）+ L1（存储）；L2 聚合分析已由 `scripts/analyze-logs.py` 提供只读实现，L3 进化闭环另行立项。
 > **硬约束**：纯客户端改动，零协议变更，不动 broker / Unity 包
 
 ## 一、现状盘点
@@ -28,7 +28,8 @@
 │   └── traces/YYYY-MM-DD/        # 详细过程日志（仅失败或 --trace）
 │       └── <ts>-<pid>-<subcommand>.log
 └── sessions/
-    └── current.json              # 粘性会话注册表 {sessionId, agent?, task?, startedAtMs}
+    ├── <projectHash>/<agentId>.json # 按项目和 agent 隔离的粘性会话
+    └── current.json              # 兼容指针，不作为读取回退
 ```
 
 - **轮转**：events 按月分文件，单文件超 50MB 加序号滚动；traces 保留 7 天，CLI 启动时惰性清理。
@@ -58,14 +59,14 @@
 
 ### 4.3 会话追踪
 
-- 新增子命令：`pi-unity session start [--task "..."]`（铸 sessionId 写 `sessions/current.json`）、`pi-unity session end`（关闭）；TTL 12h 自动失效。
+- 新增子命令：`pi-unity session start [--task "..."]`（铸 sessionId 写 scoped `sessions/<projectHash>/<agentId>.json` 并更新兼容指针）、`pi-unity session end`（关闭）；TTL 12h 自动失效。
 - 每行日志的 sessionId 解析优先级：① env `PI_UNITY_SESSION_ID`（宿主注入，可为宿主原生 id）→ ② 粘性注册表 → ③ `null`。
 - 语义：sessionId 是**本侧的任务级分组键**；宿主原生 session id 存 `hostSessionId` 做映射，不依赖。
 
 ### 4.4 skill 事件与归因
 
 - 新增轻命令：`pi-unity mark --skill <name> --event used`，只写一条 `{"kind":"skill.used",…}` 事件。
-- 每条 `skills/pi-unity-*/SKILL.md` 末尾有约定一句：「使用本 skill 时先运行 `pi-unity mark --skill <name> --event used`」。这是软信号，agent 不会每次都跑，**不能当真实用量**。
+- `pi-unity mark --skill <name> --event used` 是可选软信号；当前仓库只有聚合 `skills/pi-unity/SKILL.md`，不要求每次使用都运行 mark，不能当真实用量。
 - client 归因：pi 扩展注入 `PI_UNITY_CLIENT=pi-ext` 与 `PI_UNITY_AGENT_ID`；CLI 在缺省时使用 `default`，外部 agent 也可显式设置 `PI_UNITY_SESSION_ID`。
 - 粘性 session 按 `sessions/<projectHash>/<agentId>.json` 隔离；项目未知时使用 `_noproject`，agent id 只保留 `[A-Za-z0-9_-]`。`sessions/current.json` 仅写兼容指针，不再作为读取回退。
 - `session start` 必须把 scoped 注册表与兼容指针写成功才算成功；events 行仍是 best-effort，并带 `projectHash` 与 `agentId`。
@@ -85,7 +86,7 @@ python3 scripts/analyze-logs.py /path/to/.pi-unity/logs
 python3 scripts/analyze-logs.py /path/to/events-2026-09.jsonl --json
 ```
 
-坏 JSON 行会被跳过并计入 `malformedRows`，非 `kind=call` 事件会被忽略并计入 `ignoredRows`。该工具不读取 trace 内容，不推断不存在的 session 关联；日志中的敏感字段仍按 L1 设计处理。
+坏 JSON 行会被跳过并计入 `malformedRows`，非 `kind=call` 事件会被忽略并计入 `ignoredRows`。默认过滤测试调用时，工具读取关联 trace 中的 `[discover] Project root:` 行，判断工程是否在临时目录；`--include-test` 保留这些调用。不推断不存在的 session 关联，聚合报告不回传 trace 原文。
 
 ## 七、验收标准
 
@@ -102,5 +103,5 @@ python3 scripts/analyze-logs.py /path/to/events-2026-09.jsonl --json
 - `native/src/bin/pi_unity/logging.rs`：路径、轮转、session、mark、call 事件、trace recorder。
 - `native/src/bin/pi_unity/main.rs`：`main` / `handle_exit` 统一落行（含发现失败）；`--trace` 全局参数。
 - `.pi/extensions/pi-unity-harness/index.ts`：`runPiUnityCli` 的 env 加 `PI_UNITY_CLIENT=pi-ext`。
-- `skills/pi-unity-*/SKILL.md`：每条末尾有 mark 约定（软信号）。
+- `skills/pi-unity/SKILL.md`：静态技能文案；`pi-unity mark` 仅为可选软信号，不是强制使用约定。
 - `README.md` / `README.en.md`：可观测性小节。

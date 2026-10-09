@@ -1,3 +1,6 @@
+using System.IO;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using Pi.UnityHarness.Editor.Capabilities.Vision;
 using NUnit.Framework;
 
@@ -5,6 +8,15 @@ namespace Pi.UnityHarness.Editor.Tests.Vision
 {
     public sealed class VisionJsonTests
     {
+        private static JObject Parse(string json)
+        {
+            using (var reader = new JsonTextReader(new StringReader(json)))
+            {
+                reader.DateParseHandling = DateParseHandling.None;
+                return JObject.Load(reader);
+            }
+        }
+
         // ─── Capture JSON ────────────────────────────────────────────
 
         [Test]
@@ -20,18 +32,22 @@ namespace Pi.UnityHarness.Editor.Tests.Vision
                 0.6453f, 0.5694f,
                 "2026-01-01T12:00:00.000Z");
 
-            Assert.That(json, Does.StartWith("{\"status\":\"succeeded\""));
-            Assert.That(json, Does.Contain("\"schema\":\"harness.vision.capture.v1\""));
-            Assert.That(json, Does.Contain("\"path\":\"/tmp/shot.png\""));
-            Assert.That(json, Does.Contain("\"embed\":false"));
-            Assert.That(json, Does.Contain("\"source\":\"game\""));
-            Assert.That(json, Does.Contain("\"width\":1280"));
-            Assert.That(json, Does.Contain("\"height\":720"));
-            Assert.That(json, Does.Contain("\"bytes\":45678"));
-            Assert.That(json, Does.Contain("\"output_size\":{\"w\":1280,\"h\":720}"));
-            Assert.That(json, Does.Contain("\"gameview_size\":{\"w\":826,\"h\":410}"));
-            Assert.That(json, Does.Contain("\"capture_source_size\":{\"w\":1920,\"h\":1080}"));
-            Assert.That(json, Does.Contain("\"captured_at_utc\":\"2026-01-01T12:00:00.000Z\""));
+            JObject parsed = Parse(json);
+            Assert.That((string)parsed["status"], Is.EqualTo("succeeded"));
+            Assert.That((string)parsed["schema"], Is.EqualTo("harness.vision.capture.v1"));
+            Assert.That((string)parsed["path"], Is.EqualTo("/tmp/shot.png"));
+            Assert.That((bool)parsed["embed"], Is.False);
+            Assert.That((string)parsed["source"], Is.EqualTo("game"));
+            Assert.That((int)parsed["width"], Is.EqualTo(1280));
+            Assert.That((int)parsed["height"], Is.EqualTo(720));
+            Assert.That((long)parsed["bytes"], Is.EqualTo(45678));
+            Assert.That((int)parsed["output_size"]["w"], Is.EqualTo(1280));
+            Assert.That((int)parsed["output_size"]["h"], Is.EqualTo(720));
+            Assert.That((int)parsed["gameview_size"]["w"], Is.EqualTo(826));
+            Assert.That((int)parsed["gameview_size"]["h"], Is.EqualTo(410));
+            Assert.That((int)parsed["capture_source_size"]["w"], Is.EqualTo(1920));
+            Assert.That((int)parsed["capture_source_size"]["h"], Is.EqualTo(1080));
+            Assert.That((string)parsed["captured_at_utc"], Is.EqualTo("2026-01-01T12:00:00.000Z"));
         }
 
         [Test]
@@ -43,12 +59,12 @@ namespace Pi.UnityHarness.Editor.Tests.Vision
                 null, null, null, null, null,
                 "Something went wrong", "runtime");
 
-            Assert.That(json, Does.Contain("\"status\":\"failed\""));
-            Assert.That(json, Does.Contain("\"error\":\"Something went wrong\""));
-            Assert.That(json, Does.Contain("\"error_type\":\"runtime\""));
-            // Should not contain capture-specific fields
-            Assert.That(json, Does.Not.Contain("\"path\""));
-            Assert.That(json, Does.Not.Contain("\"width\""));
+            JObject parsed = Parse(json);
+            Assert.That((string)parsed["status"], Is.EqualTo("failed"));
+            Assert.That((string)parsed["error"], Is.EqualTo("Something went wrong"));
+            Assert.That((string)parsed["error_type"], Is.EqualTo("runtime"));
+            Assert.That(parsed["path"], Is.Null);
+            Assert.That(parsed["width"], Is.Null);
         }
 
         [Test]
@@ -62,11 +78,12 @@ namespace Pi.UnityHarness.Editor.Tests.Vision
                 null, null, null, null,
                 "2026-01-01T12:00:00.000Z");
 
-            Assert.That(json, Does.Contain("\"source\":\"scene\""));
-            Assert.That(json, Does.Not.Contain("gameview_size"));
-            Assert.That(json, Does.Not.Contain("capture_source_size"));
-            Assert.That(json, Does.Not.Contain("scale"));
-            Assert.That(json, Does.Not.Contain("screenshot_to_gameview"));
+            JObject parsed = Parse(json);
+            Assert.That((string)parsed["source"], Is.EqualTo("scene"));
+            Assert.That(parsed["gameview_size"], Is.Null);
+            Assert.That(parsed["capture_source_size"], Is.Null);
+            Assert.That(parsed["scale"], Is.Null);
+            Assert.That(parsed["screenshot_to_gameview"], Is.Null);
         }
 
         // ─── Analysis Unavailable JSON ───────────────────────────────
@@ -76,15 +93,16 @@ namespace Pi.UnityHarness.Editor.Tests.Vision
         {
             string json = VisionJson.BuildAnalysisUnavailableJson("Find the Start button.");
 
-            Assert.That(json, Does.Contain("\"schema\":\"harness.vision.analysis.v1\""));
-            Assert.That(json, Does.Contain("\"status\":\"unavailable\""));
-            Assert.That(json, Does.Contain("\"question\":\"Find the Start button.\""));
-            Assert.That(json, Does.Contain("\"answer\""));
-            Assert.That(json, Does.Contain("no vision analyzer is configured"));
-            Assert.That(json, Does.Contain("\"provider\":\"none\""));
-            Assert.That(json, Does.Contain("\"visible_text\":[]"));
-            Assert.That(json, Does.Contain("\"targets\":[]"));
-            Assert.That(json, Does.Contain("\"suggested_actions\":[]"));
+            JObject parsed = Parse(json);
+            Assert.That((string)parsed["schema"], Is.EqualTo("harness.vision.analysis.v1"));
+            Assert.That((string)parsed["status"], Is.EqualTo("unavailable"));
+            Assert.That((string)parsed["question"], Is.EqualTo("Find the Start button."));
+            Assert.That((string)parsed["answer"], Is.Not.Null.And.Not.Empty);
+            Assert.That((string)parsed["diagnostics"]["provider"], Is.EqualTo("none"));
+            Assert.That(parsed["visible_text"].Type, Is.EqualTo(JTokenType.Array));
+            Assert.That(parsed["visible_text"].HasValues, Is.False);
+            Assert.That(parsed["targets"].HasValues, Is.False);
+            Assert.That(parsed["suggested_actions"].HasValues, Is.False);
         }
 
         [Test]
@@ -98,11 +116,12 @@ namespace Pi.UnityHarness.Editor.Tests.Vision
                 "https://api.xiaomimimo.com/v1/chat/completions",
                 1234);
 
-            Assert.That(json, Does.Contain("\"status\":\"succeeded\""));
-            Assert.That(json, Does.Contain("\"answer\":\"Answer.\""));
-            Assert.That(json, Does.Contain("\"provider\":\"openai-compatible\""));
-            Assert.That(json, Does.Contain("\"model\":\"mimo-v2.5\""));
-            Assert.That(json, Does.Contain("\"latency_ms\":1234"));
+            JObject parsed = Parse(json);
+            Assert.That((string)parsed["status"], Is.EqualTo("succeeded"));
+            Assert.That((string)parsed["answer"], Is.EqualTo("Answer."));
+            Assert.That((string)parsed["diagnostics"]["provider"], Is.EqualTo("openai-compatible"));
+            Assert.That((string)parsed["diagnostics"]["model"], Is.EqualTo("mimo-v2.5"));
+            Assert.That((int)parsed["diagnostics"]["latency_ms"], Is.EqualTo(1234));
         }
 
         [Test]
@@ -119,9 +138,10 @@ namespace Pi.UnityHarness.Editor.Tests.Vision
                 "https://api.xiaomimimo.com/v1/chat/completions",
                 1234);
 
-            Assert.That(json, Does.Contain("\"visible_text\":[{\"text\":\"Start\"}]"));
-            Assert.That(json, Does.Contain("\"targets\":[{\"label\":\"Start\""));
-            Assert.That(json, Does.Contain("\"suggested_actions\":[{\"type\":\"click\""));
+            JObject parsed = Parse(json);
+            Assert.That((string)parsed["visible_text"][0]["text"], Is.EqualTo("Start"));
+            Assert.That((string)parsed["targets"][0]["label"], Is.EqualTo("Start"));
+            Assert.That((string)parsed["suggested_actions"][0]["type"], Is.EqualTo("click"));
         }
 
         [Test]
@@ -131,11 +151,12 @@ namespace Pi.UnityHarness.Editor.Tests.Vision
                 "configured", "openai-compatible", "mimo-v2.5", "https://example/v1/chat/completions",
                 true, "EditorPrefs", 12);
 
-            Assert.That(json, Does.Contain("\"schema\":\"harness.vision.provider_test.v1\""));
-            Assert.That(json, Does.Contain("\"has_api_key\":true"));
-            Assert.That(json, Does.Contain("\"api_key_source\":\"EditorPrefs\""));
-            Assert.That(json, Does.Contain("\"warnings\":[]"));
-            Assert.That(json, Does.Not.Contain("sk-"));
+            JObject parsed = Parse(json);
+            Assert.That((string)parsed["schema"], Is.EqualTo("harness.vision.provider_test.v1"));
+            Assert.That((bool)parsed["diagnostics"]["has_api_key"], Is.True);
+            Assert.That((string)parsed["diagnostics"]["api_key_source"], Is.EqualTo("EditorPrefs"));
+            Assert.That(parsed["warnings"].HasValues, Is.False);
+            Assert.That(parsed["diagnostics"]["api_key"], Is.Null);
         }
 
         [Test]
@@ -145,9 +166,10 @@ namespace Pi.UnityHarness.Editor.Tests.Vision
                 "succeeded", "openai-compatible", "mimo-v2.5", "https://example/v1/chat/completions",
                 true, "EditorPrefs", 12, null, null, "empty assistant content");
 
-            Assert.That(json, Does.Contain("\"status\":\"succeeded\""));
-            Assert.That(json, Does.Contain("\"warnings\":[\"empty assistant content\"]"));
-            Assert.That(json, Does.Not.Contain("\"error\""));
+            JObject parsed = Parse(json);
+            Assert.That((string)parsed["status"], Is.EqualTo("succeeded"));
+            Assert.That((string)parsed["warnings"][0], Is.EqualTo("empty assistant content"));
+            Assert.That(parsed["error"], Is.Null);
         }
 
         // ─── Analysis Skipped JSON ───────────────────────────────────
@@ -157,11 +179,12 @@ namespace Pi.UnityHarness.Editor.Tests.Vision
         {
             string json = VisionJson.BuildAnalysisSkippedJson();
 
-            Assert.That(json, Does.Contain("\"status\":\"skipped\""));
-            Assert.That(json, Does.Contain("capture failed"));
-            Assert.That(json, Does.Contain("\"visible_text\":[]"));
-            Assert.That(json, Does.Contain("\"targets\":[]"));
-            Assert.That(json, Does.Contain("\"suggested_actions\":[]"));
+            JObject parsed = Parse(json);
+            Assert.That((string)parsed["status"], Is.EqualTo("skipped"));
+            Assert.That((string)parsed["answer"], Is.Not.Null.And.Not.Empty);
+            Assert.That(parsed["visible_text"].HasValues, Is.False);
+            Assert.That(parsed["targets"].HasValues, Is.False);
+            Assert.That(parsed["suggested_actions"].HasValues, Is.False);
         }
 
         // ─── Compound Response JSON ──────────────────────────────────
@@ -173,12 +196,11 @@ namespace Pi.UnityHarness.Editor.Tests.Vision
             string analysisJson = "{\"status\":\"unavailable\",\"answer\":\"No analyzer.\"}";
             string json = VisionJson.BuildCompoundCaptureAnalysisJson(captureJson, analysisJson, "partial");
 
-            Assert.That(json, Does.Contain("\"schema\":\"harness.vision.capture_analysis.v1\""));
-            Assert.That(json, Does.Contain("\"status\":\"partial\""));
-            Assert.That(json, Does.Contain("\"capture\":{"));
-            Assert.That(json, Does.Contain("\"analysis\":{"));
-            Assert.That(json, Does.Contain("\"path\":\"/tmp/shot.png\""));
-            Assert.That(json, Does.Contain("\"answer\":\"No analyzer.\""));
+            JObject parsed = Parse(json);
+            Assert.That((string)parsed["schema"], Is.EqualTo("harness.vision.capture_analysis.v1"));
+            Assert.That((string)parsed["status"], Is.EqualTo("partial"));
+            Assert.That((string)parsed["capture"]["path"], Is.EqualTo("/tmp/shot.png"));
+            Assert.That((string)parsed["analysis"]["answer"], Is.EqualTo("No analyzer."));
         }
 
         [Test]
@@ -188,7 +210,9 @@ namespace Pi.UnityHarness.Editor.Tests.Vision
             string analysisJson = "{\"status\":\"skipped\"}";
             string json = VisionJson.BuildCompoundCaptureAnalysisJson(captureJson, analysisJson, "failed");
 
-            Assert.That(json, Does.Contain("\"status\":\"failed\""));
+            JObject parsed = Parse(json);
+            Assert.That((string)parsed["status"], Is.EqualTo("failed"));
+            Assert.That((string)parsed["capture"]["error"], Is.EqualTo("No camera"));
         }
 
         // ─── Analysis Request JSON ───────────────────────────────────
@@ -199,13 +223,13 @@ namespace Pi.UnityHarness.Editor.Tests.Vision
             string captureJson = "{\"path\":\"/tmp/shot.png\",\"source\":\"game\",\"width\":1280,\"height\":720}";
             string json = VisionJson.BuildAnalysisRequestJson("Find the button.", captureJson, null);
 
-            Assert.That(json, Does.Contain("\"schema\":\"harness.vision.analysis_request.v1\""));
-            Assert.That(json, Does.Contain("\"question\":\"Find the button.\""));
-            Assert.That(json, Does.Contain("\"image\":{"));
-            Assert.That(json, Does.Contain("\"path\":\"/tmp/shot.png\""));
-            Assert.That(json, Does.Contain("\"context\":{"));
-            Assert.That(json, Does.Contain("\"output\":{"));
-            Assert.That(json, Does.Contain("\"constraints\":{"));
+            JObject parsed = Parse(json);
+            Assert.That((string)parsed["schema"], Is.EqualTo("harness.vision.analysis_request.v1"));
+            Assert.That((string)parsed["question"], Is.EqualTo("Find the button."));
+            Assert.That((string)parsed["image"]["path"], Is.EqualTo("/tmp/shot.png"));
+            Assert.That(parsed["context"].Type, Is.EqualTo(JTokenType.Object));
+            Assert.That(parsed["output"].Type, Is.EqualTo(JTokenType.Object));
+            Assert.That(parsed["constraints"].Type, Is.EqualTo(JTokenType.Object));
         }
 
         [Test]
@@ -214,20 +238,24 @@ namespace Pi.UnityHarness.Editor.Tests.Vision
             string captureJson = "{\"path\":\"/tmp/shot.png\",\"embed\":false,\"source\":\"game\",\"width\":1280,\"height\":720,\"bytes\":45678,\"output_size\":{\"w\":1280,\"h\":720}}";
             string json = VisionJson.BuildAnalysisRequestJson("Describe.", captureJson, null);
 
-            Assert.That(json, Does.Contain("\"path\":\"/tmp/shot.png\""));
-            Assert.That(json, Does.Contain("\"embed\":false"));
-            Assert.That(json, Does.Contain("\"source\":\"game\""));
-            Assert.That(json, Does.Contain("\"width\":1280"));
-            Assert.That(json, Does.Contain("\"height\":720"));
-            Assert.That(json, Does.Contain("\"bytes\":45678"));
-            Assert.That(json, Does.Contain("\"output_size\":{\"w\":1280,\"h\":720}"));
+            JObject image = Parse(json)["image"] as JObject;
+            Assert.That((string)image["path"], Is.EqualTo("/tmp/shot.png"));
+            Assert.That((bool)image["embed"], Is.False);
+            Assert.That((string)image["source"], Is.EqualTo("game"));
+            Assert.That((int)image["width"], Is.EqualTo(1280));
+            Assert.That((int)image["height"], Is.EqualTo(720));
+            Assert.That((int)image["bytes"], Is.EqualTo(45678));
+            Assert.That((int)image["output_size"]["w"], Is.EqualTo(1280));
+            Assert.That((int)image["output_size"]["h"], Is.EqualTo(720));
         }
 
         [Test]
-        public void BuildAnalysisRequestJson_EmptyCapture_DoesNotCrash()
+        public void BuildAnalysisRequestJson_EmptyCapture_OmitsImageAndContextValues()
         {
-            string json = VisionJson.BuildAnalysisRequestJson("Question.", "{}", null);
-            Assert.That(json, Does.Contain("\"question\":\"Question.\""));
+            JObject parsed = Parse(VisionJson.BuildAnalysisRequestJson("Question.", "{}", null));
+            Assert.That((string)parsed["question"], Is.EqualTo("Question."));
+            Assert.That(parsed["image"].HasValues, Is.False);
+            Assert.That(parsed["context"].HasValues, Is.False);
         }
 
         [Test]
@@ -235,8 +263,9 @@ namespace Pi.UnityHarness.Editor.Tests.Vision
         {
             string json = HarnessVision.BuildAnalysisRequestJson(null, "{\"path\":\"/tmp/shot.png\"}", null);
 
-            Assert.That(json, Does.Contain("\"question\""));
-            Assert.That(json, Does.Not.Contain("null"));
+            JObject parsed = Parse(json);
+            Assert.That((string)parsed["question"], Is.Not.Null.And.Not.Empty);
+            Assert.That(parsed["question"].Type, Is.EqualTo(JTokenType.String));
         }
 
         [Test]
@@ -244,7 +273,7 @@ namespace Pi.UnityHarness.Editor.Tests.Vision
         {
             string json = HarnessVision.BuildAnalysisRequestJson("", "{\"path\":\"/tmp/shot.png\"}", null);
 
-            Assert.That(json, Does.Contain("Describe what is visible"));
+            Assert.That((string)Parse(json)["question"], Is.Not.Null.And.Not.Empty);
         }
 
         [Test]
@@ -254,16 +283,17 @@ namespace Pi.UnityHarness.Editor.Tests.Vision
             string contextJson = "{\"task\":\"Click Start\",\"uitree\":null}";
             string json = VisionJson.BuildAnalysisRequestJson("Question.", captureJson, contextJson);
 
-            Assert.That(json, Does.Contain("\"task\":\"Click Start\""));
+            Assert.That((string)Parse(json)["context"]["task"], Is.EqualTo("Click Start"));
         }
 
         [Test]
         public void BuildAnalysisRequestJson_IncludesOutputPreferences()
         {
             string json = VisionJson.BuildAnalysisRequestJson("Q.", "{}", null);
-            Assert.That(json, Does.Contain("\"coordinate_space\":\"screenshot_top_left\""));
-            Assert.That(json, Does.Contain("\"max_targets\":10"));
-            Assert.That(json, Does.Contain("\"do_not_guess\":true"));
+            JObject parsed = Parse(json);
+            Assert.That((string)parsed["output"]["coordinate_space"], Is.EqualTo("screenshot_top_left"));
+            Assert.That((int)parsed["output"]["max_targets"], Is.EqualTo(10));
+            Assert.That((bool)parsed["constraints"]["do_not_guess"], Is.True);
         }
 
         [Test]
@@ -272,10 +302,12 @@ namespace Pi.UnityHarness.Editor.Tests.Vision
             string captureJson = "{ \n  \"path\" : \"/tmp/shot.png\", \n  \"source\" : \"game\", \n  \"width\" : 1280, \n  \"height\" : 720, \n  \"screenshot_to_gameview\" : { \"x\" : 0.5, \"y\" : 0.5 } \n}";
             string json = VisionJson.BuildAnalysisRequestJson("Q.", captureJson, null);
 
-            Assert.That(json, Does.Contain("\"path\":\"/tmp/shot.png\""));
-            Assert.That(json, Does.Contain("\"source\":\"game\""));
-            Assert.That(json, Does.Contain("\"width\":1280"));
-            Assert.That(json, Does.Contain("\"screenshot_to_gameview\":{ \"x\" : 0.5, \"y\" : 0.5 }"));
+            JObject image = Parse(json)["image"] as JObject;
+            Assert.That((string)image["path"], Is.EqualTo("/tmp/shot.png"));
+            Assert.That((string)image["source"], Is.EqualTo("game"));
+            Assert.That((int)image["width"], Is.EqualTo(1280));
+            Assert.That((float)image["screenshot_to_gameview"]["x"], Is.EqualTo(0.5f));
+            Assert.That((float)image["screenshot_to_gameview"]["y"], Is.EqualTo(0.5f));
         }
 
         [Test]
@@ -283,8 +315,9 @@ namespace Pi.UnityHarness.Editor.Tests.Vision
         {
             string json = VisionJson.BuildAnalysisRequestJson("Q.", "{\"path\":\"/tmp/shot.png\"}", "not json");
 
-            Assert.That(json, Does.Contain("\"context\":{}"));
-            Assert.That(json, Does.Not.Contain("not json"));
+            JObject parsed = Parse(json);
+            Assert.That(parsed["context"].HasValues, Is.False);
+            Assert.That(parsed.ToString(), Does.Not.Contain("not json"));
         }
 
         [Test]
@@ -292,8 +325,9 @@ namespace Pi.UnityHarness.Editor.Tests.Vision
         {
             string json = VisionJson.BuildAnalysisRequestJson("Q.", "{\"path\":oops}", null);
 
-            Assert.That(json, Does.Contain("\"image\":{}"));
-            Assert.That(json, Does.Not.Contain("oops"));
+            JObject parsed = Parse(json);
+            Assert.That(parsed["image"].HasValues, Is.False);
+            Assert.That(parsed.ToString(), Does.Not.Contain("oops"));
         }
 
         [Test]
@@ -302,35 +336,42 @@ namespace Pi.UnityHarness.Editor.Tests.Vision
             string captureJson = "{\"status\":\"succeeded\",\"path\":\"old.png\",\"embed\":false,\"source\":\"game\",\"width\":1280,\"height\":720,\"bytes\":1,\"output_size\":{\"w\":1280,\"h\":720},\"gameview_size\":{\"w\":826,\"h\":410},\"capture_source_size\":{\"w\":1920,\"h\":1080},\"scale\":{\"x\":1.5,\"y\":1.7},\"screenshot_to_gameview\":{\"x\":0.64,\"y\":0.57},\"captured_at_utc\":\"2026-01-01T12:00:00.000Z\"}";
             string json = VisionJson.BuildCaptureJsonFromMetadata("new.png", captureJson, 0, 0, 123, "2026-01-02T12:00:00.000Z");
 
-            Assert.That(json, Does.Contain("\"path\":\"new.png\""));
-            Assert.That(json, Does.Contain("\"embed\":false"));
-            Assert.That(json, Does.Contain("\"width\":1280"));
-            Assert.That(json, Does.Contain("\"height\":720"));
-            Assert.That(json, Does.Contain("\"bytes\":123"));
-            Assert.That(json, Does.Contain("\"gameview_size\":{\"w\":826,\"h\":410}"));
-            Assert.That(json, Does.Contain("\"capture_source_size\":{\"w\":1920,\"h\":1080}"));
-            Assert.That(json, Does.Contain("\"scale\":{\"x\":1.5,\"y\":1.7}"));
-            Assert.That(json, Does.Contain("\"screenshot_to_gameview\":{\"x\":0.64,\"y\":0.57}"));
-            Assert.That(json, Does.Contain("\"captured_at_utc\":\"2026-01-01T12:00:00.000Z\""));
+            JObject parsed = Parse(json);
+            Assert.That((string)parsed["path"], Is.EqualTo("new.png"));
+            Assert.That((bool)parsed["embed"], Is.False);
+            Assert.That((int)parsed["width"], Is.EqualTo(1280));
+            Assert.That((int)parsed["height"], Is.EqualTo(720));
+            Assert.That((int)parsed["bytes"], Is.EqualTo(123));
+            Assert.That((int)parsed["gameview_size"]["w"], Is.EqualTo(826));
+            Assert.That((int)parsed["gameview_size"]["h"], Is.EqualTo(410));
+            Assert.That((int)parsed["capture_source_size"]["w"], Is.EqualTo(1920));
+            Assert.That((int)parsed["capture_source_size"]["h"], Is.EqualTo(1080));
+            Assert.That((float)parsed["scale"]["x"], Is.EqualTo(1.5f));
+            Assert.That((float)parsed["scale"]["y"], Is.EqualTo(1.7f));
+            Assert.That((float)parsed["screenshot_to_gameview"]["x"], Is.EqualTo(0.64f));
+            Assert.That((float)parsed["screenshot_to_gameview"]["y"], Is.EqualTo(0.57f));
+            Assert.That((string)parsed["captured_at_utc"], Is.EqualTo("2026-01-01T12:00:00.000Z"));
         }
 
-        // ─── JSON Escaping ───────────────────────────────────────────
-
         [Test]
-        public void CaptureJson_EscapesSpecialCharacters()
+        public void CaptureJson_RoundTripsControlCharactersInPath()
         {
+            var path = new System.Text.StringBuilder("C:\\path\\\"雪");
+            for (int c = 0; c < 32; c++)
+                path.Append((char)c);
+            string raw = path.ToString();
             string json = VisionJson.BuildCaptureJson(
-                "succeeded", "C:\\path\\with\bspec\tial\r\nchars", "game",
+                "succeeded", raw, "game",
                 100, 100, 0,
                 100, 100,
                 null, null, null, null,
                 null, null, null, null,
                 null);
 
-            // Path should be escaped
-            Assert.That(json, Does.Contain("C:\\\\path\\\\with"));
-            // Backspace, tab, carriage return, newline should be escaped
-            Assert.That(json, Does.Not.Contain("\b")); // no raw control chars
+            JObject parsed = Parse(json);
+            Assert.That((string)parsed["path"], Is.EqualTo(raw));
+            for (int c = 0; c < 32; c++)
+                Assert.That(json.IndexOf((char)c), Is.LessThan(0));
         }
     }
 }

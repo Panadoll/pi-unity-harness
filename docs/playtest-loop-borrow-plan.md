@@ -523,7 +523,7 @@ gui:
 
 - 新增 `Editor/Capabilities/Vision/PlaytestVision.cs`（纯算法 + observe/after 协程 + JSON）、
   `Runtime/Vision/HarnessVisionPlaytestRunner.cs`（独立捕获链）、
-  `Editor/Capabilities/PipelineCommands/PiPlaytestVisionPipelineCommands.cs`
+  `Editor/Capabilities/Vision/PiPlaytestVisionPipelineCommands.cs`
   （`vision_observe` / `vision_capture_after`）。
 - 独立 runner：相机渲染回调（`Camera.onPostRender` + `RenderPipelineManager.endCameraRendering`，
   仅 GameView 相机）作为呈现信号 + yield null 轮询实现单帧 500ms 硬超时；

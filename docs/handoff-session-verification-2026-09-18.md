@@ -29,10 +29,10 @@ node --test .pi/extensions/pi-unity-harness/*.test.ts # 51 passed, 0 skipped
 git diff --check                                      # exit 0（仅 CRLF 警告）
 ```
 
-真实 Editor（`F:/SampleProjects\ctest`，2022.3.14f1）：
+真实 Editor（`F:\SampleProjects\ctest`，2022.3.14f1）：
 
 - EditMode `list_tests`：258 个（harness 208 + 项目 50）。
-- harness EditMode 运行：**205 passed / 3 failed**，原始证据 `F:/SampleProjects\ctest\Temp\pipeline_test_status.json`。
+- harness EditMode 运行：**205 passed / 3 failed**，原始证据 `F:\SampleProjects\ctest\Temp\pipeline_test_status.json`。
 - PlayMode `list_tests`：**0 个**（见第 6 节）。
 - `unity_recompile` 多次成功，域重载后连接恢复（generation 217 → 222 全程可用）。
 
@@ -115,7 +115,7 @@ review 时请注意的可疑点：
 
 ## 7. 环境改动（仓库外，review 时须知）
 
-- `F:/SampleProjects\ctest\Packages\manifest.json` 增加 `"testables": ["com.pi.unity-harness"]`。
+- `F:\SampleProjects\ctest\Packages\manifest.json` 增加 `"testables": ["com.pi.unity-harness"]`。
   缺它时包内测试程序集根本不进编译管线（134 个程序集中没有 `Pi.*.Tests`），
   这也是上一轮“C# NUnit 测试未在真实 Editor 执行”的根本原因。
   备份在 `Temp/ctest-manifest-backup/manifest.json.orig`。是否保留由你决定。

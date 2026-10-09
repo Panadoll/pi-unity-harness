@@ -57,6 +57,33 @@ namespace Pi.UnityHarness.Editor.Tests
         }
 
         [Test]
+        public void TryBindParameters_RejectsDiscoveredAssetsCreateFoldersWithoutFoldersJson()
+        {
+            CommandInfo command = CommandRegistry.DiscoverCommands()
+                .Single(item => item.Name == "assets_create_folders"
+                    && item.Method.DeclaringType.Assembly == typeof(PiUnityPipelineCommandExecutor).Assembly);
+
+            Assert.That(command.Parameters.Single(parameter => parameter.Name == "folders_json").Required, Is.True,
+                "发现 metadata 必须把 folders_json 标为必填，不能靠绑定侧二次推断");
+
+            Assert.IsFalse(PiUnityPipelineCommandExecutor.TryBindParameters(command, new JObject(), out _, out string missing));
+            StringAssert.Contains("Required parameter 'folders_json' is missing", missing);
+
+            Assert.IsFalse(PiUnityPipelineCommandExecutor.TryBindParameters(command, JObject.Parse("{\"folders_json\":null}"), out _, out string nullValue));
+            StringAssert.Contains("Required parameter 'folders_json' is missing", nullValue);
+
+            Assert.IsFalse(PiUnityPipelineCommandExecutor.TryBindParameters(command, JObject.Parse("{\"folders_json\":\"\"}"), out _, out string empty));
+            StringAssert.Contains("Required parameter 'folders_json' is empty", empty);
+
+            JObject listed = JObject.Parse(PiUnityPipelineCommandExecutor.BuildListCommandsResponse("bind"));
+            JObject row = ((JArray)listed["result"]["commands"]).Cast<JObject>()
+                .Single(item => item.Value<string>("name") == "assets_create_folders");
+            CollectionAssert.Contains(
+                row["schema"]["required"].Select(token => token.Value<string>()),
+                "folders_json");
+        }
+
+        [Test]
         public void VisibilityHelpers_FilterForbiddenAndRuntimeOnlyCommands()
         {
             Assert.IsFalse(PiUnityPipelineCommandExecutor.IsCommandVisible(CreateCommand("eval", false)));

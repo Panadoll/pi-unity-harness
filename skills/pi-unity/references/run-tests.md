@@ -13,4 +13,6 @@ pi-unity run-tests --mode edit --json
 
 默认摘要：`passed` / `failed` / `skipped`，以及失败用例名。
 
+`failed` 或 `failureCount` 大于 0 时退出码为 1，JSON 为 `ok:false`、`error_type=test_failed`。`result` 仍保留 `passed`、`failed`、`skipped`、`failures` 和 `failureListComplete`。
+
 PlayMode 依赖当前 Editor 会话。若返回 0 个测试，日志里有 `Run started: 0 test(s)`，先 `pi-unity compile`，还不行就重启 Editor。

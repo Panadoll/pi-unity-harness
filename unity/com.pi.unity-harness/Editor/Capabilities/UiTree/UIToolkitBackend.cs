@@ -7,7 +7,7 @@ using System.Text;
 using UnityEditor;
 using UnityEngine;
 using UnityEngine.UIElements;
-using Pi.UnityHarness.Editor;
+using Pi.UnityHarness.Editor.Capabilities.Shared;
 
 namespace Pi.UnityHarness.Editor.Capabilities.UiTree
 {
@@ -292,12 +292,12 @@ namespace Pi.UnityHarness.Editor.Capabilities.UiTree
         {
             var sb = new StringBuilder();
             sb.Append("{\"status\":\"succeeded\"");
-            sb.Append(",\"ref\":\"").Append(PiUnityJsonHelper.EscapeJson(refId)).Append("\"");
+            sb.Append(",\"ref\":\"").Append(JsonText.Escape(refId)).Append("\"");
             sb.Append(",\"source\":\"uitoolkit\"");
-            sb.Append(",\"type\":\"").Append(PiUnityJsonHelper.EscapeJson(ve.GetType().Name)).Append("\"");
+            sb.Append(",\"type\":\"").Append(JsonText.Escape(ve.GetType().Name)).Append("\"");
             sb.Append(",\"name\":");
             if (!string.IsNullOrEmpty(ve.name))
-                sb.Append("\"").Append(PiUnityJsonHelper.EscapeJson(ve.name)).Append("\"");
+                sb.Append("\"").Append(JsonText.Escape(ve.name)).Append("\"");
             else
                 sb.Append("null");
 
@@ -308,8 +308,8 @@ namespace Pi.UnityHarness.Editor.Capabilities.UiTree
             sb.Append(",\"enabled_self\":").Append(UiTreeJson.BoolStr(ve.enabledSelf));
             sb.Append(",\"enabled_in_hierarchy\":").Append(UiTreeJson.BoolStr(ve.enabledInHierarchy));
             sb.Append(",\"focusable\":").Append(UiTreeJson.BoolStr(ve.focusable));
-            sb.Append(",\"tooltip\":\"").Append(PiUnityJsonHelper.EscapeJson(ve.tooltip ?? "")).Append("\"");
-            sb.Append(",\"path\":\"").Append(PiUnityJsonHelper.EscapeJson(BuildElementPath(ve))).Append("\"");
+            sb.Append(",\"tooltip\":\"").Append(JsonText.Escape(ve.tooltip ?? "")).Append("\"");
+            sb.Append(",\"path\":\"").Append(JsonText.Escape(BuildElementPath(ve))).Append("\"");
 
             var layout = ve.layout;
             sb.Append(",\"layout\":{\"x\":").Append(UiTreeJson.FloatStr(layout.x));
@@ -328,7 +328,7 @@ namespace Pi.UnityHarness.Editor.Capabilities.UiTree
             string text = ExtractText(ve);
             sb.Append(",\"text\":");
             if (text != null)
-                sb.Append("\"").Append(PiUnityJsonHelper.EscapeJson(text)).Append("\"");
+                sb.Append("\"").Append(JsonText.Escape(text)).Append("\"");
             else
                 sb.Append("null");
 
@@ -342,11 +342,11 @@ namespace Pi.UnityHarness.Editor.Capabilities.UiTree
                     if (count >= limit) break;
                     if (count > 0) sb.Append(",");
                     var childRef = UiTreeRefManager.FindOrAssignRef(child);
-                    sb.Append("{\"ref\":\"").Append(PiUnityJsonHelper.EscapeJson(childRef));
-                    sb.Append("\",\"type\":\"").Append(PiUnityJsonHelper.EscapeJson(child.GetType().Name));
+                    sb.Append("{\"ref\":\"").Append(JsonText.Escape(childRef));
+                    sb.Append("\",\"type\":\"").Append(JsonText.Escape(child.GetType().Name));
                     sb.Append("\",\"name\":");
                     if (!string.IsNullOrEmpty(child.name))
-                        sb.Append("\"").Append(PiUnityJsonHelper.EscapeJson(child.name)).Append("\"");
+                        sb.Append("\"").Append(JsonText.Escape(child.name)).Append("\"");
                     else
                         sb.Append("null");
                     sb.Append(",\"classes\":");
@@ -365,28 +365,28 @@ namespace Pi.UnityHarness.Editor.Capabilities.UiTree
 
         internal static void AppendNodeJson(StringBuilder sb, ToolkitNode node, bool includeExtra = true)
         {
-            sb.Append("{\"ref\":\"").Append(PiUnityJsonHelper.EscapeJson(node.Ref));
+            sb.Append("{\"ref\":\"").Append(JsonText.Escape(node.Ref));
             sb.Append("\",\"source\":\"uitoolkit\"");
-            sb.Append(",\"type\":\"").Append(PiUnityJsonHelper.EscapeJson(node.Type));
+            sb.Append(",\"type\":\"").Append(JsonText.Escape(node.Type));
             sb.Append("\",\"name\":");
             if (node.Name != null)
-                sb.Append("\"").Append(PiUnityJsonHelper.EscapeJson(node.Name)).Append("\"");
+                sb.Append("\"").Append(JsonText.Escape(node.Name)).Append("\"");
             else
                 sb.Append("null");
             sb.Append(",\"text\":");
             if (node.Text != null)
-                sb.Append("\"").Append(PiUnityJsonHelper.EscapeJson(node.Text)).Append("\"");
+                sb.Append("\"").Append(JsonText.Escape(node.Text)).Append("\"");
             else
                 sb.Append("null");
             sb.Append(",\"classes\":");
             UiTreeJson.AppendStringArray(sb, node.Classes);
-            sb.Append(",\"path\":\"").Append(PiUnityJsonHelper.EscapeJson(node.Path));
+            sb.Append(",\"path\":\"").Append(JsonText.Escape(node.Path));
             sb.Append("\",\"enabled\":").Append(UiTreeJson.BoolStr(node.Enabled));
             sb.Append(",\"visible\":").Append(UiTreeJson.BoolStr(node.Visible));
             sb.Append(",\"interactive\":").Append(UiTreeJson.BoolStr(node.Interactive));
             sb.Append(",\"interaction\":");
             if (node.Interaction != null)
-                sb.Append("\"").Append(PiUnityJsonHelper.EscapeJson(node.Interaction)).Append("\"");
+                sb.Append("\"").Append(JsonText.Escape(node.Interaction)).Append("\"");
             else
                 sb.Append("null");
             sb.Append(",\"rect\":{\"x\":").Append(UiTreeJson.FloatStr(node.RectX));
@@ -400,7 +400,7 @@ namespace Pi.UnityHarness.Editor.Capabilities.UiTree
             if (includeExtra)
             {
                 sb.Append(",\"focusable\":").Append(UiTreeJson.BoolStr(node.Focusable));
-                sb.Append(",\"context_type\":\"").Append(PiUnityJsonHelper.EscapeJson(node.ContextType ?? "")).Append("\"");
+                sb.Append(",\"context_type\":\"").Append(JsonText.Escape(node.ContextType ?? "")).Append("\"");
             }
 
             if (node.Interactive && node.Interaction != null)

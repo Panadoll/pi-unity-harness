@@ -7,17 +7,17 @@ test("PathBoundary converts WSL and Windows project paths", () => {
     platform: "linux",
     wsl: true,
     translate(direction, value) {
-      if (direction === "-u" && value === "F:\\UnityProjects\\ctest") return "/mnt/f/SampleProjects/ctest";
-      if (direction === "-w" && value === "/mnt/f/SampleProjects/ctest") return "F:\\UnityProjects\\ctest";
-      if (direction === "-u" && value === "F:\\UnityProjects\\other") return "/mnt/f/SampleProjects/other";
+      if (direction === "-u" && value === "F:\\SampleProjects\\ctest") return "/mnt/f/SampleProjects/ctest";
+      if (direction === "-w" && value === "/mnt/f/SampleProjects/ctest") return "F:\\SampleProjects\\ctest";
+      if (direction === "-u" && value === "F:\\SampleProjects\\other") return "/mnt/f/SampleProjects/other";
       throw new Error("unexpected path");
     },
   });
 
-  assert.equal(boundary.host("F:\\UnityProjects\\ctest"), "/mnt/f/SampleProjects/ctest");
-  assert.equal(boundary.cliPath("/mnt/f/SampleProjects/ctest", "pi-unity.exe"), "F:\\UnityProjects\\ctest");
-  assert.equal(boundary.sameProject("/mnt/f/SampleProjects/ctest", "F:\\UnityProjects\\ctest"), true);
-  assert.equal(boundary.sameProject("/mnt/f/SampleProjects/ctest", "F:\\UnityProjects\\other"), false);
+  assert.equal(boundary.host("F:\\SampleProjects\\ctest"), "/mnt/f/SampleProjects/ctest");
+  assert.equal(boundary.cliPath("/mnt/f/SampleProjects/ctest", "pi-unity.exe"), "F:\\SampleProjects\\ctest");
+  assert.equal(boundary.sameProject("/mnt/f/SampleProjects/ctest", "F:\\SampleProjects\\ctest"), true);
+  assert.equal(boundary.sameProject("/mnt/f/SampleProjects/ctest", "F:\\SampleProjects\\other"), false);
 });
 
 test("PathBoundary injects the default agent id for mux processes", () => {

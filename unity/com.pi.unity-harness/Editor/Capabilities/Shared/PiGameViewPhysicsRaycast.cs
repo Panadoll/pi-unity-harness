@@ -1,6 +1,5 @@
 using System.Text;
-using Pi.UnityHarness.Editor;
-using static Pi.UnityHarness.Editor.PiUnityJsonHelper;
+using static Pi.UnityHarness.Editor.Capabilities.Shared.JsonText;
 using UnityEngine;
 
 namespace Pi.UnityHarness.Editor.Capabilities.Shared

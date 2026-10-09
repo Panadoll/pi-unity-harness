@@ -1,8 +1,8 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { paths, PathConversionError } from "../paths.ts";
 import { decide } from "./restart-policy.ts";
+import { asRecord, parseMuxReply, type CliExecutionResult } from "../wire/cli-envelope.ts";
 
-export interface CliExecutionResult { ok: boolean; result?: unknown; error?: string; error_type?: string; help?: string[]; exitCode?: number; truncated?: boolean; savedScratchPath?: string; text?: string; }
 const DEFAULT_MUX_TIMEOUT_MS = 120000;
 const MAX_MUX_STDOUT_CHARS = 32 * 1024 * 1024;
 const MAX_MUX_STDERR_TAIL_CHARS = 800;
@@ -30,79 +30,6 @@ interface MuxJob {
   onAbort?: () => void;
 }
 
-function asRecord(value: unknown): Record<string, unknown> | null {
-  if (value && typeof value === "object" && !Array.isArray(value)) {
-    return value as Record<string, unknown>;
-  }
-  return null;
-}
-
-function asStringArray(value: unknown): string[] | undefined {
-  if (!Array.isArray(value)) return undefined;
-  const out: string[] = [];
-  for (const item of value) {
-    if (typeof item === "string") out.push(item);
-  }
-  return out;
-}
-
-function parseCliJson(text: string): CliExecutionResult {
-  const trimmed = text.trim();
-  if (!trimmed) return { ok: true, result: null };
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(trimmed);
-  } catch {
-    return { ok: false, error: trimmed, exitCode: 1 };
-  }
-  const obj = asRecord(parsed);
-  if (!obj) return { ok: false, error: trimmed, exitCode: 1 };
-  const ok = obj.ok !== false;
-  const help = asStringArray(obj.help);
-  const error = typeof obj.error === "string" ? obj.error : undefined;
-  const errorType = typeof obj.error_type === "string" ? obj.error_type : undefined;
-  const exitCode =
-    typeof obj.exitCode === "number"
-      ? obj.exitCode
-      : typeof obj.exit_code === "number"
-        ? obj.exit_code
-        : ok
-          ? 0
-          : 1;
-  return {
-    ok,
-    result: obj.result,
-    error,
-    error_type: errorType,
-    help,
-    exitCode,
-    truncated: obj.truncated === true,
-    savedScratchPath: typeof obj.savedScratchPath === "string" ? obj.savedScratchPath : undefined,
-    text: typeof obj.text === "string" ? obj.text : undefined,
-  };
-}
-
-function parseMuxReply(value: unknown): CliExecutionResult | null {
-  const obj = asRecord(value);
-  if (!obj || typeof obj.id !== "string") return null;
-  const ok = obj.ok === true;
-  const help = asStringArray(obj.help);
-  const error = typeof obj.error === "string" ? obj.error : undefined;
-  const errorType = typeof obj.error_type === "string" ? obj.error_type : undefined;
-  const exitCode =
-    typeof obj.exitCode === "number" ? obj.exitCode : ok ? 0 : 1;
-  return {
-    ok,
-    result: obj.result,
-    error,
-    error_type: errorType,
-    help,
-    exitCode,
-    truncated: obj.truncated === true,
-    savedScratchPath: typeof obj.savedScratchPath === "string" ? obj.savedScratchPath : undefined,
-    text: typeof obj.text === "string" ? obj.text : undefined,
-  };
-}
 
 export class MuxClient {
   private child: ChildProcess | null = null;

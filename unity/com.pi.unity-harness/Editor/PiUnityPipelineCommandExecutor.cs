@@ -12,6 +12,7 @@ using Unity.Pipeline.Commands;
 using UnityEditor;
 using UnityEngine;
 #endif
+using Pi.UnityHarness.Editor.Protocol;
 
 namespace Pi.UnityHarness.Editor
 {
@@ -46,7 +47,7 @@ namespace Pi.UnityHarness.Editor
                 PendingTask pending = PendingTasks[i];
                 try
                 {
-                    pending.CompleteJson(pending.RequestId, PiUnityJsonHelper.ErrorJson(pending.RequestId, "timeout", "Domain reload — pipeline command '" + pending.CommandName + "' aborted"));
+                    pending.CompleteJson(pending.RequestId, PipeEnvelope.Error(pending.RequestId, "timeout", "Domain reload — pipeline command '" + pending.CommandName + "' aborted"));
                 }
                 catch { /* Best-effort notification; do not block the reload */ }
             }
@@ -79,14 +80,14 @@ namespace Pi.UnityHarness.Editor
                     ["commands"] = commands,
                     ["count"] = commands.Count,
                 };
-                return PiUnityJsonHelper.SuccessJson(replyTo, result.ToString(Formatting.None));
+                return PipeEnvelope.Success(replyTo, result.ToString(Formatting.None));
             }
             catch (Exception ex)
             {
-                return PiUnityJsonHelper.ErrorJson(replyTo, "command_error", "list_commands failed: " + ex.Message);
+                return PipeEnvelope.Error(replyTo, "command_error", "list_commands failed: " + ex.Message);
             }
 #else
-            return PiUnityJsonHelper.SuccessJson(replyTo, "{\"typeName\":\"command_list\",\"pipelineAvailable\":false,\"commands\":[],\"count\":0}");
+            return PipeEnvelope.Success(replyTo, "{\"typeName\":\"command_list\",\"pipelineAvailable\":false,\"commands\":[],\"count\":0}");
 #endif
         }
 
@@ -98,7 +99,7 @@ namespace Pi.UnityHarness.Editor
 
             if (string.IsNullOrWhiteSpace(commandName))
             {
-                completeJson(requestId, PiUnityJsonHelper.ErrorJson(requestId, "usage", "missing pipeline command name"));
+                completeJson(requestId, PipeEnvelope.Error(requestId, "usage", "missing pipeline command name"));
                 return;
             }
 
@@ -108,21 +109,21 @@ namespace Pi.UnityHarness.Editor
                 if (command == null)
                 {
                     string message = BuildCommandNotFoundMessage(commandName, CommandRegistry.DiscoverCommands());
-                    completeJson(requestId, PiUnityJsonHelper.ErrorJson(requestId, "command_not_found", message));
+                    completeJson(requestId, PipeEnvelope.Error(requestId, "command_not_found", message));
                     return;
                 }
 
                 string forbiddenReason = GetForbiddenReason(command);
                 if (forbiddenReason != null)
                 {
-                    completeJson(requestId, PiUnityJsonHelper.ErrorJson(requestId, "command_forbidden", forbiddenReason));
+                    completeJson(requestId, PipeEnvelope.Error(requestId, "command_forbidden", forbiddenReason));
                     return;
                 }
 
                 JObject parameters;
                 if (!TryParseParameters(parametersJson, out parameters, out string parseError))
                 {
-                    completeJson(requestId, PiUnityJsonHelper.ErrorJson(requestId, "parameter_error", parseError));
+                    completeJson(requestId, PipeEnvelope.Error(requestId, "parameter_error", parseError));
                     return;
                 }
 
@@ -135,7 +136,7 @@ namespace Pi.UnityHarness.Editor
                 object[] boundParameters;
                 if (!TryBindParameters(command, parameters, out boundParameters, out string bindError))
                 {
-                    completeJson(requestId, PiUnityJsonHelper.ErrorJson(requestId, "parameter_error", bindError));
+                    completeJson(requestId, PipeEnvelope.Error(requestId, "parameter_error", bindError));
                     return;
                 }
 
@@ -148,7 +149,7 @@ namespace Pi.UnityHarness.Editor
                 catch (TargetInvocationException ex)
                 {
                     Exception inner = ex.InnerException ?? ex;
-                    completeJson(requestId, PiUnityJsonHelper.ErrorJson(requestId, "command_error", FormatException(commandName, inner)));
+                    completeJson(requestId, PipeEnvelope.Error(requestId, "command_error", FormatException(commandName, inner)));
                     return;
                 }
 
@@ -163,10 +164,10 @@ namespace Pi.UnityHarness.Editor
             catch (Exception ex)
             {
                 // completeJson is idempotently wrapped: if the try block already responded, this call is ignored.
-                completeJson(requestId, PiUnityJsonHelper.ErrorJson(requestId, "command_error", FormatException(commandName, ex)));
+                completeJson(requestId, PipeEnvelope.Error(requestId, "command_error", FormatException(commandName, ex)));
             }
 #else
-            completeJson(requestId, PiUnityJsonHelper.ErrorJson(requestId, "pipeline_unavailable", "com.unity.pipeline is not installed or PI_UNITY_PIPELINE is not defined."));
+            completeJson(requestId, PipeEnvelope.Error(requestId, "pipeline_unavailable", "com.unity.pipeline is not installed or PI_UNITY_PIPELINE is not defined."));
 #endif
         }
         public static void ExecuteJob(string jobId, string commandName, string parametersJson, int timeoutMs)
@@ -224,16 +225,16 @@ namespace Pi.UnityHarness.Editor
                     if (string.Equals(state, "completed", StringComparison.OrdinalIgnoreCase))
                         PiUnityBridge.CompleteJson(jobId, SuccessCommandJson(jobId, commandName, status["result"]));
                     else
-                        PiUnityBridge.CompleteJson(jobId, PiUnityJsonHelper.ErrorJson(jobId, OfficialJobErrorType(state, status), OfficialJobError(status)));
+                        PiUnityBridge.CompleteJson(jobId, PipeEnvelope.Error(jobId, OfficialJobErrorType(state, status), OfficialJobError(status)));
                 }
                 catch (Exception ex)
                 {
                     Exception inner = ex is TargetInvocationException && ex.InnerException != null ? ex.InnerException : ex;
-                    PiUnityBridge.CompleteJson(jobId, PiUnityJsonHelper.ErrorJson(jobId, "command_error", FormatException(commandName, inner)));
+                    PiUnityBridge.CompleteJson(jobId, PipeEnvelope.Error(jobId, "command_error", FormatException(commandName, inner)));
                 }
             });
 #else
-            PiUnityBridge.CompleteJson(jobId, PiUnityJsonHelper.ErrorJson(jobId, "pipeline_unavailable", "com.unity.pipeline is not installed or PI_UNITY_PIPELINE is not defined."));
+            PiUnityBridge.CompleteJson(jobId, PipeEnvelope.Error(jobId, "pipeline_unavailable", "com.unity.pipeline is not installed or PI_UNITY_PIPELINE is not defined."));
 #endif
         }
 #if PI_UNITY_PIPELINE
@@ -744,7 +745,7 @@ namespace Pi.UnityHarness.Editor
                 if (elapsedMs > pending.TimeoutMs)
                 {
                     PendingTasks.RemoveAt(i);
-                    pending.CompleteJson(pending.RequestId, PiUnityJsonHelper.ErrorJson(pending.RequestId, "timeout", "pipeline command '" + pending.CommandName + "' exceeded " + pending.TimeoutMs + "ms"));
+                    pending.CompleteJson(pending.RequestId, PipeEnvelope.Error(pending.RequestId, "timeout", "pipeline command '" + pending.CommandName + "' exceeded " + pending.TimeoutMs + "ms"));
                     continue;
                 }
 
@@ -766,14 +767,14 @@ namespace Pi.UnityHarness.Editor
         {
             if (pending.Task.IsCanceled)
             {
-                pending.CompleteJson(pending.RequestId, PiUnityJsonHelper.ErrorJson(pending.RequestId, "cancelled", "pipeline command '" + pending.CommandName + "' was cancelled"));
+                pending.CompleteJson(pending.RequestId, PipeEnvelope.Error(pending.RequestId, "cancelled", "pipeline command '" + pending.CommandName + "' was cancelled"));
                 return;
             }
 
             if (pending.Task.IsFaulted)
             {
                 Exception ex = pending.Task.Exception != null ? pending.Task.Exception.GetBaseException() : null;
-                pending.CompleteJson(pending.RequestId, PiUnityJsonHelper.ErrorJson(pending.RequestId, "command_error", FormatException(pending.CommandName, ex ?? pending.Task.Exception)));
+                pending.CompleteJson(pending.RequestId, PipeEnvelope.Error(pending.RequestId, "command_error", FormatException(pending.CommandName, ex ?? pending.Task.Exception)));
                 return;
             }
 
@@ -786,7 +787,7 @@ namespace Pi.UnityHarness.Editor
             }
             catch (Exception ex)
             {
-                pending.CompleteJson(pending.RequestId, PiUnityJsonHelper.ErrorJson(pending.RequestId, "command_error", "Failed to read Task result for '" + pending.CommandName + "': " + ex.Message));
+                pending.CompleteJson(pending.RequestId, PipeEnvelope.Error(pending.RequestId, "command_error", "Failed to read Task result for '" + pending.CommandName + "': " + ex.Message));
                 return;
             }
 
@@ -815,7 +816,7 @@ namespace Pi.UnityHarness.Editor
                 result["value"] = ToJToken(value);
             }
 
-            return PiUnityJsonHelper.SuccessJson(replyTo, result.ToString(Formatting.None));
+            return PipeEnvelope.Success(replyTo, result.ToString(Formatting.None));
         }
 
         private static string SerializeOutput(object value)

@@ -23,6 +23,9 @@ import {
   type PipelineCommandList,
   type TypeBoxLike,
 } from "./helpers.ts";
+import { parseCliJson, type CliExecutionResult } from "./wire/cli-envelope.ts";
+import { formatResult } from "./presentation/tool-result.ts";
+import { MuxClient } from "./mux/client.ts";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -377,24 +380,8 @@ export function resolveSessionProjectPath(
   return fromEnv ? paths.host(fromEnv, cwd) : undefined;
 }
 
-export interface CliExecutionResult {
-  ok: boolean;
-  result?: unknown;
-  error?: string;
-  error_type?: string;
-  help?: string[];
-  exitCode?: number;
-  truncated?: boolean;
-  savedScratchPath?: string;
-  text?: string;
-}
 
-const DEFAULT_MUX_TIMEOUT_MS = 120000;
-const MAX_MUX_STDOUT_CHARS = 32 * 1024 * 1024;
-const MAX_MUX_STDERR_TAIL_CHARS = 800;
 const MAX_DIAGNOSTIC_TAIL_CHARS = 600;
-/** 一次崩溃事件最多重启一次 mux 并重发未写入的排队请求。 */
-const MUX_RESTART_BUDGET = 1;
 /** 动态 pipeline 工具注册的最小间隔（成功触发的重试也要限速）。 */
 const DYNAMIC_TOOL_REFRESH_BACKOFF_MS = 3000;
 
@@ -431,61 +418,6 @@ export function sanitizeDiagnosticTail(text: string | undefined, maxChars = MAX_
     summary = `${summary.slice(0, Math.max(0, maxChars - 12))}…[truncated]`;
   }
   return summary;
-}
-
-export { MuxClient } from "./mux/client.ts";
-import { MuxClient, type MuxCallResult } from "./mux/client.ts";
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  if (value && typeof value === "object" && !Array.isArray(value)) {
-    return value as Record<string, unknown>;
-  }
-  return null;
-}
-
-function asStringArray(value: unknown): string[] | undefined {
-  if (!Array.isArray(value)) return undefined;
-  const out: string[] = [];
-  for (const item of value) {
-    if (typeof item === "string") out.push(item);
-  }
-  return out;
-}
-
-function parseCliJson(text: string): CliExecutionResult {
-  const trimmed = text.trim();
-  if (!trimmed) return { ok: true, result: null };
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(trimmed);
-  } catch {
-    return { ok: false, error: trimmed, exitCode: 1 };
-  }
-  const obj = asRecord(parsed);
-  if (!obj) return { ok: false, error: trimmed, exitCode: 1 };
-  const ok = obj.ok !== false;
-  const help = asStringArray(obj.help);
-  const error = typeof obj.error === "string" ? obj.error : undefined;
-  const errorType = typeof obj.error_type === "string" ? obj.error_type : undefined;
-  const exitCode =
-    typeof obj.exitCode === "number"
-      ? obj.exitCode
-      : typeof obj.exit_code === "number"
-        ? obj.exit_code
-        : ok
-          ? 0
-          : 1;
-  return {
-    ok,
-    result: obj.result,
-    error,
-    error_type: errorType,
-    help,
-    exitCode,
-    truncated: obj.truncated === true,
-    savedScratchPath: typeof obj.savedScratchPath === "string" ? obj.savedScratchPath : undefined,
-    text: typeof obj.text === "string" ? obj.text : undefined,
-  };
 }
 
 
@@ -598,32 +530,6 @@ export async function runPiUnityCli(
   return execPiUnity(args, options);
 }
 
-function formatResult(cliRes: CliExecutionResult): { content: Array<{ type: "text"; text: string }>; details: unknown } {
-  if (!cliRes.ok) {
-    const payload: Record<string, unknown> = {
-      ok: false,
-      error: cliRes.error || "pi-unity command failed",
-      error_type: cliRes.error_type,
-      help: cliRes.help ?? [],
-      exitCode: cliRes.exitCode ?? 1,
-    };
-    if (cliRes.result !== undefined) payload.result = cliRes.result;
-    const text = cliRes.text || JSON.stringify(payload, null, 2);
-    const err = new Error(text) as Error & { details?: unknown };
-    err.details = payload;
-    throw err;
-  }
-
-  const text = cliRes.text
-    ?? (typeof cliRes.result === "string"
-      ? cliRes.result
-      : JSON.stringify(cliRes.result ?? {}, null, 2));
-
-  return {
-    content: [{ type: "text", text }],
-    details: cliRes.result,
-  };
-}
 
 /** Push `--flag <value>` when the value is present (empty string is skipped). */
 function pushArg(args: string[], flag: string, value: string | number | undefined) {

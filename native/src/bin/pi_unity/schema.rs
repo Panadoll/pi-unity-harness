@@ -1,30 +1,31 @@
-//! 默认瘦 schema、字段截断、列表聚合。内部仍是 JSON。
+//! Presentation shaping：默认列、字段截断和 help。Pipeline payload 抽取在 domain。
+//! CLI JSON 信封在 wire；TOON、Base64 与长输出落盘在 output。
 
 use serde_json::{json, Map, Value};
 
-pub const DEFAULT_FIELD_CHARS: usize = 800;
-pub const MAX_SAFE_RESPONSE_CHARS: usize = 32_768;
+pub(crate) const DEFAULT_FIELD_CHARS: usize = 800;
+pub(crate) const MAX_SAFE_RESPONSE_CHARS: usize = 32_768;
 
 #[derive(Clone, Debug, Default)]
-pub struct ViewOptions {
-    pub fields: Vec<String>,
-    pub full: bool,
+pub(crate) struct ViewOptions {
+    pub(crate) fields: Vec<String>,
+    pub(crate) full: bool,
 }
 
 impl ViewOptions {
-    pub fn from_parts(fields: &[String], full: bool) -> Self {
+    pub(crate) fn from_parts(fields: &[String], full: bool) -> Self {
         Self {
             fields: fields.to_vec(),
             full,
         }
     }
 
-    pub fn wants(&self, name: &str) -> bool {
+    pub(crate) fn wants(&self, name: &str) -> bool {
         self.full || self.fields.iter().any(|f| f == name)
     }
 }
 
-pub fn truncate_chars(s: &str, limit: usize) -> (String, bool, usize) {
+pub(crate) fn truncate_chars(s: &str, limit: usize) -> (String, bool, usize) {
     let total = s.chars().count();
     if total <= limit {
         return (s.to_string(), false, total);
@@ -37,7 +38,7 @@ pub fn truncate_chars(s: &str, limit: usize) -> (String, bool, usize) {
     )
 }
 
-pub fn truncate_value(val: &mut Value, limit: usize) -> bool {
+pub(crate) fn truncate_value(val: &mut Value, limit: usize) -> bool {
     let mut truncated = false;
     match val {
         Value::String(s) => {
@@ -95,6 +96,7 @@ fn pick_i64(obj: &Value, keys: &[&str], default: i64) -> i64 {
     default
 }
 
+
 /// 大小写不敏感的字段取值：Pipeline 包的对象用 PascalCase（Status/FullName），
 /// harness 自己的对象用 camelCase，两边都要能读。
 fn pick_str_ci(obj: &Value, keys: &[&str]) -> String {
@@ -131,23 +133,7 @@ fn pick_i64_ci(obj: &Value, keys: &[&str], default: i64) -> i64 {
     default
 }
 
-/// Pipeline 命令的桥接信封是 {output, typeName, command, valueTypeName, value}，
-/// 真正的命令结果在 value（或 output 里的 JSON 文本）上。
-fn pipeline_payload(raw: &Value) -> Value {
-    if let Some(value) = raw.get("value") {
-        if !value.is_null() {
-            return value.clone();
-        }
-    }
-    if let Some(text) = raw.get("output").and_then(Value::as_str) {
-        if let Ok(parsed) = serde_json::from_str::<Value>(text) {
-            return parsed;
-        }
-    }
-    raw.clone()
-}
-
-pub fn help_items(commands: &[&str]) -> Value {
+pub(crate) fn help_items(commands: &[&str]) -> Value {
     let arr: Vec<Value> = commands.iter().map(|c| json!({"run": *c})).collect();
     Value::Array(arr)
 }
@@ -166,7 +152,7 @@ fn append_requested_fields(target: &mut Value, raw: &Value, opts: &ViewOptions) 
     }
 }
 
-pub fn shape_status_view(raw: &Value, opts: &ViewOptions) -> Value {
+pub(crate) fn shape_status_view(raw: &Value, opts: &ViewOptions) -> Value {
     if opts.full {
         return raw.clone();
     }
@@ -175,7 +161,7 @@ pub fn shape_status_view(raw: &Value, opts: &ViewOptions) -> Value {
     shaped
 }
 
-pub fn shape_status(raw: &Value) -> Value {
+pub(crate) fn shape_status(raw: &Value) -> Value {
     let editor = pick_str(raw, &["managedState"]);
     let generation = pick_i64(raw, &["managedGeneration"], 0);
     let editor_status = pick_str(raw, &["editorStatus"]);
@@ -255,7 +241,7 @@ fn flatten_hierarchy(nodes: &[Value], out: &mut Vec<Value>, opts: &ViewOptions) 
     }
 }
 
-pub fn shape_snapshot(raw: &Value, opts: &ViewOptions) -> Value {
+pub(crate) fn shape_snapshot(raw: &Value, opts: &ViewOptions) -> Value {
     let roots = raw
         .pointer("/hierarchy/roots")
         .and_then(Value::as_array)
@@ -342,7 +328,7 @@ pub fn shape_snapshot(raw: &Value, opts: &ViewOptions) -> Value {
     Value::Object(out)
 }
 
-pub fn shape_list_commands(raw: &Value, opts: &ViewOptions) -> Value {
+pub(crate) fn shape_list_commands(raw: &Value, opts: &ViewOptions) -> Value {
     let commands = raw
         .get("commands")
         .and_then(Value::as_array)
@@ -387,7 +373,7 @@ pub fn shape_list_commands(raw: &Value, opts: &ViewOptions) -> Value {
     })
 }
 
-pub fn shape_timeline(raw: &Value, opts: &ViewOptions) -> Value {
+pub(crate) fn shape_timeline(raw: &Value, opts: &ViewOptions) -> Value {
     if opts.full {
         return raw.clone();
     }
@@ -423,8 +409,14 @@ pub fn shape_timeline(raw: &Value, opts: &ViewOptions) -> Value {
     })
 }
 
-pub fn shape_run_tests(raw: &Value) -> Value {
-    let payload = pipeline_payload(raw);
+
+#[cfg(test)]
+pub(crate) fn shape_run_tests(raw: &Value) -> Value {
+    shape_run_tests_with(raw, false)
+}
+
+pub(crate) fn shape_run_tests_with(raw: &Value, full: bool) -> Value {
+    let payload = super::domain::pipeline_payload(raw);
     let summary = payload.get("summary").cloned().unwrap_or(Value::Null);
     let passed = pick_i64_ci(&summary, &["passed"], pick_i64_ci(&payload, &["passed"], 0));
     let failed = pick_i64_ci(&summary, &["failed"], pick_i64_ci(&payload, &["failed"], 0));
@@ -440,7 +432,25 @@ pub fn shape_run_tests(raw: &Value) -> Value {
             let st = pick_str_ci(r, &["status", "result", "state"]);
             st.eq_ignore_ascii_case("failed") || st.eq_ignore_ascii_case("failure")
         })
-        .map(|r| json!({"name": pick_str_ci(r, &["name", "fullName", "testName"])}))
+        .map(|r| {
+            let mut row = Map::new();
+            row.insert("name".into(), json!(pick_str_ci(r, &["name", "fullName", "testName"])));
+            let message = pick_str_ci(r, &["message", "Message"]);
+            let stack = pick_str_ci(r, &["stackTrace", "StackTrace"]);
+            if !message.is_empty() {
+                row.insert(
+                    "message".into(),
+                    json!(if full { message } else { truncate_chars(&message, 500).0 }),
+                );
+            }
+            if !stack.is_empty() {
+                row.insert(
+                    "stackTrace".into(),
+                    json!(if full { stack } else { truncate_chars(&stack, 800).0 }),
+                );
+            }
+            Value::Object(row)
+        })
         .collect();
     let listed_failures = failures.len() as i64;
     json!({
@@ -454,7 +464,9 @@ pub fn shape_run_tests(raw: &Value) -> Value {
     })
 }
 
-pub fn shape_observe(raw: &Value) -> Value {
+pub(crate) fn shape_observe(raw: &Value) -> Value {
+    let payload = super::domain::pipeline_payload(raw);
+    let raw = &payload;
     let frames = raw
         .get("frames")
         .and_then(Value::as_array)
@@ -469,7 +481,8 @@ pub fn shape_observe(raw: &Value) -> Value {
     } else {
         raw.get("unique_count").and_then(Value::as_u64).unwrap_or(0) as usize
     };
-    json!({
+    let mut out = json!({
+        "status": pick_str(raw, &["status"]),
         "changedFrames": changed,
         "dHash": pick_str(raw, &["fingerprint", "dHash"]),
         "captured": pick_i64(raw, &["captured_count"], paths.len() as i64),
@@ -480,18 +493,18 @@ pub fn shape_observe(raw: &Value) -> Value {
         },
         "latest": pick_str(raw, &["latest"]),
         "embed": false,
-    })
+        "timedOut": raw.get("timed_out").and_then(Value::as_bool) == Some(true),
+    });
+    if let Some(error_type) = raw.get("error_type").and_then(Value::as_str) {
+        if !error_type.is_empty() {
+            out["errorType"] = json!(error_type);
+        }
+    }
+    out
 }
 
-pub fn shape_generic(raw: &Value, opts: &ViewOptions) -> Value {
-    let mut v = raw.clone();
-    if !opts.full {
-        truncate_value(&mut v, DEFAULT_FIELD_CHARS);
-    }
-    v
-}
 /// detached job 的默认列。不含 ok：查询本身成功，执行成败由 state/error 表达。
-pub fn shape_job(raw: &Value, opts: &ViewOptions) -> Value {
+pub(crate) fn shape_job(raw: &Value, opts: &ViewOptions) -> Value {
     let state = pick_str(raw, &["state"]);
     let mut out = Map::new();
     out.insert("jobId".into(), json!(pick_str(raw, &["jobId"])));
@@ -536,11 +549,7 @@ pub fn shape_job(raw: &Value, opts: &ViewOptions) -> Value {
     shaped
 }
 
-pub fn job_execution_failed(state: &str) -> bool {
-    matches!(state, "failed" | "canceled" | "cancelled" | "interrupted")
-}
-
-pub fn shape_job_progress(raw: &Value) -> Value {
+pub(crate) fn shape_job_progress(raw: &Value) -> Value {
     let state = {
         let value = pick_str(raw, &["state"]);
         if value.is_empty() { "unknown".to_string() } else { value }
@@ -553,7 +562,14 @@ pub fn shape_job_progress(raw: &Value) -> Value {
     })
 }
 
-pub fn apply_field_truncation(val: &mut Value, opts: &ViewOptions) -> bool {
+pub(crate) fn shape_generic(raw: &Value, opts: &ViewOptions) -> Value {
+    let mut v = raw.clone();
+    if !opts.full {
+        truncate_value(&mut v, DEFAULT_FIELD_CHARS);
+    }
+    v
+}
+pub(crate) fn apply_field_truncation(val: &mut Value, opts: &ViewOptions) -> bool {
     if opts.full {
         false
     } else {
@@ -561,7 +577,7 @@ pub fn apply_field_truncation(val: &mut Value, opts: &ViewOptions) -> bool {
     }
 }
 
-pub fn with_truncation_help(mut val: Value, truncated: bool, full_hint: &str) -> Value {
+pub(crate) fn with_truncation_help(mut val: Value, truncated: bool, full_hint: &str) -> Value {
     if !truncated {
         return val;
     }
@@ -580,6 +596,7 @@ pub fn with_truncation_help(mut val: Value, truncated: bool, full_hint: &str) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::job_execution_failed;
 
     #[test]
     fn snapshot_default_schema_is_slim() {
@@ -671,104 +688,9 @@ mod tests {
         assert!(out.get("state").is_none());
     }
 
-    #[test]
-    fn run_tests_reads_bridge_envelope_and_pascal_case_results() {
-        let raw = json!({
-            "output": "{\"status\":\"completed\"}",
-            "typeName": "pipeline_command",
-            "command": "run_tests",
-            "valueTypeName": "Unity.Pipeline.TestExecutionResponse",
-            "value": {
-                "status": "completed",
-                "summary": {"total": 3, "passed": 1, "failed": 2, "skipped": 0, "inconclusive": 0},
-                "results": [
-                    {"FullName": "A.B.PassOne", "Status": "Passed"},
-                    {"FullName": "A.B.FailOne", "Status": "Failed"},
-                    {"FullName": "A.B.FailTwo", "Status": "Failed"}
-                ]
-            }
-        });
-        let out = shape_run_tests(&raw);
-        assert_eq!(out["passed"], 1);
-        assert_eq!(out["failed"], 2);
-        assert_eq!(out["skipped"], 0);
-        let failures = out["failures"].as_array().unwrap();
-        assert_eq!(failures.len(), 2);
-        assert_eq!(failures[0]["name"], "A.B.FailOne");
-        assert_eq!(failures[1]["name"], "A.B.FailTwo");
-    }
 
-    #[test]
-    fn run_tests_reads_json_output_when_value_is_absent() {
-        let raw = json!({
-            "output": "{\"summary\":{\"passed\":2,\"failed\":1},\"results\":[{\"status\":\"failed\",\"name\":\"CaseOne\"}]}",
-            "typeName": "pipeline_command"
-        });
-        let out = shape_run_tests(&raw);
-        assert_eq!(out["passed"], 2);
-        assert_eq!(out["failed"], 1);
-        assert_eq!(out["failures"][0]["name"], "CaseOne");
-    }
 
-    #[test]
-    fn run_tests_accepts_flat_payload() {
-        let out = shape_run_tests(&json!({
-            "summary": {"passed": 4, "failed": 0, "skipped": 1},
-            "results": [{"fullName": "A.B.Pass", "status": "Passed"}]
-        }));
-        assert_eq!(out["passed"], 4);
-        assert_eq!(out["skipped"], 1);
-        assert!(out["failures"].as_array().unwrap().is_empty());
-        assert_eq!(out["failureListComplete"], true);
-    }
 
-    #[test]
-    fn run_tests_marks_missing_failure_rows_as_incomplete() {
-        let out = shape_run_tests(&json!({
-            "summary": {"passed": 2, "failed": 1, "skipped": 0}
-        }));
-        assert_eq!(out["failed"], 1);
-        assert!(out["failures"].as_array().unwrap().is_empty());
-        assert_eq!(out["failureListComplete"], false);
-    }
-
-    #[test]
-    fn observe_always_embeds_false_and_preserves_data() {
-        let raw = json!({
-            "frames": ["frame_a.png", "frame_b.png", "frame_c.png"],
-            "changed": false,
-            "fingerprint": "abc123",
-            "captured_count": 3,
-            "unique_count": 2,
-            "latest": "frame_c.png"
-        });
-        assert!(raw.get("embed").is_none());
-        let out = shape_observe(&raw);
-        assert_eq!(out["embed"], false);
-        assert_eq!(out["changedFrames"], 2);
-        assert_eq!(out["dHash"], "abc123");
-        assert_eq!(out["captured"], 3);
-        assert_eq!(out["latest"], "frame_c.png");
-        let frames = out["frames"].as_array().unwrap();
-        assert_eq!(frames.len(), 3);
-        assert_eq!(frames[0]["path"], "frame_a.png");
-        assert_eq!(frames[2]["path"], "frame_c.png");
-        assert!(out["frames"][0].get("data").is_none());
-        assert!(out.get("image").is_none());
-    }
-
-    #[test]
-    fn observe_empty_payload_embeds_false_and_keeps_counts() {
-        let out = shape_observe(&json!({}));
-        assert_eq!(out["embed"], false);
-        assert_eq!(out["changedFrames"], 0);
-        assert_eq!(out["dHash"], "");
-        assert_eq!(out["captured"], 0);
-        assert_eq!(out["latest"], "");
-        let text = out["frames"].as_str().unwrap();
-        assert!(text.starts_with("0 "));
-        assert!(text.contains("found"));
-    }
 
     #[test]
     fn timeline_full_and_fields() {
@@ -800,6 +722,66 @@ mod tests {
         assert_eq!(slim["actions"][0]["durationMs"], 12);
     }
 
+
+
+
+    #[test]
+    fn run_tests_reads_bridge_envelope_and_pascal_case_results() {
+        let raw = json!({
+            "output": "{\"status\":\"completed\"}",
+            "typeName": "pipeline_command",
+            "command": "run_tests",
+            "valueTypeName": "Unity.Pipeline.TestExecutionResponse",
+            "value": {
+                "status": "completed",
+                "summary": {"total": 3, "passed": 1, "failed": 2, "skipped": 0, "inconclusive": 0},
+                "results": [
+                    {"FullName": "A.B.PassOne", "Status": "Passed"},
+                    {"FullName": "A.B.FailOne", "Status": "Failed"},
+                    {"FullName": "A.B.FailTwo", "Status": "Failed"}
+                ]
+            }
+        });
+        let out = shape_run_tests(&raw);
+        assert_eq!(out["passed"], 1);
+        assert_eq!(out["failed"], 2);
+        assert_eq!(out["skipped"], 0);
+        let failures = out["failures"].as_array().unwrap();
+        assert_eq!(failures.len(), 2);
+        assert_eq!(failures[0]["name"], "A.B.FailOne");
+        assert_eq!(failures[1]["name"], "A.B.FailTwo");
+    }
+    #[test]
+    fn run_tests_reads_json_output_when_value_is_absent() {
+        let raw = json!({
+            "output": "{\"summary\":{\"passed\":2,\"failed\":1},\"results\":[{\"status\":\"failed\",\"name\":\"CaseOne\"}]}",
+            "typeName": "pipeline_command"
+        });
+        let out = shape_run_tests(&raw);
+        assert_eq!(out["passed"], 2);
+        assert_eq!(out["failed"], 1);
+        assert_eq!(out["failures"][0]["name"], "CaseOne");
+    }
+    #[test]
+    fn run_tests_accepts_flat_payload() {
+        let out = shape_run_tests(&json!({
+            "summary": {"passed": 4, "failed": 0, "skipped": 1},
+            "results": [{"fullName": "A.B.Pass", "status": "Passed"}]
+        }));
+        assert_eq!(out["passed"], 4);
+        assert_eq!(out["skipped"], 1);
+        assert!(out["failures"].as_array().unwrap().is_empty());
+        assert_eq!(out["failureListComplete"], true);
+    }
+    #[test]
+    fn run_tests_marks_missing_failure_rows_as_incomplete() {
+        let out = shape_run_tests(&json!({
+            "summary": {"passed": 2, "failed": 1, "skipped": 0}
+        }));
+        assert_eq!(out["failed"], 1);
+        assert!(out["failures"].as_array().unwrap().is_empty());
+        assert_eq!(out["failureListComplete"], false);
+    }
     #[test]
     fn job_failed_keeps_state_and_error_without_claiming_success() {
         let raw = json!({
@@ -822,7 +804,6 @@ mod tests {
         assert!(!job_execution_failed("completed"));
         assert!(!job_execution_failed("running"));
     }
-
     #[test]
     fn job_progress_keeps_null_progress() {
         let out = shape_job_progress(&json!({
@@ -835,7 +816,6 @@ mod tests {
         assert_eq!(out["active"], false);
         assert!(out["progress"].is_null());
     }
-
     #[test]
     fn failed_job_query_payload_keeps_state_apart_from_query_success() {
         let raw = json!({
@@ -848,12 +828,12 @@ mod tests {
             "result": {"value": 1, "output": "partial"}
         });
         let snapshot = shape_job(&raw, &ViewOptions::default());
-        let err = crate::client::CliError::JobFinished {
+        let err = crate::wire::CliError::JobFinished {
             code: "timeout".into(),
             message: "boom".into(),
             snapshot,
         };
-        let payload = crate::usage::error_payload(&err);
+        let payload = crate::wire::error_payload(&err);
         assert_eq!(payload["ok"], false);
         assert_eq!(payload["exitCode"], 1);
         assert_eq!(payload["error_type"], "timeout");
@@ -861,4 +841,222 @@ mod tests {
         assert_eq!(payload["result"]["jobId"], "job-9");
         assert_eq!(payload["result"]["result"]["value"], 1);
     }
+    #[test]
+    fn observe_always_embeds_false_and_preserves_data() {
+        let raw = json!({
+            "frames": ["frame_a.png", "frame_b.png", "frame_c.png"],
+            "changed": false,
+            "fingerprint": "abc123",
+            "captured_count": 3,
+            "unique_count": 2,
+            "latest": "frame_c.png"
+        });
+        assert!(raw.get("embed").is_none());
+        let out = shape_observe(&raw);
+        assert_eq!(out["embed"], false);
+        assert_eq!(out["changedFrames"], 2);
+        assert_eq!(out["dHash"], "abc123");
+        assert_eq!(out["captured"], 3);
+        assert_eq!(out["latest"], "frame_c.png");
+        let frames = out["frames"].as_array().unwrap();
+        assert_eq!(frames.len(), 3);
+        assert_eq!(frames[0]["path"], "frame_a.png");
+        assert_eq!(frames[2]["path"], "frame_c.png");
+        assert!(out["frames"][0].get("data").is_none());
+        assert!(out.get("image").is_none());
+    }
+
+    #[test]
+    fn observe_unwraps_pipeline_value_and_json_output() {
+        let observed = json!({
+            "status": "succeeded", "frames": ["capture.png"],
+            "changed": false, "unique_count": 1, "captured_count": 1,
+            "deduplicated_count": 2, "fingerprint": "0c003100",
+            "latest": "capture.png"
+        });
+        for envelope in [
+            json!({"typeName": "pipeline_command", "value": observed, "output": "ignored"}),
+            json!({"typeName": "pipeline_command", "value": null, "output": observed.to_string()}),
+        ] {
+            let shaped = shape_observe(&envelope);
+            assert_eq!(shaped["captured"], 1);
+            assert_eq!(shaped["changedFrames"], 1);
+            assert_eq!(shaped["dHash"], "0c003100");
+            assert_eq!(shaped["frames"], json!([{"path": "capture.png"}]));
+            assert_eq!(shaped["latest"], "capture.png");
+            assert_eq!(shaped["embed"], false);
+        }
+    }
+
+    #[test]
+    fn observe_empty_payload_embeds_false_and_keeps_counts() {
+        let out = shape_observe(&json!({}));
+        assert_eq!(out["embed"], false);
+        assert_eq!(out["changedFrames"], 0);
+        assert_eq!(out["dHash"], "");
+        assert_eq!(out["captured"], 0);
+        assert_eq!(out["latest"], "");
+        let text = out["frames"].as_str().unwrap();
+        assert!(text.starts_with("0 "));
+        assert!(text.contains("found"));
+    }
+
+    #[test]
+    fn vision_failures_exit_nonzero_and_keep_domain_evidence() {
+        let capture = json!({
+            "typeName": "pipeline_command",
+            "output": "ignored",
+            "value": {
+                "status": "failed",
+                "schema": "harness.vision.capture.v1",
+                "error": "GameView capture requires PlayMode",
+                "error_type": "not_supported"
+            }
+        });
+        let err = super::super::commands::vision_cli_error(&capture).expect("capture failed");
+        assert_eq!(err.exit_code(), 1);
+        let payload = crate::wire::error_payload(&err);
+        assert_eq!(payload["ok"], false);
+        assert_eq!(payload["exitCode"], 1);
+        assert_eq!(payload["error_type"], "not_supported");
+        assert_eq!(payload["result"]["status"], "failed");
+        assert!(payload["result"].get("timed_out").is_none(), "领域证据不注入 CLI 合成字段");
+        // detached job 的 JValue 会把领域对象再编码成 JSON 字符串。
+        let text = capture["value"].to_string();
+        for envelope in [
+            json!({"value": text}),
+            json!({"value": null, "output": serde_json::to_string(&text).unwrap()}),
+        ] {
+            let err = super::super::commands::vision_cli_error(&envelope).expect("encoded capture failed");
+            assert_eq!(err.exit_code(), 1);
+            let error = crate::wire::error_payload(&err);
+            assert_eq!(error["error_type"], "not_supported");
+            assert_eq!(error["result"]["schema"], "harness.vision.capture.v1");
+            assert_eq!(error["result"]["error"], "GameView capture requires PlayMode");
+        }
+
+        let observe = json!({
+            "typeName": "pipeline_command",
+            "value": null,
+            "output": json!({
+                "status": "failed",
+                "schema": "harness.vision.observe.v1",
+                "error": "End-of-frame did not fire within 200ms",
+                "error_type": "timeout",
+                "timed_out": true,
+                "unique_count": 0
+            }).to_string()
+        });
+        let err = super::super::commands::vision_cli_error(&observe).expect("observe timeout");
+        assert_eq!(err.exit_code(), 1);
+        let payload = crate::wire::error_payload(&err);
+        assert_eq!(payload["error_type"], "timeout");
+        assert_eq!(payload["result"]["timed_out"], true);
+        assert_eq!(payload["result"]["error_type"], "timeout");
+        let partial = json!({
+            "schema": "harness.vision.capture_analysis.v1",
+            "status": "partial",
+            "capture": {"schema": "harness.vision.capture.v1", "status": "succeeded", "path": "shot.png"},
+            "analysis": {
+                "status": "unavailable",
+                "error": {"type": "provider_unavailable", "message": "No external analyzer is configured."}
+            }
+        });
+        let err = super::super::commands::vision_cli_error(&partial).expect("analysis failed");
+        assert_eq!(err.exit_code(), 1);
+        assert_eq!(err.error_type(), "provider_unavailable");
+        let payload = crate::wire::error_payload(&err);
+        assert_eq!(payload["result"]["status"], "partial");
+        assert_eq!(payload["result"]["capture"]["status"], "succeeded");
+        assert_eq!(payload["result"]["analysis"]["status"], "unavailable");
+        let skipped = json!({
+            "schema": "harness.vision.capture_analysis.v1",
+            "status": "failed",
+            "capture": {"schema": "harness.vision.capture.v1", "status": "failed", "error": "No camera", "error_type": "runtime"},
+            "analysis": {"schema": "harness.vision.analysis.v1", "status": "skipped"}
+        });
+        let err = super::super::commands::vision_cli_error(&skipped).expect("capture child failed");
+        assert_eq!(err.exit_code(), 1);
+        assert_eq!(err.error_type(), "runtime");
+
+        let missing = json!({
+            "typeName": "pipeline_command",
+            "value": {
+                "status": "failed",
+                "schema": "harness.vision.provider_test.v1",
+                "error": {
+                    "type": "configuration",
+                    "message": "Vision provider is not openai-compatible."
+                }
+            }
+        });
+        let err = super::super::commands::vision_cli_error(&missing).expect("provider missing");
+        assert_eq!(err.exit_code(), 1);
+        assert_eq!(err.error_type(), "configuration");
+        assert!(err.message().contains("not openai-compatible"));
+        let payload = crate::wire::error_payload(&err);
+        assert_eq!(payload["result"]["error"]["type"], "configuration");
+
+        let usage = json!({
+            "status": "failed",
+            "schema": "harness.vision.capture.v1",
+            "error": "Invalid screenshot mode",
+            "error_type": "usage"
+        });
+        assert_eq!(super::super::commands::vision_cli_error(&usage).unwrap().exit_code(), 2);
+
+        let business = json!({"status": "failed", "error_type": "compile_error", "error": "boom"});
+        assert!(super::super::commands::vision_cli_error(&business).is_none());
+        let running = json!({"schema": "harness.vision.observe.v1", "status": "running"});
+        assert!(super::super::commands::vision_cli_error(&running).is_none());
+        let encoded_business = json!({"value": json!({"status": "failed", "schema": "other.v1"}).to_string()});
+        assert!(super::super::commands::vision_cli_error(&encoded_business).is_none());
+    }
+
+    #[test]
+    fn successful_observe_keeps_unique_count_and_clear_flags() {
+        let shaped = shape_observe(&json!({
+            "status": "succeeded",
+            "frames": ["capture.png"],
+            "changed": false,
+            "unique_count": 1,
+            "captured_count": 1,
+            "fingerprint": "0c003100",
+            "timed_out": false
+        }));
+        assert_eq!(shaped["changedFrames"], 1);
+        assert_eq!(shaped["status"], "succeeded");
+        assert_eq!(shaped["timedOut"], false);
+        assert!(shaped.get("errorType").is_none());
+    }
+
+    #[test]
+    fn run_tests_failures_exit_one_without_losing_counts() {
+        let raw = json!({
+            "typeName": "pipeline_command",
+            "value": {
+                "summary": {"passed": 474, "failed": 3, "skipped": 0},
+                "results": [
+                    {"FullName": "A.Pass", "Status": "Passed"},
+                    {"FullName": "A.FailOne", "Status": "Failed"},
+                    {"FullName": "A.FailTwo", "Status": "Failed"},
+                    {"name": "A.FailThree", "status": "failed"}
+                ]
+            }
+        });
+        let shaped = shape_run_tests(&raw);
+        let err = super::super::commands::run_tests_cli_error(&shaped).expect("failed tests");
+        assert_eq!(err.exit_code(), 1);
+        let payload = crate::wire::error_payload(&err);
+        assert_eq!(payload["ok"], false);
+        assert_eq!(payload["error_type"], "test_failed");
+        assert_eq!(payload["result"]["passed"], 474);
+        assert_eq!(payload["result"]["failed"], 3);
+        assert_eq!(payload["result"]["skipped"], 0);
+        assert_eq!(payload["result"]["failures"].as_array().unwrap().len(), 3);
+        assert_eq!(payload["result"]["failureListComplete"], true);
+        let clean = shape_run_tests(&json!({"summary": {"passed": 1, "failed": 0}}));
+        assert!(super::super::commands::run_tests_cli_error(&clean).is_none());
+    }
+
 }

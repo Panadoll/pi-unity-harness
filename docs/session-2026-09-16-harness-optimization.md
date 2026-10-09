@@ -1,7 +1,7 @@
 # pi-unity-harness 会话分析与优化计划
 
 来源会话：`<HOME>\.pi\profiles\test\sessions\2026-09-16T17-47-32-833Z_01a0ab54-be60-710d-adcd-70d4f9aa8423.jsonl`  
-工程：`F:/SampleProjects\ctest` 复刻《我的花园世界》（Unity 2022.3.14f1 + URP 2D，场景 `FarmMain`）  
+工程：`F:\SampleProjects\ctest` 复刻《我的花园世界》（Unity 2022.3.14f1 + URP 2D，场景 `FarmMain`）  
 宿主：pi-coding-agent + `pi-unity-harness` typed tools（mux）  
 模型：`deepseek-v4-flash`  
 墙钟：约 23 小时（2026-09-16 17:47 → 2026-09-17 17:08）

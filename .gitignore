@@ -15,3 +15,6 @@ Temp/
 .tmp/
 skills-lock.json
 
+
+# agent 工作日志
+scratch/

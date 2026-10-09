@@ -1,7 +1,6 @@
 using System;
 using System.Collections;
 using System.IO;
-using Pi.UnityHarness.Editor;
 using Pi.UnityHarness.Editor.Capabilities.Shared;
 using Pi.UnityHarness.Runtime.Capabilities.Vision;
 using UnityEditor;
@@ -77,22 +76,15 @@ namespace Pi.UnityHarness.Editor.Capabilities.Vision
             bool annotate,
             bool drawAnnotations = true)
         {
-            mode = string.IsNullOrWhiteSpace(mode) ? "auto" : mode.ToLowerInvariant();
-            NormalizeRequestedSize(width, height, out int gameWidth, out int gameHeight, out int sceneWidth, out int sceneHeight);
-
-            if (mode != "auto" && mode != "scene" && mode != "game")
+            if (!TryNormalizeSingleMode(mode, out mode, out string modeError))
             {
-                yield return VisionJson.BuildCaptureJson("failed", null, null, 0, 0, 0,
-                    null, null, null, null, null, null,
-                    null, null, null, null, null,
-                    "Invalid screenshot mode. Use auto, scene, or game.", "usage");
+                yield return VisionJson.BuildCaptureFailedJson(modeError, "usage");
                 yield break;
             }
 
-            string resolvedPath = ResolvePath(path);
-            string dir = Path.GetDirectoryName(resolvedPath);
-            if (!string.IsNullOrEmpty(dir))
-                Directory.CreateDirectory(dir);
+            NormalizeRequestedSize(width, height, out int gameWidth, out int gameHeight, out int sceneWidth, out int sceneHeight);
+            string resolvedPath = CapturePathService.Resolve(
+                CapturePathProfile.Harness, path, ProjectRoot, DateTime.UtcNow, true);
 
             Camera sceneCamera = SceneView.lastActiveSceneView != null ? SceneView.lastActiveSceneView.camera : null;
             Camera gameCamera = mode != "scene" ? FindGameViewCameraCandidate() : null;
@@ -101,10 +93,9 @@ namespace Pi.UnityHarness.Editor.Capabilities.Vision
             {
                 if (mode == "game")
                 {
-                    yield return VisionJson.BuildCaptureJson("failed", null, null, 0, 0, 0,
-                        null, null, null, null, null, null,
-                        null, null, null, null, null,
-                        "No enabled GameView camera found for game screenshot. Enable a camera that renders to GameView, enter PlayMode, or use auto/scene mode.", "not_supported");
+                    yield return VisionJson.BuildCaptureFailedJson(
+                        "No enabled GameView camera found for game screenshot. Enable a camera that renders to GameView, enter PlayMode, or use auto/scene mode.",
+                        "not_supported");
                     yield break;
                 }
 
@@ -122,10 +113,7 @@ namespace Pi.UnityHarness.Editor.Capabilities.Vision
                     yield break;
                 }
 
-                yield return VisionJson.BuildCaptureJson("failed", null, null, 0, 0, 0,
-                    null, null, null, null, null, null,
-                    null, null, null, null, null,
-                    startError, "not_supported");
+                yield return VisionJson.BuildCaptureFailedJson(startError, "not_supported");
                 yield break;
             }
 
@@ -148,10 +136,9 @@ namespace Pi.UnityHarness.Editor.Capabilities.Vision
                 yield break;
             }
 
-            yield return VisionJson.BuildCaptureJson("failed", null, null, 0, 0, 0,
-                null, null, null, null, null, null,
-                null, null, null, null, null,
-                BuildCaptureFailureMessage(mode, new InvalidOperationException(pending.Result.Error)), "runtime");
+            yield return VisionJson.BuildCaptureFailedJson(
+                BuildCaptureFailureMessage(mode, new InvalidOperationException(pending.Result.Error)),
+                "runtime");
         }
 
         /// <summary>
@@ -176,23 +163,14 @@ namespace Pi.UnityHarness.Editor.Capabilities.Vision
             bool annotate,
             bool drawAnnotations = true)
         {
-            mode = string.IsNullOrWhiteSpace(mode) ? "auto" : mode.ToLowerInvariant();
-            NormalizeSceneSize(width, height, out int sceneWidth, out int sceneHeight);
-
-            if (mode != "auto" && mode != "scene" && mode != "game")
-                return VisionJson.BuildCaptureJson("failed", null, null, 0, 0, 0,
-                    null, null, null, null, null, null,
-                    null, null, null, null, null,
-                    "Invalid screenshot mode. Use auto, scene, or game.", "usage");
-
+            if (!TryNormalizeSingleMode(mode, out mode, out string modeError))
+                return VisionJson.BuildCaptureFailedJson(modeError, "usage");
             if (mode == "game")
                 return BuildSyncGameUnsupportedJson();
 
-            string resolvedPath = ResolvePath(path);
-            string dir = Path.GetDirectoryName(resolvedPath);
-            if (!string.IsNullOrEmpty(dir))
-                Directory.CreateDirectory(dir);
-
+            NormalizeSceneSize(width, height, out int sceneWidth, out int sceneHeight);
+            string resolvedPath = CapturePathService.Resolve(
+                CapturePathProfile.Harness, path, ProjectRoot, DateTime.UtcNow, true);
             Camera sceneCamera = SceneView.lastActiveSceneView != null ? SceneView.lastActiveSceneView.camera : null;
             string capture = CaptureSceneCameraJson(sceneCamera, resolvedPath, sceneWidth, sceneHeight);
             return annotate ? AttachAnnotations(capture, drawAnnotations) : capture;
@@ -206,9 +184,9 @@ namespace Pi.UnityHarness.Editor.Capabilities.Vision
             var set = PiVisionAnnotator.Collect(gridColumns, gridRows, PiGameViewPhysicsRaycast.DefaultMaxDistance, includeUi, includePhysics);
             return "{\"status\":\"succeeded\",\"schema\":\"harness.vision.annotations.v1\",\"annotations\":" +
                    PiVisionAnnotator.ToJsonObject(set) +
-                   ",\"input_coordinate_system\":\"" + PiUnityJsonHelper.EscapeJson(set.InputCoordinateSystem) + "\"" +
-                   ",\"unity_coordinate_system\":\"" + PiUnityJsonHelper.EscapeJson(set.UnityCoordinateSystem) + "\"" +
-                   ",\"coordinate_conversion_formula\":\"" + PiUnityJsonHelper.EscapeJson(set.ConversionFormula) + "\"}";
+                   ",\"input_coordinate_system\":\"" + JsonText.Escape(set.InputCoordinateSystem) + "\"" +
+                   ",\"unity_coordinate_system\":\"" + JsonText.Escape(set.UnityCoordinateSystem) + "\"" +
+                   ",\"coordinate_conversion_formula\":\"" + JsonText.Escape(set.ConversionFormula) + "\"}";
         }
 
         private static string AttachAnnotations(string captureJson, bool drawOnImage)
@@ -467,6 +445,19 @@ namespace Pi.UnityHarness.Editor.Capabilities.Vision
             height = Mathf.Clamp(requestedHeight > 0 ? requestedHeight : DefaultSceneCaptureHeight, MinCaptureHeight, MaxCaptureHeight);
         }
 
+        private static bool TryNormalizeSingleMode(string mode, out string normalized, out string error)
+        {
+            normalized = string.IsNullOrWhiteSpace(mode) ? "auto" : mode.ToLowerInvariant();
+            if (normalized == "auto" || normalized == "scene" || normalized == "game")
+            {
+                error = null;
+                return true;
+            }
+
+            error = "Invalid screenshot mode. Use auto, scene, or game.";
+            return false;
+        }
+
         internal static Camera FindGameViewCameraCandidate()
         {
             if (IsGameViewCameraCandidate(Camera.main))
@@ -493,10 +484,9 @@ namespace Pi.UnityHarness.Editor.Capabilities.Vision
         private static string CaptureSceneCameraJson(Camera sceneCamera, string path, int width, int height)
         {
             if (sceneCamera == null)
-                return VisionJson.BuildCaptureJson("failed", null, null, 0, 0, 0,
-                    null, null, null, null, null, null,
-                    null, null, null, null, null,
-                    "No SceneView or GameView camera is available. Open SceneView, enter PlayMode, or use an explicit mode.", "not_supported");
+                return VisionJson.BuildCaptureFailedJson(
+                    "No SceneView or GameView camera is available. Open SceneView, enter PlayMode, or use an explicit mode.",
+                    "not_supported");
 
             try
             {
@@ -505,10 +495,7 @@ namespace Pi.UnityHarness.Editor.Capabilities.Vision
             }
             catch (Exception ex)
             {
-                return VisionJson.BuildCaptureJson("failed", null, null, 0, 0, 0,
-                    null, null, null, null, null, null,
-                    null, null, null, null, null,
-                    "Failed to capture screenshot: " + ex.Message, "runtime");
+                return VisionJson.BuildCaptureFailedJson("Failed to capture screenshot: " + ex.Message, "runtime");
             }
         }
 
@@ -559,10 +546,9 @@ namespace Pi.UnityHarness.Editor.Capabilities.Vision
 
         private static string BuildSyncGameUnsupportedJson()
         {
-            return VisionJson.BuildCaptureJson("failed", null, null, 0, 0, 0,
-                null, null, null, null, null, null,
-                null, null, null, null, null,
-                "Synchronous GameView capture is not supported because ScreenCapture can return null before end-of-frame. Use CaptureGameViewAsyncJson() or CaptureJsonAsync(\"game\", ...).", "not_supported");
+            return VisionJson.BuildCaptureFailedJson(
+                "Synchronous GameView capture is not supported because ScreenCapture can return null before end-of-frame. Use CaptureGameViewAsyncJson() or CaptureJsonAsync(\"game\", ...).",
+                "not_supported");
         }
 
         private static string BuildCaptureFailureMessage(string mode, Exception ex)
@@ -607,17 +593,8 @@ namespace Pi.UnityHarness.Editor.Capabilities.Vision
 
         private static string ResolvePath(string requestedPath)
         {
-            if (!string.IsNullOrWhiteSpace(requestedPath))
-            {
-                string p = requestedPath;
-                if (!Path.IsPathRooted(p))
-                    p = Path.Combine(ProjectRoot, p);
-                return Path.GetFullPath(p);
-            }
-
-            string dir = Path.Combine(ProjectRoot, "Temp", "Harness", "vision");
-            string file = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss-fff") + ".png";
-            return Path.Combine(dir, file);
+            return CapturePathService.ResolveWithoutCreate(
+                CapturePathProfile.Harness, requestedPath, ProjectRoot, DateTime.UtcNow);
         }
 
         private static void ReadPngDimensions(string path, out int width, out int height)

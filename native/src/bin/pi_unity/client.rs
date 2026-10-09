@@ -22,107 +22,6 @@ pub(crate) struct BridgeJson {
     state_plane_name: Option<String>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum CliError {
-    ExecutionFailed(String),
-    BridgeNotFound(String),
-    Timeout(String),
-    Usage { error: String, help: Vec<String> },
-    Other(String),
-    ProtocolMismatch { expected: i32, actual: i32 },
-    /// 结构化 broker/Unity 侧错误：code 保存错误码（managed_reloading、command_error、compilation_failed...）。
-    Broker { code: String, message: String },
-    /// 管道忙（ERROR_PIPE_BUSY / 231）：单客户端架构下已有客户端占用。
-    Busy(String),
-    /// bridge.json 记录的 Unity 进程已退出（Editor 重启中或已关闭）。
-    StaleBridge(String),
-    /// bridge.json 的 project 字段不是当前解析出的工程（复制 Library 或旧文件残留）。
-    ProjectMismatch(String),
-    /// 查询成功，但 job 已终态失败。snapshot 是已整形的 job 视图。
-    JobFinished {
-        code: String,
-        message: String,
-        snapshot: Value,
-    },
-}
-
-impl CliError {
-    pub(crate) fn exit_code(&self) -> i32 {
-        match self {
-            CliError::Usage { .. } => 2,
-            CliError::ExecutionFailed(_)
-            | CliError::BridgeNotFound(_)
-            | CliError::Timeout(_)
-            | CliError::Other(_)
-            | CliError::ProtocolMismatch { .. }
-            | CliError::Broker { .. }
-            | CliError::Busy(_)
-            | CliError::StaleBridge(_)
-            | CliError::ProjectMismatch(_)
-            | CliError::JobFinished { .. } => 1,
-        }
-    }
-
-    pub(crate) fn error_type(&self) -> String {
-        match self {
-            CliError::ExecutionFailed(_) => "execution_failed".to_string(),
-            CliError::BridgeNotFound(_) => "bridge_not_found".to_string(),
-            CliError::Timeout(_) => "timeout".to_string(),
-            CliError::Usage { .. } => "usage".to_string(),
-            CliError::Other(_) => "other".to_string(),
-            CliError::ProtocolMismatch { .. } => "protocol_mismatch".to_string(),
-            CliError::Broker { code, .. } => code.clone(),
-            CliError::Busy(_) => "busy".to_string(),
-            CliError::StaleBridge(_) => "stale_bridge".to_string(),
-            CliError::ProjectMismatch(_) => "project_mismatch".to_string(),
-            CliError::JobFinished { code, .. } => code.clone(),
-        }
-    }
-
-    pub(crate) fn message(&self) -> &str {
-        match self {
-            CliError::ExecutionFailed(msg) => msg,
-            CliError::BridgeNotFound(msg) => msg,
-            CliError::Timeout(msg) => msg,
-            CliError::Usage { error, .. } => error,
-            CliError::Other(msg) => msg,
-            CliError::ProtocolMismatch { .. } => "Protocol version mismatch",
-            CliError::Broker { message, .. } => message,
-            CliError::Busy(msg) => msg,
-            CliError::StaleBridge(msg) => msg,
-            CliError::ProjectMismatch(msg) => msg,
-            CliError::JobFinished { message, .. } => message,
-        }
-    }
-
-    pub(crate) fn help(&self) -> Vec<String> {
-        match self {
-            CliError::Usage { help, .. } => help.clone(),
-            CliError::BridgeNotFound(_) => vec![
-                "打开 Unity Editor 并加载 com.pi.unity-harness".to_string(),
-                "pi-unity --project-path <path> status".to_string(),
-            ],
-            CliError::Timeout(_) => vec!["pi-unity status".to_string()],
-            CliError::Busy(_) => vec![
-                "占用者可能是另一个正在执行的 pi-unity 请求，稍后重试 pi-unity status".to_string(),
-                "持续 busy 时检查旧版 pi-unity.exe mux 常驻进程（新版 mux 空闲 3 秒即释放管道）".to_string(),
-            ],
-            CliError::StaleBridge(_) => vec![
-                "Unity Editor 重启中：等待加载完成，bridge.json 会自动刷新".to_string(),
-                "pi-unity --project-path <path> status".to_string(),
-            ],
-            CliError::ProjectMismatch(_) => vec![
-                "删除这个残留的 bridge.json，或用 --project-path 指向正在运行的 Unity 工程".to_string(),
-            ],
-            CliError::ExecutionFailed(_)
-            | CliError::Other(_)
-            | CliError::ProtocolMismatch { .. }
-            | CliError::Broker { .. }
-            | CliError::JobFinished { .. } => Vec::new(),
-        }
-    }
-}
-
 pub(crate) fn normalize_pipe_name(pipe_name: &str) -> String {
     let value = pipe_name.trim();
     if value.starts_with(r"\\.\pipe\") {
@@ -135,15 +34,7 @@ pub(crate) fn normalize_pipe_name(pipe_name: &str) -> String {
 /// 预分发错误（managed_reloading / managed_not_ready）的重试间隔。
 const RETRY_POLL_MS: u64 = 300;
 
-/// broker 原生裸错误码白名单：native broker 只发 `error` 字段（无 error_type）且只发这些码。
-/// 白名单外的一律按 execution_failed 处理，绝不把任意原始错误文本当 error_type 透出。
-const BROKER_NATIVE_CODES: &[&str] = &[
-    "managed_not_ready",
-    "managed_reloading",
-    "managed_quitting",
-    "request_timeout_in_flight",
-    "managed_heartbeat_timeout",
-];
+use super::wire::CliError;
 
 pub(crate) fn remaining_ms(deadline: Instant) -> u64 {
     deadline
@@ -472,32 +363,7 @@ impl HarnessClient {
             self.connection = Some(pipe);
         }
 
-        let ok = resp.get("ok").and_then(Value::as_bool).unwrap_or(false);
-        if ok {
-            Ok(resp.get("result").cloned().unwrap_or(Value::Null))
-        } else {
-            // 错误码只信两类来源：
-            //  - error_type：Unity/C# 侧显式类型（其值才是码，error 只是消息文本）；
-            //  - error 字段命中 broker 原生裸码白名单（native broker 只发这些码）；
-            // 其他任意原始错误文本一律 execution_failed，绝不当 error_type 透出。
-            let typed = resp
-                .get("error_type")
-                .and_then(Value::as_str)
-                .map(|s| s.to_string());
-            let msg = resp
-                .get("error")
-                .and_then(Value::as_str)
-                .unwrap_or("Unknown broker error")
-                .to_string();
-            match typed {
-                Some(code) => Err(CliError::Broker { code, message: msg }),
-                None if BROKER_NATIVE_CODES.contains(&msg.as_str()) => Err(CliError::Broker {
-                    code: msg.clone(),
-                    message: msg,
-                }),
-                None => Err(CliError::ExecutionFailed(msg)),
-            }
-        }
+        super::wire::classify_pipe_response(&resp)
     }
 
     async fn open_pipe(&mut self, deadline: Instant) -> Result<BufReader<NamedPipeClient>, CliError> {

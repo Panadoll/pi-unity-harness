@@ -1,7 +1,7 @@
 using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Text;
-using Pi.UnityHarness.Editor;
+using Pi.UnityHarness.Editor.Capabilities.Shared;
 
 namespace Pi.UnityHarness.Editor.Capabilities.Input
 {
@@ -24,7 +24,7 @@ namespace Pi.UnityHarness.Editor.Capabilities.Input
         internal InputJson String(string name, string value)
         {
             FieldPrefix(name);
-            _sb.Append('"').Append(PiUnityJsonHelper.EscapeJson(value)).Append('"');
+            _sb.Append('"').Append(JsonText.Escape(value)).Append('"');
             return this;
         }
 
@@ -100,7 +100,7 @@ namespace Pi.UnityHarness.Editor.Capabilities.Input
                 for (int i = 0; i < values.Length; i++)
                 {
                     if (i > 0) sb.Append(',');
-                    sb.Append('"').Append(PiUnityJsonHelper.EscapeJson(values[i])).Append('"');
+                    sb.Append('"').Append(JsonText.Escape(values[i])).Append('"');
                 }
             }
             sb.Append(']');
@@ -114,7 +114,7 @@ namespace Pi.UnityHarness.Editor.Capabilities.Input
                 throw new System.ArgumentException("JSON field name is required.", nameof(name));
             if (_needsComma)
                 _sb.Append(',');
-            _sb.Append('"').Append(PiUnityJsonHelper.EscapeJson(name)).Append("\":");
+            _sb.Append('"').Append(JsonText.Escape(name)).Append("\":");
             _needsComma = true;
         }
     }

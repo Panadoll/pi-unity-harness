@@ -2,7 +2,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use super::client::{BridgeJson, CliError};
+use super::client::BridgeJson;
+use super::wire::CliError;
 
 fn has_bridge(path: &Path) -> bool {
     path.join("Library/PiUnityHarness/bridge.json").exists()
@@ -194,11 +195,11 @@ mod tests {
     fn same_project_ignores_separator_case_and_verbatim_prefix() {
         assert!(same_project(
             Path::new("F:/SampleProjects/Test"),
-            Path::new(r"\\?\F:/SampleProjects\Test\")
+            Path::new(r"\\?\F:\sampleprojects\Test\")
         ));
         assert!(!same_project(
             Path::new("F:/SampleProjects/Test"),
-            Path::new(r"F:/SampleProjects\UniGameKit")
+            Path::new(r"F:\SampleProjects\UniGameKit")
         ));
     }
 

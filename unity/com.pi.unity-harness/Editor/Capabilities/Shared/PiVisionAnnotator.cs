@@ -71,9 +71,9 @@ namespace Pi.UnityHarness.Editor.Capabilities.Shared
             {
                 return captureJson.Substring(0, captureJson.Length - 1) +
                        ",\"annotations\":" + annotationsJson +
-                       ",\"input_coordinate_system\":\"" + PiUnityJsonHelper.EscapeJson(annotations.InputCoordinateSystem) + "\"" +
-                       ",\"unity_coordinate_system\":\"" + PiUnityJsonHelper.EscapeJson(annotations.UnityCoordinateSystem) + "\"" +
-                       ",\"coordinate_conversion_formula\":\"" + PiUnityJsonHelper.EscapeJson(annotations.ConversionFormula) + "\"" +
+                       ",\"input_coordinate_system\":\"" + JsonText.Escape(annotations.InputCoordinateSystem) + "\"" +
+                       ",\"unity_coordinate_system\":\"" + JsonText.Escape(annotations.UnityCoordinateSystem) + "\"" +
+                       ",\"coordinate_conversion_formula\":\"" + JsonText.Escape(annotations.ConversionFormula) + "\"" +
                        "}";
             }
 
@@ -303,12 +303,12 @@ namespace Pi.UnityHarness.Editor.Capabilities.Shared
         private static void AppendUi(StringBuilder sb, PiVisionUiAnnotation ui)
         {
             sb.Append('{');
-            sb.Append("\"label\":\"").Append(PiUnityJsonHelper.EscapeJson(ui.Label)).Append('"');
-            sb.Append(",\"name\":\"").Append(PiUnityJsonHelper.EscapeJson(ui.Name)).Append('"');
-            sb.Append(",\"path\":\"").Append(PiUnityJsonHelper.EscapeJson(ui.Path)).Append('"');
+            sb.Append("\"label\":\"").Append(JsonText.Escape(ui.Label)).Append('"');
+            sb.Append(",\"name\":\"").Append(JsonText.Escape(ui.Name)).Append('"');
+            sb.Append(",\"path\":\"").Append(JsonText.Escape(ui.Path)).Append('"');
             sb.Append(",\"input_x\":").Append(F(ui.InputX));
             sb.Append(",\"input_y\":").Append(F(ui.InputY));
-            sb.Append(",\"interaction\":\"").Append(PiUnityJsonHelper.EscapeJson(ui.Interaction)).Append('"');
+            sb.Append(",\"interaction\":\"").Append(JsonText.Escape(ui.Interaction)).Append('"');
             sb.Append(",\"reachable\":").Append(ui.Reachable ? "true" : "false");
             sb.Append('}');
         }
@@ -316,13 +316,13 @@ namespace Pi.UnityHarness.Editor.Capabilities.Shared
         private static void AppendPhysics(StringBuilder sb, PiVisionPhysicsAnnotation p)
         {
             sb.Append('{');
-            sb.Append("\"label\":\"").Append(PiUnityJsonHelper.EscapeJson(p.Label)).Append('"');
-            sb.Append(",\"name\":\"").Append(PiUnityJsonHelper.EscapeJson(p.Name)).Append('"');
-            sb.Append(",\"path\":\"").Append(PiUnityJsonHelper.EscapeJson(p.Path)).Append('"');
+            sb.Append("\"label\":\"").Append(JsonText.Escape(p.Label)).Append('"');
+            sb.Append(",\"name\":\"").Append(JsonText.Escape(p.Name)).Append('"');
+            sb.Append(",\"path\":\"").Append(JsonText.Escape(p.Path)).Append('"');
             sb.Append(",\"input_x\":").Append(F(p.InputX));
             sb.Append(",\"input_y\":").Append(F(p.InputY));
             sb.Append(",\"layer\":").Append(p.Layer);
-            sb.Append(",\"layer_name\":\"").Append(PiUnityJsonHelper.EscapeJson(p.LayerName ?? string.Empty)).Append('"');
+            sb.Append(",\"layer_name\":\"").Append(JsonText.Escape(p.LayerName ?? string.Empty)).Append('"');
             sb.Append(",\"distance\":").Append(F(p.Distance));
             sb.Append(",\"hit_point\":{\"x\":").Append(F(p.HitPointX))
                 .Append(",\"y\":").Append(F(p.HitPointY))

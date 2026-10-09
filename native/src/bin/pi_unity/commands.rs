@@ -5,11 +5,13 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 
 use super::args::*;
-use super::client::{CliError, HarnessClient};
+use super::client::HarnessClient;
+use super::wire::CliError;
 use super::home;
 use super::logging::TraceRecorder;
 use super::output::format_safe_output_with_opts;
 use super::schema::{self, ViewOptions};
+use super::capture;
 use super::usage;
 
 const JOB_CAPABILITY: &str = "pipeline-jobs-v1";
@@ -480,23 +482,59 @@ async fn send_pipeline_command(
 ) -> Result<String, CliError> {
     let params_json_str = serde_json::to_string(&params).unwrap_or_else(|_| "{}".to_string());
     let hint = format!("pi-unity pipeline {name} --full");
-    send_and_format(
-        client,
-        "command",
-        json!({
-            "name": name,
-            "parametersJson": params_json_str,
-        }),
-        timeout_ms,
-        ctx,
-        &hint,
-        |raw| match name {
-            "run_tests" => schema::shape_run_tests(raw),
-            "vision_observe" => schema::shape_observe(raw),
-            _ => schema::shape_generic(raw, ctx.opts),
-        },
-    )
-    .await
+    let raw = client
+        .send_request(
+            "command",
+            json!({
+                "name": name,
+                "parametersJson": params_json_str,
+            }),
+            timeout_ms,
+        )
+        .await?;
+    // 桥接 ok 只表示命令返回了。视觉领域终态和测试失败要在整形后变成 CLI 失败。
+    if let Some(err) = vision_cli_error(&raw) {
+        return Err(err);
+    }
+    let shaped = match name {
+        "run_tests" => schema::shape_run_tests_with(&raw, ctx.opts.full),
+        "vision_observe" => schema::shape_observe(&raw),
+        _ => schema::shape_generic(&raw, ctx.opts),
+    };
+    if name == "run_tests" {
+        if let Some(err) = run_tests_cli_error(&shaped) {
+            return Err(err);
+        }
+    }
+    Ok(emit_shaped(ctx, shaped, &hint))
+}
+
+pub(crate) fn run_tests_cli_error(shaped: &Value) -> Option<CliError> {
+    let failed = shaped
+        .get("failed")
+        .or_else(|| shaped.get("failureCount"))
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    if failed <= 0 {
+        return None;
+    }
+    Some(CliError::DomainFinished {
+        code: "test_failed".to_string(),
+        message: format!("{failed} tests failed"),
+        snapshot: shaped.clone(),
+        usage: false,
+    })
+}
+
+pub(crate) fn vision_cli_error(raw: &Value) -> Option<CliError> {
+    let snapshot = super::domain::vision_payload(raw)?;
+    let failure = super::domain::vision_terminal_failure(&snapshot)?;
+    Some(CliError::DomainFinished {
+        code: failure.error_type,
+        message: failure.error,
+        snapshot,
+        usage: failure.usage,
+    })
 }
 
 async fn send_pipeline_job(
@@ -559,8 +597,8 @@ async fn send_pipeline_job_query(
         .send_request(req_type, json!({ "jobId": job_id }), timeout_ms)
         .await?;
     let state = raw.get("state").and_then(Value::as_str).unwrap_or("");
-    // 查询已成功。终态失败不能再包进 ok:true，否则调用方会把 job 失败当成执行成功。
-    if !matches!(action, PipelineJobAction::Progress) && schema::job_execution_failed(state) {
+    // 查询已成功。job 外层终态，或 completed 里嵌套的视觉领域终态，都不能再包进 ok:true。
+    if !matches!(action, PipelineJobAction::Progress) && super::domain::job_execution_failed(state) {
         let shaped = schema::shape_job(&raw, ctx.opts);
         let error = shaped
             .get("error")
@@ -578,6 +616,13 @@ async fn send_pipeline_job_query(
             message: error,
             snapshot: shaped,
         });
+    }
+    if !matches!(action, PipelineJobAction::Progress) {
+        if let Some(result) = raw.get("result") {
+            if let Some(err) = vision_cli_error(result) {
+                return Err(err);
+            }
+        }
     }
     let shaped = match action {
         PipelineJobAction::Progress => schema::shape_job_progress(&raw),
@@ -681,7 +726,7 @@ pub(crate) async fn execute_harness_command(
             // 整个操作（触发 + 轮询）共享原始 deadline，不随重试/轮询重置。
             let deadline = Instant::now() + Duration::from_millis(args.timeout);
             // 1) 初始错误全部传播（含 compile_error / compilation_failed / busy / 预分发耗尽）。
-            //    走 Err 保证退出码 1、ok:false；编译失败码由 usage::error_payload 附加
+            //    走 Err 保证退出码 1、ok:false；编译失败码由 wire::error_payload 附加
             //    compiled:false 与错误诊断，绝不返回成功信封（exit0 ok:true 会误导调用方）。
             let _ = client
                 .send_request("recompile", json!({}), super::client::remaining_ms(deadline))
@@ -844,22 +889,10 @@ pub(crate) async fn execute_harness_command(
         }
 
         Commands::Observe(args) => {
-            let overlay_str = match args.overlay {
-                OverlayMode::Grid => "grid",
-                OverlayMode::Annotations => "annotations",
-                OverlayMode::Both => "both",
-                OverlayMode::None => "none",
-            };
-
             send_pipeline_command(
                 client,
                 "vision_observe",
-                json!({
-                    "mode": "game",
-                    "frames": args.frames,
-                    "intervalMs": args.interval,
-                    "overlay": overlay_str,
-                }),
+                capture::observe_parameters(&args),
                 args.timeout,
                 &ctx,
             )
@@ -867,25 +900,8 @@ pub(crate) async fn execute_harness_command(
         }
 
         Commands::Capture(args) => {
-            let mode_str = match args.mode {
-                CaptureMode::Game => "game",
-                CaptureMode::Scene => "scene",
-            };
-
-            let mut param_map = serde_json::Map::new();
-            param_map.insert("mode".to_string(), Value::String(mode_str.to_string()));
-            if let Some(out_p) = args.out {
-                param_map.insert("outPath".to_string(), Value::String(out_p));
-            }
-
-            send_pipeline_command(
-                client,
-                "vision_capture",
-                Value::Object(param_map),
-                args.timeout,
-                &ctx,
-            )
-            .await
+            let (name, params) = capture::capture_command(&args);
+            send_pipeline_command(client, name, params, args.timeout, &ctx).await
         }
 
         Commands::Timeline(args) => {
@@ -923,6 +939,7 @@ pub(crate) async fn execute_harness_command(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::wire;
 
     fn write_file(path: &Path, contents: &str) {
         if let Some(parent) = path.parent() {
@@ -1108,8 +1125,8 @@ mod tests {
             }
             other => panic!("期望 Broker(compile_error)，实际 {other:?}"),
         }
-        // 载荷必须 ok:false + 编译失败诊断（usage::error_payload 附加 compiled）。
-        let payload = usage::error_payload(&err);
+        // 载荷必须 ok:false + 编译失败诊断（wire::error_payload 附加 compiled）。
+        let payload = wire::error_payload(&err);
         assert_eq!(payload["ok"], json!(false));
         assert_eq!(payload["exitCode"], json!(1));
         assert_eq!(payload["error_type"], "compile_error");
@@ -1192,7 +1209,7 @@ mod tests {
             assert_eq!(err.error_type(), expected_code, "[{name}] 错误分类");
             assert_eq!(broker.count("status"), 0, "[{name}] 失败后绝不轮询");
 
-            let payload = usage::error_payload(&err);
+            let payload = wire::error_payload(&err);
             assert_eq!(payload["ok"], json!(false), "[{name}] 载荷必须 ok:false");
             if expected_code == "compile_error" || expected_code == "compilation_failed" {
                 assert_eq!(payload["compiled"], json!(false), "[{name}]");
@@ -1289,3 +1306,4 @@ mod tests {
         assert!(elapsed < Duration::from_millis(1200), "600/500ms sleep 不得重置总 deadline: {elapsed:?}");
     }
 }
+

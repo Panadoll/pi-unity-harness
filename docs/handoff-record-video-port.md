@@ -94,7 +94,7 @@ python scripts/vendor-uloop.py --ref v3.6.3
 
 ### 步骤 3：加 pipeline 包装
 
-新建 `unity/com.pi.unity-harness/Editor/Capabilities/PipelineCommands/PiUloopRecordVideoCommands.cs`
+新建 `unity/com.pi.unity-harness/Editor/Capabilities/EditorState/PiUloopRecordVideoCommands.cs`
 （不要把 `PiUloopUniquePipelineCommands.cs` 继续撑大）。参考实现：
 
 ```csharp
@@ -104,7 +104,7 @@ using io.github.hatayama.UnityCliLoop.FirstPartyTools;
 using Newtonsoft.Json.Linq;
 using Unity.Pipeline.Commands;
 
-namespace Pi.UnityHarness.Editor.Capabilities.PipelineCommands
+namespace Pi.UnityHarness.Editor.Capabilities.Pipeline.CommandAdapters
 {
     internal static class PiUloopRecordVideoCommands
     {
@@ -225,8 +225,8 @@ RecordVideoEditorStartup.Initialize();
 
 - 上游实现：`unity-cli-loop/Packages/src/Editor/FirstPartyTools/RecordVideo/*`（尤其 `RecordVideoUseCase.cs`、`RecordVideoService.cs`、`RecordVideoSchema.cs`）
 - 依赖：`Editor/ToolContracts/UnityCliLoopScreenshotTypes.cs`（`WindowMatchMode`）、`Editor/ToolContracts/EditorFrameWaiter.cs`
-- 本仓库包装样例：`unity/com.pi.unity-harness/Editor/Capabilities/PipelineCommands/PiUloopUniquePipelineCommands.cs`
-- PlayMode 控制：`unity/com.pi.unity-harness/Editor/Capabilities/PipelineCommands/PiEditorPipelineCommands.cs`
+- 本仓库包装样例：`unity/com.pi.unity-harness/Editor/Capabilities/EditorState/PiUloopUniquePipelineCommands.cs`
+- PlayMode 控制：`unity/com.pi.unity-harness/Editor/Capabilities/EditorState/PiEditorStatePipelineCommands.cs`
   （`editor_application_set_state` / `editor_application_get_state`，可设 playing 与 paused）
 - vendor 工具链：`scripts/vendor-uloop.py`、`scripts/vendor-uloop.manifest.json`、`unity/com.pi.unity-harness/Vendor/Uloop/VENDOR.md`
 - 迁移说明：`docs/uloop-unique-tools-port.md`

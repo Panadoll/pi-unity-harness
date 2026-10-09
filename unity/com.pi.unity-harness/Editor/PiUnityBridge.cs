@@ -11,6 +11,7 @@ using System.Threading.Tasks;
 using UnityEditor;
 using UnityEditorInternal;
 using UnityEngine;
+using Pi.UnityHarness.Editor.Protocol;
 
 namespace Pi.UnityHarness.Editor
 {
@@ -365,7 +366,7 @@ namespace Pi.UnityHarness.Editor
                     logLimit,
                     payload != null ? payload.logLevel : null,
                     payload != null && payload.includeComponents);
-                CompleteJson(request.id, PiUnityJsonHelper.SuccessJson(request.id, snapshot));
+                CompleteJson(request.id, PipeEnvelope.Success(request.id, snapshot));
             }
             catch (Exception ex)
             {
@@ -386,7 +387,7 @@ namespace Pi.UnityHarness.Editor
         {
             if (success)
             {
-                CompleteJson(compileId, PiUnityJsonHelper.EvalResultJson(
+                CompleteJson(compileId, PiUnityEvalResultJson.Build(
                     compileId, resultText ?? "compilation_succeeded", "compile_status"));
                 return;
             }
@@ -431,7 +432,7 @@ namespace Pi.UnityHarness.Editor
         }
         private static void CompleteError(string id, string error, string errorType = "usage")
         {
-            CompleteJson(id, PiUnityJsonHelper.ErrorJson(id, errorType, error));
+            CompleteJson(id, PipeEnvelope.Error(id, errorType, error));
         }
 
         internal static void CompleteJson(string id, string json)

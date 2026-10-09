@@ -107,6 +107,10 @@ pipe 名为 `pi_unity_` + 项目路径 SHA-256 前 6 字节（12 位 hex）；`s
 
 mux stdout envelope 只在 CLI 与 pi 扩展之间使用，关联字段为 `id`。`exitCode`、`help`、`truncated`、`savedScratchPath`、`text` 是 CLI 合成字段，不出现在 pipe 请求或 pipe 响应帧中。mux 成功 envelope 缺少 `result` 时按 `result:null` 归一化；缺少 `id` 的行丢弃。
 
+视觉命令的 pipe 响应仍可 `ok:true` 并在 `result.value` 或 JSON `result.output` 携带领域结果。CLI 只把 `schema` 以 `harness.vision.` 开头、且 `status` 为 `failed` / `unavailable` 的终态转为自身失败：退出码 1，领域 `error_type=usage` 时为 2。错误 JSON 的 `result` 是原样的领域结果，CLI 不往里注入字段。这不是 pipe 帧字段，也不把任意业务 `status` 当执行状态。detached job 查询若外层已完成、结果里仍是该视觉终态，同样按领域失败退出。`run_tests` 的 pipe 成功但摘要 `failed` 或 `failureCount` 大于 0 时同样退出码 1、`error_type=test_failed`，`result` 保留 passed/failed/skipped/failures。
+
+detached job 的 `valueTypeName=Newtonsoft.Json.Linq.JValue` 可让 `value` 成为领域 JSON 字符串，`output` 再编码成带引号的 JSON 字符串；CLI 解包这两种实际形式后才判断领域终态。复合 `harness.vision.capture_analysis.v1` 的 `partial` 若 capture 或 analysis 子结果失败，也返回非零退出，保留两部分结果。
+
 ### 3.4 传输级规则
 
 - 请求和响应都是单行 JSON，`\n` 结尾；不允许行内嵌入未转义的换行
@@ -169,6 +173,8 @@ managed 处于 `initializing` / `reloading` / `quitting` 时，此类请求立�
 协议握手时 `protocolVersion` 不匹配，客户端断开并返回唯一新增的 `error_type=protocol_mismatch`，且 `result` 为 `{ "expected": 1, "actual": <n> }`。
 
 `request_timeout_*` 与 `managed_heartbeat_timeout` 的判定基于 heartbeat：managed 每 <5s 上报一次 heartbeat；heartbeat 超时才用 `managed_heartbeat_timeout`，否则按客户端 `timeoutMs` 判 `request_timeout_in_flight`。
+
+`protocol/fixtures` 由各方向真实消费者执行，不能混用期望：Rust pipe 对缺 `ok` 走失败分类，成功缺 `result` 返回 null；TS exec parser 对缺 `ok` 使用 `ok !== false`，只透传显式 `error_type`，缺 `result` 为 undefined。mux 使用字符串 `id` 而不是 `reply_to`；损坏帧导致在途请求 `in-flight-lost`，不重放。C# fixture 测试验证出站 builder，不模拟不存在的入站 parser。详见 `protocol/README.md`。
 
 ### 5.2 Managed 级错误（附加 `error_type`）
 

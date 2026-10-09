@@ -10,6 +10,14 @@ $root = Split-Path -Parent $PSScriptRoot
 $nativeDir = Join-Path $root 'native'
 $unityPluginDir = Join-Path $root 'unity/com.pi.unity-harness/Editor/Plugins/x86_64'
 
+# 把本机路径（用户目录、仓库根）映射成通用占位，避免 panic 源路径等把用户名写进 DLL/EXE。
+$pathRemaps = @(
+  "--remap-path-prefix=$env:USERPROFILE=~",
+  "--remap-path-prefix=$root=."
+) -join ' '
+$previousRustflags = $env:RUSTFLAGS
+$env:RUSTFLAGS = (@($previousRustflags, $pathRemaps) | Where-Object { $_ }) -join ' '
+
 Push-Location $nativeDir
 try {
   cargo build --release

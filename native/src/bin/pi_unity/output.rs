@@ -6,9 +6,61 @@ use serde_json::{json, Value};
 use super::logging::{fast_rand_id, now_ms, TraceRecorder};
 use super::schema::{self, ViewOptions};
 use super::toon;
+use super::wire::{self, CliError};
 
-pub const MAX_SAFE_RESPONSE_CHARS: usize = schema::MAX_SAFE_RESPONSE_CHARS;
 const MIN_BASE64_DETECT_LENGTH: usize = 256;
+
+
+pub(crate) fn emit_value(val: &Value, json_mode: bool) -> String {
+    if json_mode {
+        serde_json::to_string_pretty(&json!({
+            "ok": true,
+            "result": val
+        }))
+        .unwrap_or_else(|_| "{\"ok\":true}".to_string())
+    } else {
+        toon::encode(val)
+    }
+}
+
+pub(crate) fn mux_error_value(id: &str, err: &CliError) -> Value {
+    let mut value = wire::error_payload(err);
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert("id".to_string(), json!(id));
+        obj.insert("text".to_string(), json!(super::usage::format_error(err, false)));
+    }
+    value
+}
+
+pub(crate) fn mux_ok_value(id: &str, output: &str) -> Value {
+    let result = match serde_json::from_str::<Value>(output) {
+        Ok(Value::Object(map)) if map.get("ok").and_then(Value::as_bool) == Some(true) => {
+            map.get("result").cloned().unwrap_or(Value::Null)
+        }
+        Ok(other) => other,
+        Err(_) => Value::String(output.to_string()),
+    };
+    json!({
+        "id": id,
+        "ok": true,
+        "exitCode": 0,
+        "result": result,
+        "text": emit_value(&result, false),
+    })
+}
+
+pub(crate) fn mux_internal_error(id: &str) -> Value {
+    let text = "mux 请求内部错误：已隔离该请求并丢弃其客户端状态，该请求的结果未知，先检查 status/state 确认是否已生效，再决定是否重试";
+    json!({
+        "id": id,
+        "ok": false,
+        "exitCode": 1,
+        "error": text,
+        "error_type": "internal_error",
+        "help": ["pi-unity status 检查当前 Editor 状态", "确认结果未知后再决定是否重试"],
+        "text": format!("[internal_error] {}", text),
+    })
+}
 
 pub(crate) fn is_base64_data(s: &str) -> bool {
     if s.starts_with("data:image/") && s.contains(";base64,") {
@@ -112,18 +164,6 @@ pub(crate) fn strip_large_base64_and_save(value: &mut Value, project_root: &Path
     }
 }
 
-pub(crate) fn emit_value(val: &Value, json_mode: bool) -> String {
-    if json_mode {
-        serde_json::to_string_pretty(&json!({
-            "ok": true,
-            "result": val
-        }))
-        .unwrap_or_else(|_| "{\"ok\":true}".to_string())
-    } else {
-        toon::encode(val)
-    }
-}
-
 #[cfg(test)]
 pub(crate) fn format_safe_output(
     raw_val: &Value,
@@ -166,7 +206,7 @@ pub(crate) fn format_safe_output_with_opts(
     }
 
     let rendered = emit_value(&sanitized, json_mode);
-    if rendered.len() <= MAX_SAFE_RESPONSE_CHARS {
+    if rendered.len() <= schema::MAX_SAFE_RESPONSE_CHARS {
         return rendered;
     }
 

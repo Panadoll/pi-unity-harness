@@ -26,13 +26,13 @@ The current design relies on the operating system's default named-pipe DACL. The
 - Pipeline commands run project-provided command implementations. Their impact depends on the command and may include changing scenes, assets, project settings, or builds. Discovery metadata is produced by `PiUnityPipelineCommandExecutor.cs`; the extension currently excludes infrastructure commands through `helpers.ts:PIPELINE_TOOL_EXCLUDE`.
 - `compile` requests script compilation and domain reload. It can interrupt in-flight work and cause Editor-side state transitions, but it does not itself grant authority beyond the Editor.
 - Input and screenshot operations can affect the Editor or a running game. Their exact impact is bounded by the requested coordinates and the active window, not by the pipe protocol.
-- YOLO safe-auto can click a detected modal button. Its mode and cooldown are broker state in `native/src/bin/pi_unity/imp.rs`; it is intentionally conservative but remains an automation action.
+- YOLO safe-auto 可以点击检测到的模态按钮。其模式和 cooldown 是 `native/src/imp.rs` 中的 broker 状态；它仍然属于自动化操作。
 
-The typed extension excludes `eval`, `recompile`, `recompile_status`, `editor_status`, and `run_tests` in `.pi/extensions/pi-unity-harness/helpers.ts:PIPELINE_TOOL_EXCLUDE`. Project-specific forbidden command policy is applied by the Pipeline command executor and must be reviewed together with the project command registry.
+typed extension 在 `.pi/extensions/pi-unity-harness/helpers.ts:PIPELINE_TOOL_EXCLUDE` 中排除 `eval`、`recompile`、`recompile_status`、`editor_status`、`run_tests`、`vision_observe` 和 `vision_capture`。项目命令的 forbidden policy 由 Pipeline command executor 应用，需与项目 command registry 一起审阅。
 
 ## 5. YOLO Safe-Auto Allowlist
 
-The current `resolve_yolo_button` heuristic in `native/src/bin/pi_unity/imp.rs` is ordered as follows:
+`native/src/imp.rs` 中当前 `resolve_yolo_button` 启发式按以下顺序执行：
 
 1. A scene and modified title selects `Don't Save` when present.
 2. The same dialog selects `Save` when `Don't Save` is absent.

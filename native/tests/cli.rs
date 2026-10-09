@@ -29,6 +29,24 @@ fn version_fast_path_prints_bare_version() {
 }
 
 #[test]
+fn version_json_accepts_both_orders_without_swallowing_unknown_flags() {
+    for flag in ["--version", "-v", "-V"] {
+        for args in [[flag, "--json"], ["--json", flag]] {
+            let (code, stdout, stderr) = run_cli(&args);
+            assert_eq!(code, 0, "{args:?}");
+            assert!(stderr.is_empty());
+            let version: serde_json::Value = serde_json::from_str(&stdout).expect("version JSON");
+            assert_eq!(version["cli"]["crateVersion"], env!("CARGO_PKG_VERSION"));
+            assert_eq!(version["native"]["protocolVersion"], 1);
+        }
+    }
+    let (code, stdout, _) = run_cli(&["--version", "--json", "--unknown"]);
+    assert_eq!(code, 2);
+    let error: serde_json::Value = serde_json::from_str(&stdout).expect("usage JSON");
+    assert_eq!(error["error_type"], "usage");
+}
+
+#[test]
 fn no_args_home_is_not_usage() {
     let started = std::time::Instant::now();
     let (code, stdout, _stderr) = run_cli(&[]);

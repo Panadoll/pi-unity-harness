@@ -21,7 +21,8 @@ The compat package contains additional local glue, Unity-version adapters, and p
 
 | Unity version | CI/manual coverage | Notes |
 |---|---|---|
-| 2021.3 | Package minimum / current declared target | The package manifest declares `"unity": "2021.3"`; run the `Pi.UnityHarness` Editor tests manually. |
+| 2021.3 | 声明最低版本，未完成真实验收 | 本机未安装该版本；2022.3 通过不能替代此版本证据。 |
+| 2022.3.14f1 | 2026-10-09 真实 Editor 验证 | 隔离工程 harness EditMode 222 passed；`F:/SampleProjects/uitest` 完整 EditMode 272 passed，启用 harness PlayMode 定义后 302 passed / 0 failed / 1 inconclusive（外部 UniGameKit UI raycast 用例）。编译重载、SceneView、异步 GameView、observe、after 均已实际执行。证据见 `scratch/boundary-evidence/`。 |
 
 ## Update Rule
 

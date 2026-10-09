@@ -726,6 +726,54 @@
             assert_eq!(rejected["error_type"], "request_too_large");
             assert_eq!(broker.jobs.active_len(), 0);
         }
+        fn fixture_root() -> std::path::PathBuf {
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../protocol/fixtures")
+        }
+
+        fn load_fixture(relative: &str) -> Value {
+            let path = fixture_root().join(relative);
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap())
+                .unwrap_or_else(|error| panic!("{}: {error}", path.display()))
+        }
+
+        #[test]
+        fn request_fixtures_follow_admission_before_forwarding() {
+            let missing = load_fixture("request/missing_token.json");
+            assert_eq!(
+                Broker::classify_request_line(&missing["wire"], false),
+                Some("unauthorized")
+            );
+            let extra = load_fixture("request/unknown_extra_field.json");
+            assert_eq!(Broker::classify_request_line(&extra["wire"], true), None);
+            assert_eq!(Broker::classify_request_line(&extra["wire"], false), Some("unauthorized"));
+
+            let broker = test_broker("fixture_admission");
+            let (tx, mut rx) = mpsc::channel(4);
+            *broker.writer.lock().unwrap() = Some(tx);
+            broker.handle_line(serde_json::to_vec(&missing["wire"]).unwrap().as_slice());
+            let response = response_json(rx.try_recv().unwrap());
+            assert_eq!(response["reply_to"], missing["wire"]["id"]);
+            assert_eq!(response["ok"], false);
+            assert_eq!(response["error"], "unauthorized");
+            assert_eq!(response.get("id"), None);
+            assert_eq!(broker.pending.lock().unwrap().len(), 0);
+        }
+
+        #[test]
+        fn status_fixture_keeps_modal_ahead_of_heartbeat_reason() {
+            let fixture = load_fixture("status/ready_modal_present.json");
+            let broker = test_broker("fixture_modal");
+            broker.set_managed_state(MANAGED_STATE_READY, 1, Some("editing".to_string()));
+            broker.connected.store(true, Ordering::SeqCst);
+            broker.last_heartbeat_ms.store(now_ms() - HEARTBEAT_TIMEOUT_MS - 1, Ordering::SeqCst);
+            broker.modal_observation.lock().unwrap().present = true;
+            let lifecycle = broker.derive_lifecycle(now_ms());
+            assert_eq!(lifecycle.main_thread, "blocked_modal");
+            assert_eq!(lifecycle.reason, Some("modal_dialog"));
+            assert_eq!(fixture["wire"]["lifecycle"]["mainThread"].as_str(), Some("blocked_modal"));
+            assert_eq!(fixture["wire"]["lifecycle"]["reason"].as_str(), Some("modal_dialog"));
+        }
+
 
 
 

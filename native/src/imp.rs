@@ -405,21 +405,35 @@ fn error_line(&self, reply_to: &str, error: &str) -> Vec<u8> { let mut bytes = s
 "error": error }))
 .unwrap_or_else(|_| b"{\"ok\":false,\"error\":\"serialize_failed\"}".to_vec()); bytes.push(b'\n');
 bytes }
+/// 与 handle_line 相同的准入优先级：缺 id/type，然后 token。
+/// managed 未就绪只在转发兜底分支判定，不在这里拦截 ping/status/job。
+pub(crate) fn classify_request_line(value: &Value, token_ok: bool) -> Option<&'static str> {
+    let id = value.get("id").and_then(Value::as_str).unwrap_or("");
+    let req_type = value.get("type").and_then(Value::as_str).unwrap_or("");
+    if id.is_empty() || req_type.is_empty() {
+        return Some("missing_id_or_type");
+    }
+    if !token_ok {
+        return Some("unauthorized");
+    }
+    None
+}
+
 fn handle_line(&self, buf: &[u8]) { self.reap_timeouts();
 let text = match std::str::from_utf8(trim_ascii(buf)) { Ok(text) if !text.is_empty() => text,
 _ => return, };
 let value: Value = match serde_json::from_str(text) { Ok(value) => value,
 Err(_) => { self.send_line(self.error_line("", "invalid_json"));
 return; }
-}; let id = value.get("id").and_then(Value::as_str).unwrap_or("");
-let req_type = value.get("type").and_then(Value::as_str).unwrap_or(""); let token = value.get("token").and_then(Value::as_str).unwrap_or("");
-if id.is_empty() || req_type.is_empty() { self.send_line(self.error_line(id, "missing_id_or_type"));
-return; }
-let token_ok = self .token
-.lock() .map(|expected| expected.is_empty() || expected.as_str() == token)
-.unwrap_or(false); if !token_ok {
-self.send_line(self.error_line(id, "unauthorized")); return;
-} match req_type {
+};
+let token_ok = self.token.lock().map(|expected| expected.is_empty() || value.get("token").and_then(Value::as_str) == Some(expected.as_str())).unwrap_or(false);
+if let Some(error) = Self::classify_request_line(&value, token_ok) {
+self.send_line(self.error_line(value.get("id").and_then(Value::as_str).unwrap_or(""), error));
+return;
+}
+let id = value.get("id").and_then(Value::as_str).unwrap_or("");
+let req_type = value.get("type").and_then(Value::as_str).unwrap_or("");
+match req_type {
 "ping" => self.send_line(self.ok_line(id, json!({ "pong": true }))), "status" => {
 let request = self.start_direct_audit(id, req_type, "status", &value); let response = self.ok_line(id, self.status_payload());
 self.complete_direct_audit(&request, &response); self.send_line(response);
@@ -449,7 +463,6 @@ self.handle_job_command(id, req_type, &value);
 } _ => {
 if self.managed_state.load(Ordering::SeqCst) != MANAGED_STATE_READY { self.send_line(self.error_line(id, self.managed_error()));
 return; }
-
 if text.len() > REQUEST_BUFFER_LIMIT { self.send_line(self.error_line(id, "request_too_large"));
 return; }
 let action = request_action(&value); let audit_action_id = self.next_audit_action_id.fetch_add(1, Ordering::Relaxed);

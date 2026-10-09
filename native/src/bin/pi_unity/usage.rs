@@ -5,12 +5,19 @@ use clap::Parser;
 use serde_json::json;
 
 use super::args::Cli;
-use super::client::CliError;
+use super::wire::CliError;
 use super::toon;
 use super::version::VERSION;
+use super::wire;
 
 pub fn try_version_fast_path(args: &[String]) -> bool {
-    matches!(args, [flag] if flag == "-v" || flag == "-V" || flag == "--version")
+    let is_version = |flag: &str| matches!(flag, "-v" | "-V" | "--version");
+    match args {
+        [flag] => is_version(flag),
+        [first, second] => (is_version(first) && second == "--json")
+            || (first == "--json" && is_version(second)),
+        _ => false,
+    }
 }
 
 pub fn print_version() {
@@ -37,55 +44,15 @@ pub fn usage_error(error: impl Into<String>, help: &[&str]) -> CliError {
     }
 }
 
-pub fn error_payload(err: &CliError) -> serde_json::Value {
-    let mut payload = json!({
-        "ok": false,
-        "error": err.message(),
-        "error_type": err.error_type(),
-        "exitCode": err.exit_code(),
-        "help": err.help(),
-    });
-    if let CliError::ProtocolMismatch { expected, actual } = err {
-        if let Some(obj) = payload.as_object_mut() {
-            obj.insert("result".into(), json!({ "expected": expected, "actual": actual }));
-        }
-    }
-    if let CliError::JobFinished { snapshot, .. } = err {
-        if let Some(obj) = payload.as_object_mut() {
-            obj.insert("result".into(), snapshot.clone());
-        }
-    }
-    // 编译失败诊断：standalone 与 mux 共用此载荷。匹配编译失败码时附加
-    // compiled:false 与错误摘要，调用方直接读 compiled 即可，无需再解析文本。
-    if let CliError::Broker { code, message } = err {
-        if code == "compile_error" || code == "compilation_failed" {
-            if let Some(obj) = payload.as_object_mut() {
-                obj.insert("compiled".into(), json!(false));
-                obj.insert("compiledErrorType".into(), json!(code));
-                obj.insert("compiledError".into(), json!(message));
-            }
-        }
-    }
-    payload
-}
 
 pub fn format_error(err: &CliError, json_mode: bool) -> String {
-    let payload = error_payload(err);
+    let payload = wire::error_payload(err);
     if json_mode {
         return serde_json::to_string_pretty(&payload).unwrap();
     }
     toon::encode(&payload)
 }
 
-pub fn format_usage(error: &str, help: &[String], json_mode: bool) -> String {
-    format_error(
-        &CliError::Usage {
-            error: error.to_string(),
-            help: help.to_vec(),
-        },
-        json_mode,
-    )
-}
 
 pub fn valid_flags(subcommand: &str) -> &'static str {
     match subcommand {
@@ -137,7 +104,7 @@ pub fn from_clap_error(err: clap::Error, json_mode: bool) -> (String, i32) {
     match clap_to_cli_error(err) {
         Ok(out) => (out, 0),
         Err(cli_err) => (
-            format_usage(cli_err.message(), &cli_err.help(), json_mode),
+            format_error(&cli_err, json_mode),
             2,
         ),
     }

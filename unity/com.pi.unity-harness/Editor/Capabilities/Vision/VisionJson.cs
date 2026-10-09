@@ -2,8 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Text;
-using Pi.UnityHarness.Editor;
-using static Pi.UnityHarness.Editor.PiUnityJsonHelper;
+using static Pi.UnityHarness.Editor.Capabilities.Shared.JsonText;
 
 namespace Pi.UnityHarness.Editor.Capabilities.Vision
 {
@@ -11,7 +10,7 @@ namespace Pi.UnityHarness.Editor.Capabilities.Vision
     /// Unified JSON builder for vision capture and analysis responses.
     ///
     /// Replaces raw string concatenation in HarnessVision with structured JSON generation.
-    /// All methods return valid JSON strings using proper escaping via <see cref="PiUnityJsonHelper.EscapeJson"/>.
+    /// All methods return valid JSON strings using proper escaping via <see cref="JsonText.Escape"/>.
     ///
     /// Schemas:
     ///   - capture status:       harness.vision.capture.v1
@@ -110,6 +109,14 @@ namespace Pi.UnityHarness.Editor.Capabilities.Vision
 
             sb.Append("}");
             return sb.ToString();
+        }
+
+        public static string BuildCaptureFailedJson(string error, string errorType)
+        {
+            return BuildCaptureJson("failed", null, null, 0, 0, 0,
+                null, null, null, null, null, null,
+                null, null, null, null, null,
+                error, errorType);
         }
 
         /// <summary>
@@ -236,8 +243,8 @@ namespace Pi.UnityHarness.Editor.Capabilities.Vision
             AppendArrayField(sb, "targets", "[]");
             AppendArrayField(sb, "suggested_actions", "[]");
             AppendObjectField(sb, "error",
-                "\"type\":\"" + EscapeJson(errorType) + "\"," +
-                "\"message\":\"" + EscapeJson(error) + "\"");
+                "\"type\":\"" + Escape(errorType) + "\"," +
+                "\"message\":\"" + Escape(error) + "\"");
             AppendObjectField(sb, "diagnostics", BuildDiagnosticsInner(provider, model, endpoint, latencyMs));
             sb.Append("}");
             return sb.ToString();
@@ -297,15 +304,15 @@ namespace Pi.UnityHarness.Editor.Capabilities.Vision
             AppendObjectField(sb, "diagnostics",
                 BuildDiagnosticsInner(provider, model, endpoint, latencyMs) +
                 ",\"has_api_key\":" + (hasApiKey ? "true" : "false") +
-                ",\"api_key_source\":\"" + EscapeJson(apiKeySource ?? "none") + "\"");
+                ",\"api_key_source\":\"" + Escape(apiKeySource ?? "none") + "\"");
             if (!string.IsNullOrWhiteSpace(error))
             {
                 AppendObjectField(sb, "error",
-                    "\"type\":\"" + EscapeJson(errorType ?? "runtime") + "\"," +
-                    "\"message\":\"" + EscapeJson(error) + "\"");
+                    "\"type\":\"" + Escape(errorType ?? "runtime") + "\"," +
+                    "\"message\":\"" + Escape(error) + "\"");
             }
             AppendArrayField(sb, "warnings",
-                string.IsNullOrWhiteSpace(warning) ? "[]" : "[\"" + EscapeJson(warning) + "\"]");
+                string.IsNullOrWhiteSpace(warning) ? "[]" : "[\"" + Escape(warning) + "\"]");
             sb.Append("}");
             return sb.ToString();
         }
@@ -359,7 +366,7 @@ namespace Pi.UnityHarness.Editor.Capabilities.Vision
                     continue;
                 if (!first) sb.Append(",");
                 first = false;
-                sb.Append("\"").Append(EscapeJson(fieldName)).Append("\":").Append(value);
+                sb.Append("\"").Append(Escape(fieldName)).Append("\":").Append(value);
             }
             sb.Append("}");
 
@@ -388,54 +395,54 @@ namespace Pi.UnityHarness.Editor.Capabilities.Vision
         private static void AppendStringField(StringBuilder sb, string name, string value, bool isFirst = false)
         {
             if (!isFirst) sb.Append(",");
-            sb.Append("\"").Append(EscapeJson(name)).Append("\":\"");
-            sb.Append(EscapeJson(value)).Append("\"");
+            sb.Append("\"").Append(Escape(name)).Append("\":\"");
+            sb.Append(Escape(value)).Append("\"");
         }
 
         private static void AppendIntField(StringBuilder sb, string name, int value, bool isFirst = false)
         {
             if (!isFirst) sb.Append(",");
-            sb.Append("\"").Append(EscapeJson(name)).Append("\":").Append(value);
+            sb.Append("\"").Append(Escape(name)).Append("\":").Append(value);
         }
 
         private static void AppendLongField(StringBuilder sb, string name, long value, bool isFirst = false)
         {
             if (!isFirst) sb.Append(",");
-            sb.Append("\"").Append(EscapeJson(name)).Append("\":").Append(value);
+            sb.Append("\"").Append(Escape(name)).Append("\":").Append(value);
         }
 
         private static void AppendBoolField(StringBuilder sb, string name, bool value, bool isFirst = false)
         {
             if (!isFirst) sb.Append(",");
-            sb.Append("\"").Append(EscapeJson(name)).Append("\":").Append(value ? "true" : "false");
+            sb.Append("\"").Append(Escape(name)).Append("\":").Append(value ? "true" : "false");
         }
 
         private static void AppendObjectField(StringBuilder sb, string name, string innerContent, bool isFirst = false)
         {
             if (!isFirst) sb.Append(",");
-            sb.Append("\"").Append(EscapeJson(name)).Append("\":{").Append(innerContent).Append("}");
+            sb.Append("\"").Append(Escape(name)).Append("\":{").Append(innerContent).Append("}");
         }
 
         private static void AppendArrayField(StringBuilder sb, string name, string innerContent, bool isFirst = false)
         {
             if (!isFirst) sb.Append(",");
-            sb.Append("\"").Append(EscapeJson(name)).Append("\":").Append(innerContent);
+            sb.Append("\"").Append(Escape(name)).Append("\":").Append(innerContent);
         }
 
         private static void AppendRawField(StringBuilder sb, string name, string value, bool isFirst = false)
         {
             if (!isFirst) sb.Append(",");
-            sb.Append("\"").Append(EscapeJson(name)).Append("\":").Append(value);
+            sb.Append("\"").Append(Escape(name)).Append("\":").Append(value);
         }
 
         private static string BuildDiagnosticsInner(string provider, string model, string endpoint, long latencyMs)
         {
             var sb = new StringBuilder();
-            sb.Append("\"provider\":\"").Append(EscapeJson(provider ?? "none")).Append("\"");
+            sb.Append("\"provider\":\"").Append(Escape(provider ?? "none")).Append("\"");
             if (!string.IsNullOrEmpty(model))
-                sb.Append(",\"model\":\"").Append(EscapeJson(model)).Append("\"");
+                sb.Append(",\"model\":\"").Append(Escape(model)).Append("\"");
             if (!string.IsNullOrEmpty(endpoint))
-                sb.Append(",\"endpoint\":\"").Append(EscapeJson(endpoint)).Append("\"");
+                sb.Append(",\"endpoint\":\"").Append(Escape(endpoint)).Append("\"");
             if (latencyMs >= 0)
                 sb.Append(",\"latency_ms\":").Append(latencyMs);
             return sb.ToString();
@@ -472,7 +479,7 @@ namespace Pi.UnityHarness.Editor.Capabilities.Vision
                     return index == json.Length;
                 }
 
-                if (!TryReadJsonString(json, ref index, out var key))
+                if (!TryReadQuote(json, ref index, out var key))
                     return false;
 
                 SkipWhitespace(json, ref index);
@@ -560,7 +567,7 @@ namespace Pi.UnityHarness.Editor.Capabilities.Vision
 
             int index = 0;
             SkipWhitespace(json, ref index);
-            if (!TryReadJsonString(json, ref index, out value))
+            if (!TryReadQuote(json, ref index, out value))
                 return false;
             SkipWhitespace(json, ref index);
             return index == json.Length;
@@ -634,7 +641,7 @@ namespace Pi.UnityHarness.Editor.Capabilities.Vision
 
             raw = raw.Trim();
             int index = 0;
-            return TryReadJsonString(raw, ref index, out var value) ? value : null;
+            return TryReadQuote(raw, ref index, out var value) ? value : null;
         }
 
         private static int? GetInt(Dictionary<string, string> fields, string name)
@@ -662,7 +669,7 @@ namespace Pi.UnityHarness.Editor.Capabilities.Vision
 
             char c = json[index];
             if (c == '"')
-                return TrySkipJsonString(json, ref index);
+                return TrySkipQuote(json, ref index);
             if (c == '{' || c == '[')
                 return TrySkipComposite(json, ref index);
 
@@ -740,7 +747,7 @@ namespace Pi.UnityHarness.Editor.Capabilities.Vision
                 char c = json[index];
                 if (c == '"')
                 {
-                    if (!TrySkipJsonString(json, ref index))
+                    if (!TrySkipQuote(json, ref index))
                         return false;
                     continue;
                 }
@@ -769,7 +776,7 @@ namespace Pi.UnityHarness.Editor.Capabilities.Vision
             return false;
         }
 
-        private static bool TryReadJsonString(string json, ref int index, out string value)
+        private static bool TryReadQuote(string json, ref int index, out string value)
         {
             value = null;
             if (index >= json.Length || json[index] != '"')
@@ -823,7 +830,7 @@ namespace Pi.UnityHarness.Editor.Capabilities.Vision
             return false;
         }
 
-        private static bool TrySkipJsonString(string json, ref int index)
+        private static bool TrySkipQuote(string json, ref int index)
         {
             if (index >= json.Length || json[index] != '"')
                 return false;

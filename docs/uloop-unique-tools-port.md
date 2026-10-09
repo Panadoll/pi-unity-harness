@@ -42,7 +42,7 @@ harness 自有文件放 `scripts/vendor-extras/`（按 vendor 相对路径复制
 | `vision_annotate_raycast` | 分簇物理射线标注（胶水在 `Editor/Capabilities/VendorGlue/RaycastAnnotationGlue.cs`） |
 | `record_video` | 录制 Game View（PlayMode）或 Editor 窗口到 MP4（支持分辨率缩放、帧率、质量分档与自动保留） |
 
-包装入口：`Editor/Capabilities/PipelineCommands/PiUloopUniquePipelineCommands.cs` 与 `PiUloopRecordVideoCommands.cs`（通用运行器为 `PiUloopToolRunner.cs`），
+包装入口：`Editor/Capabilities/EditorState/PiUloopUniquePipelineCommands.cs` 与 `PiUloopRecordVideoCommands.cs`（通用运行器为 `Editor/Capabilities/Pipeline/Binding/PiUloopToolRunner.cs`），
 初始化入口：`Editor/PiUloopVendorBootstrap.cs`。
 uloop 工具本身只暴露 `protected ExecuteAsync(TSchema, ct)`，harness 调基类的公开重载
 `ExecuteAsync(JToken, ct)`，因此**不需要**再给 vendor 打可见性补丁。

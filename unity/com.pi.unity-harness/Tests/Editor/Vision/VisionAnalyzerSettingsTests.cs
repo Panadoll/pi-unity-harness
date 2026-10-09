@@ -56,7 +56,7 @@ namespace Pi.UnityHarness.Editor.Tests.Vision
         public void BuildAnalysisJsonFromProviderResponse_ParsesStructuredContent()
         {
             string content = "{\"answer\":\"I can see the Start button.\",\"visible_text\":[{\"text\":\"Start\",\"bbox\":{\"x\":1,\"y\":2,\"w\":3,\"h\":4}}],\"targets\":[{\"label\":\"Start\",\"confidence\":0.92,\"coordinate_space\":\"screenshot_top_left\",\"center\":{\"x\":10,\"y\":20},\"bbox\":{\"x\":1,\"y\":2,\"w\":3,\"h\":4}}],\"suggested_actions\":[{\"type\":\"click\",\"target_label\":\"Start\",\"confidence\":0.92}]}";
-            string response = "{\"choices\":[{\"message\":{\"content\":\"" + EscapeForJsonString(content) + "\"}}]}";
+            string response = "{\"choices\":[{\"message\":{\"content\":\"" + EscapeForQuote(content) + "\"}}]}";
 
             string json = OpenAiCompatibleVisionAnalyzer.BuildAnalysisJsonFromProviderResponse(
                 "Q.", response, "openai-compatible", "mimo-v2.5", "https://example/v1/chat/completions", 123);
@@ -88,7 +88,7 @@ namespace Pi.UnityHarness.Editor.Tests.Vision
             Assert.That(json, Does.Contain("\"type\":\"provider_response_parse\""));
         }
 
-        private static string EscapeForJsonString(string value)
+        private static string EscapeForQuote(string value)
         {
             return value.Replace("\\", "\\\\").Replace("\"", "\\\"");
         }

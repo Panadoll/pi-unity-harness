@@ -11,6 +11,8 @@ using System.Threading.Tasks;
 using UnityEditor;
 using UnityEditorInternal;
 using UnityEngine;
+using Pi.UnityHarness.Editor.Capabilities.Shared;
+using Pi.UnityHarness.Editor.Protocol;
 
 namespace Pi.UnityHarness.Editor
 {
@@ -134,7 +136,7 @@ namespace Pi.UnityHarness.Editor
                     (success, text, typeName) =>
                     {
                         if (success)
-                            CompleteJson(id, PiUnityJsonHelper.EvalResultJson(id, text ?? string.Empty, typeName ?? "void", TimingFragment(timing)));
+                            CompleteJson(id, PiUnityEvalResultJson.Build(id, text ?? string.Empty, typeName ?? "void", TimingFragment(timing)));
                         else
                             CompleteError(id, text ?? "coroutine_failed", typeName ?? "runtime_error");
                     }, coroutineTimeoutMs);
@@ -218,7 +220,7 @@ namespace Pi.UnityHarness.Editor
                 return;
             }
 
-            CompleteJson(id, PiUnityJsonHelper.EvalResultJson(id, text ?? string.Empty, typeName ?? "void", TimingFragment(timing)));
+            CompleteJson(id, PiUnityEvalResultJson.Build(id, text ?? string.Empty, typeName ?? "void", TimingFragment(timing)));
         }
 
         private static void CancelAllPendingAsyncEvals(string reason)
@@ -246,7 +248,7 @@ namespace Pi.UnityHarness.Editor
                 return;
             }
 
-            CompleteJson(id, PiUnityJsonHelper.EvalResultJson(
+            CompleteJson(id, PiUnityEvalResultJson.Build(
                 id, result.Output ?? string.Empty, result.TypeName ?? string.Empty, TimingFragment(timing)));
         }
 
@@ -272,11 +274,11 @@ namespace Pi.UnityHarness.Editor
             if (!IsValidationOk(validation))
             {
                 CompleteJson(id,
-                    "{\"reply_to\":" + PiUnityJsonHelper.JsonString(id) + ",\"ok\":false,\"error\":" + PiUnityJsonHelper.JsonString(validation ?? "validate_failed") + "}");
+                    "{\"reply_to\":" + JsonText.Quote(id) + ",\"ok\":false,\"error\":" + JsonText.Quote(validation ?? "validate_failed") + "}");
                 return;
             }
 
-            CompleteJson(id, PiUnityJsonHelper.EvalResultJson(id, validation, "validation"));
+            CompleteJson(id, PiUnityEvalResultJson.Build(id, validation, "validation"));
         }
 
         private static bool IsValidationOk(string validation)

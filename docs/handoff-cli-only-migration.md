@@ -69,7 +69,7 @@ CLI 命令应遵循标准 Unix/POSIX CLI 规范，输出支持人类可读与结
 | `pi-unity pipeline <name>` | `command`（`unity_pipeline`） | `-p, --param <key=val>`<br>`--params-json <json>` | 执行 Unity Pipeline `[CliCommand]` |
 | `pi-unity run-tests` | `command` → `run_tests` | `--mode <edit\|play>`<br>`--filter <pattern>` | 运行 Unity 测试套件的快捷命令 |
 | `pi-unity observe` | `command` → `vision_observe` | `--frames <N>`<br>`--interval <ms>`<br>`--overlay <grid\|annotations\|both\|none>` | 视觉跑测感知（多帧捕获 + dHash + 变化检测） |
-| `pi-unity capture` | `command` → `vision_capture` | `--mode <game\|scene>`<br>`--out <path>` | 单张视口截图（速度模式） |
+| `pi-unity capture` | `command` → game 为 `vision_capture_async`，scene 为 `vision_capture` | `--mode <game\|scene>`<br>`--out <path>` | 单张视口截图。默认 game 异步；`--out` 发声明名 `path` |
 | `pi-unity timeline` | `timeline`（`unity_timeline`） | `--limit <N>`<br>`--success <all\|success\|failure>` | 查询操作审计历史 |
 
 > 注：初版不提供交互式 REPL。REPL 需要额外的连接保活、提示符与中断语义设计，如确有需要应作为独立增强单独立项。

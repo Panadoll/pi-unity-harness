@@ -10,6 +10,8 @@ mod args;
 mod client;
 mod commands;
 mod discovery;
+mod capture;
+mod domain;
 mod home;
 mod logging;
 mod output;
@@ -18,13 +20,15 @@ mod setup;
 mod toon;
 mod usage;
 mod version;
+mod wire;
 
 #[cfg(all(test, windows))]
 mod mock_pipe;
 
 use args::{Cli, Commands, SessionSubcommands};
 use clap::Parser;
-use client::{CliError, HarnessClient};
+use client::HarnessClient;
+use wire::CliError;
 use commands::{execute_harness_command, handle_skills_command};
 use discovery::{resolve_project_root, resolve_project_root_fast};
 use logging::{
@@ -33,7 +37,8 @@ use logging::{
     current_agent_id, start_session_scoped, timestamp_utc,
     CallEvent, CallEventFlags, CallEventPhases, TraceRecorder, DEFAULT_VERSION, LOG_FORMAT_VERSION,
 };
-use output::{emit_value, MAX_SAFE_RESPONSE_CHARS};
+use output::{emit_value, mux_error_value, mux_internal_error, mux_ok_value};
+use schema::MAX_SAFE_RESPONSE_CHARS;
 use schema::ViewOptions;
 use std::fs;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -369,34 +374,6 @@ async fn write_mux_stdout(
     stdout.flush().await
 }
 
-fn mux_error_value(id: &str, err: &CliError) -> Value {
-    // 基于 error_payload 构建：保留其附加诊断字段（如编译失败的 compiled:false），
-    // 再注入 mux 信封的 id / text。
-    let mut value = usage::error_payload(err);
-    if let Some(obj) = value.as_object_mut() {
-        obj.insert("id".to_string(), json!(id));
-        obj.insert("text".to_string(), json!(usage::format_error(err, false)));
-    }
-    value
-}
-
-fn mux_ok_value(id: &str, output: &str) -> Value {
-    let result = match serde_json::from_str::<Value>(output) {
-        Ok(Value::Object(map)) if map.get("ok").and_then(Value::as_bool) == Some(true) => {
-            map.get("result").cloned().unwrap_or(Value::Null)
-        }
-        Ok(other) => other,
-        Err(_) => Value::String(output.to_string()),
-    };
-    json!({
-        "id": id,
-        "ok": true,
-        "exitCode": 0,
-        "result": result,
-        "text": emit_value(&result, false),
-    })
-}
-
 #[derive(Debug)]
 enum MuxParsed {
     Command(Commands, ViewOptions),
@@ -589,20 +566,6 @@ where
         Ok(value) => Ok(value),
         Err(_) => Err(()),
     }
-}
-
-fn mux_internal_error(id: &str) -> Value {
-    // panic 隔离后请求结果未知：绝不盲目建议重试（编译/动作类请求可能已产生副作用）。
-    let text = "mux 请求内部错误：已隔离该请求并丢弃其客户端状态，该请求的结果未知，先检查 status/state 确认是否已生效，再决定是否重试";
-    json!({
-        "id": id,
-        "ok": false,
-        "exitCode": 1,
-        "error": text,
-        "error_type": "internal_error",
-        "help": ["pi-unity status 检查当前 Editor 状态", "确认结果未知后再决定是否重试"],
-        "text": format!("[internal_error] {}", text),
-    })
 }
 
 /// 在隔离任务内执行一次 mux 请求；返回回复、是否退出、以及（无 panic 时）恢复的客户端。
@@ -826,6 +789,17 @@ fn handle_error(err: &CliError, json_mode: bool, project_root: Option<&Path>) {
                     message: msg,
                     snapshot: snapshot.clone(),
                 },
+                CliError::DomainFinished {
+                    code,
+                    snapshot,
+                    usage,
+                    ..
+                } => CliError::DomainFinished {
+                    code: code.clone(),
+                    message: msg,
+                    snapshot: snapshot.clone(),
+                    usage: *usage,
+                },
             },
             json_mode,
         )
@@ -836,6 +810,8 @@ fn handle_error(err: &CliError, json_mode: bool, project_root: Option<&Path>) {
 #[cfg(test)]
 mod tests {
     use super::args::PipelineJobAction;
+    use super::output::{mux_error_value, mux_internal_error, mux_ok_value};
+    use super::schema::MAX_SAFE_RESPONSE_CHARS;
     use super::client::normalize_pipe_name;
     use super::commands::parse_param_pairs;
     use super::output::{format_safe_output, is_base64_data, strip_large_base64_and_save};
@@ -1084,18 +1060,6 @@ mod tests {
         assert_eq!(second, Ok(42), "紧随其后的请求必须成功");
     }
 
-    #[test]
-    fn mux_internal_error_keeps_id_and_is_structured() {
-        let v = mux_internal_error("req-9");
-        assert_eq!(v["id"], "req-9");
-        assert_eq!(v["ok"], json!(false));
-        assert_eq!(v["error_type"], "internal_error");
-        assert_eq!(v["exitCode"], json!(1));
-        assert!(v["help"].is_array());
-        let text = serde_json::to_string(&v).unwrap();
-        assert!(!text.contains("boom"), "不得暴露原始 panic 载荷");
-    }
-
     #[cfg(windows)]
     #[tokio::test(flavor = "multi_thread")]
     async fn mux_status_requests_reuse_client_across_isolation() {
@@ -1143,4 +1107,46 @@ mod tests {
             "两个请求应复用同一条连接"
         );
     }
+    #[test]
+    fn mux_ok_unwraps_cli_envelope_but_keeps_non_envelope_json() {
+        let wrapped = r#"{"ok":true,"result":{"editor":"ready"}}"#;
+        let ok = mux_ok_value("m1", wrapped);
+        assert_eq!(ok["id"], "m1");
+        assert_eq!(ok["ok"], true);
+        assert_eq!(ok["exitCode"], 0);
+        assert_eq!(ok["result"]["editor"], "ready");
+        assert!(ok.get("reply_to").is_none());
+
+        let help = mux_ok_value("m2", &json!("usage text").to_string());
+        assert_eq!(help["result"], "usage text");
+        assert!(help.get("reply_to").is_none());
+    }
+
+    #[test]
+    fn mux_error_adds_id_without_aliasing_reply_to() {
+        let err = CliError::Broker {
+            code: "compile_error".into(),
+            message: "boom".into(),
+        };
+        let value = mux_error_value("m3", &err);
+        assert_eq!(value["id"], "m3");
+        assert_eq!(value["ok"], false);
+        assert_eq!(value["error_type"], "compile_error");
+        assert_eq!(value["compiled"], false);
+        assert!(value.get("reply_to").is_none());
+        assert!(value["text"].as_str().unwrap().contains("compile_error"));
+    }
+
+    #[test]
+    fn mux_internal_error_keeps_id_and_is_structured() {
+        let v = mux_internal_error("req-9");
+        assert_eq!(v["id"], "req-9");
+        assert_eq!(v["ok"], json!(false));
+        assert_eq!(v["error_type"], "internal_error");
+        assert_eq!(v["exitCode"], json!(1));
+        assert!(v["help"].is_array());
+        let text = serde_json::to_string(&v).unwrap();
+        assert!(!text.contains("boom"), "不得暴露原始 panic 载荷");
+    }
+
 }

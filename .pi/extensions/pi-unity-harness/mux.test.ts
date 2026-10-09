@@ -6,7 +6,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { PassThrough } from "node:stream";
 import { test } from "node:test";
-import createExtension, { getActiveMux, MuxClient, pushViewArgs, runPiUnityCli, sanitizeDiagnosticTail, setActiveMux } from "./index.ts";
+import createExtension, { getActiveMux, pushViewArgs, runPiUnityCli, sanitizeDiagnosticTail, setActiveMux } from "./index.ts";
+import { MuxClient } from "./mux/client.ts";
 
 function fakeMuxScript(extraFields = ""): string {
   return [

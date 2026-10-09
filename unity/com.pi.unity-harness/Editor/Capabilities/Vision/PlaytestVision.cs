@@ -5,7 +5,7 @@ using System.IO;
 using System.Text;
 using Pi.UnityHarness.Editor;
 using Pi.UnityHarness.Editor.Capabilities.Shared;
-using static Pi.UnityHarness.Editor.PiUnityJsonHelper;
+using static Pi.UnityHarness.Editor.Capabilities.Shared.JsonText;
 using Pi.UnityHarness.Runtime.Capabilities.Vision;
 using UnityEditor;
 using UnityEngine;
@@ -35,8 +35,6 @@ namespace Pi.UnityHarness.Editor.Capabilities.Vision
         public const int BurstFrameCount = 24;
 
         private const float DiffThreshold = 0.00005f;
-        private const string DefaultPrefix = "Library/PiUnityHarness/playtest/observe";
-        private const string DefaultAfterPrefix = "Library/PiUnityHarness/playtest/after";
 
         // ─── 0-1000 网格像素映射（源 _make_coordinate_grid：x = round(v * (w-1) / 1000)）───
 
@@ -236,14 +234,14 @@ namespace Pi.UnityHarness.Editor.Capabilities.Vision
                 for (int i = 0; i < warnings.Count; i++)
                 {
                     if (i > 0) sb.Append(',');
-                    sb.Append(JsonString(warnings[i]));
+                    sb.Append(Quote(warnings[i]));
                 }
                 sb.Append(']');
             }
             if (status == "failed")
             {
-                sb.Append(",\"error\":").Append(JsonString(error));
-                sb.Append(",\"error_type\":").Append(JsonString(errorType));
+                sb.Append(",\"error\":").Append(Quote(error));
+                sb.Append(",\"error_type\":").Append(Quote(errorType));
                 sb.Append(",\"frames\":");
                 if (frames == null)
                 {
@@ -255,21 +253,21 @@ namespace Pi.UnityHarness.Editor.Capabilities.Vision
                     for (int i = 0; i < frames.Count; i++)
                     {
                         if (i > 0) sb.Append(',');
-                        sb.Append(JsonString(frames[i]));
+                        sb.Append(Quote(frames[i]));
                     }
                     sb.Append(']');
                 }
-                sb.Append(",\"latest\":").Append(JsonString(latest));
-                sb.Append(",\"vision\":").Append(JsonString(vision));
-                sb.Append(",\"timeline\":").Append(JsonString(timeline));
-                sb.Append(",\"fingerprint\":").Append(JsonString(fingerprint));
+                sb.Append(",\"latest\":").Append(Quote(latest));
+                sb.Append(",\"vision\":").Append(Quote(vision));
+                sb.Append(",\"timeline\":").Append(Quote(timeline));
+                sb.Append(",\"fingerprint\":").Append(Quote(fingerprint));
                 sb.Append(",\"changed\":").Append(changed ? "true" : "false");
                 sb.Append(",\"timed_out\":").Append(timedOut ? "true" : "false");
                 sb.Append(",\"unique_count\":").Append(uniqueCount);
                 sb.Append(",\"captured_count\":").Append(capturedCount);
                 sb.Append(",\"deduplicated_count\":").Append(deduplicatedCount);
                 sb.Append(",\"gameview_size\":null,\"screenshot_to_gameview\":null");
-                sb.Append(",\"captured_at_utc\":").Append(JsonString(capturedAtUtc));
+                sb.Append(",\"captured_at_utc\":").Append(Quote(capturedAtUtc));
                 sb.Append('}');
                 return sb.ToString();
             }
@@ -280,14 +278,14 @@ namespace Pi.UnityHarness.Editor.Capabilities.Vision
                 for (int i = 0; i < frames.Count; i++)
                 {
                     if (i > 0) sb.Append(',');
-                    sb.Append(JsonString(frames[i]));
+                    sb.Append(Quote(frames[i]));
                 }
             }
             sb.Append(']');
-            sb.Append(",\"latest\":").Append(JsonString(latest));
-            sb.Append(",\"vision\":").Append(JsonString(vision));
-            sb.Append(",\"timeline\":").Append(JsonString(timeline));
-            sb.Append(",\"fingerprint\":").Append(JsonString(fingerprint));
+            sb.Append(",\"latest\":").Append(Quote(latest));
+            sb.Append(",\"vision\":").Append(Quote(vision));
+            sb.Append(",\"timeline\":").Append(Quote(timeline));
+            sb.Append(",\"fingerprint\":").Append(Quote(fingerprint));
             sb.Append(",\"changed\":").Append(changed ? "true" : "false");
             sb.Append(",\"timed_out\":").Append(timedOut ? "true" : "false");
             sb.Append(",\"unique_count\":").Append(uniqueCount);
@@ -297,7 +295,7 @@ namespace Pi.UnityHarness.Editor.Capabilities.Vision
                 .Append(",\"y\":").Append(F(gameViewHeight)).Append('}');
             sb.Append(",\"screenshot_to_gameview\":{\"x\":").Append(F(screenshotToGameviewX))
                 .Append(",\"y\":").Append(F(screenshotToGameviewY)).Append('}');
-            sb.Append(",\"captured_at_utc\":").Append(JsonString(capturedAtUtc));
+            sb.Append(",\"captured_at_utc\":").Append(Quote(capturedAtUtc));
             if (!string.IsNullOrEmpty(annotationsJson))
                 sb.Append(",\"annotations\":").Append(annotationsJson);
             sb.Append('}');
@@ -316,9 +314,9 @@ namespace Pi.UnityHarness.Editor.Capabilities.Vision
             sb.Append(",\"embed\":false");
             if (status == "failed")
             {
-                sb.Append(",\"error\":").Append(JsonString(error));
-                sb.Append(",\"error_type\":").Append(JsonString(errorType));
-                sb.Append(",\"mode\":").Append(JsonString(mode));
+                sb.Append(",\"error\":").Append(Quote(error));
+                sb.Append(",\"error_type\":").Append(Quote(errorType));
+                sb.Append(",\"mode\":").Append(Quote(mode));
                 sb.Append(",\"sheet\":null,\"frames\":null,\"timings_ms\":null");
                 sb.Append(",\"fingerprint\":null");
                 sb.Append(",\"timed_out\":").Append(timedOut ? "true" : "false");
@@ -327,15 +325,15 @@ namespace Pi.UnityHarness.Editor.Capabilities.Vision
                 return sb.ToString();
             }
 
-            sb.Append(",\"mode\":").Append(JsonString(mode));
-            sb.Append(",\"sheet\":").Append(JsonString(sheet));
+            sb.Append(",\"mode\":").Append(Quote(mode));
+            sb.Append(",\"sheet\":").Append(Quote(sheet));
             sb.Append(",\"frames\":[");
             if (frames != null)
             {
                 for (int i = 0; i < frames.Count; i++)
                 {
                     if (i > 0) sb.Append(',');
-                    sb.Append(JsonString(frames[i]));
+                    sb.Append(Quote(frames[i]));
                 }
             }
             sb.Append(']');
@@ -349,11 +347,11 @@ namespace Pi.UnityHarness.Editor.Capabilities.Vision
                 }
             }
             sb.Append(']');
-            sb.Append(",\"fingerprint\":").Append(JsonString(fingerprint));
+            sb.Append(",\"fingerprint\":").Append(Quote(fingerprint));
             sb.Append(",\"timed_out\":").Append(timedOut ? "true" : "false");
             sb.Append(",\"unique_count\":").Append(uniqueCount);
             sb.Append(",\"captured_count\":").Append(capturedCount);
-            sb.Append(",\"captured_at_utc\":").Append(JsonString(capturedAtUtc));
+            sb.Append(",\"captured_at_utc\":").Append(Quote(capturedAtUtc));
             sb.Append('}');
             return sb.ToString();
         }
@@ -380,12 +378,14 @@ namespace Pi.UnityHarness.Editor.Capabilities.Vision
             int frameCount = Mathf.Clamp(frames > 0 ? frames : DefaultFrames, 1, MaxFrames);
             int gapMs = Mathf.Clamp(intervalMs, 0, 5000);
             string overlayMode = NormalizeOverlay(overlay);
-            string resolvedPrefix = ResolvePathPrefix(pathPrefix, DefaultPrefix);
+            // observe 默认前缀不预建目录；runtime 写唯一帧时才创建，时序保持不变。
+            string resolvedPrefix = CapturePathService.ResolveWithoutCreate(
+                CapturePathProfile.PlaytestObserve, pathPrefix, ProjectRoot, DateTime.UtcNow);
             int effectiveTimeoutMs = timeoutMs > 0 ? timeoutMs : 5000;
 
             if (!HarnessVisionPlaytestRunner.TryStartObserve(
                     resolvedPrefix, frameCount, gapMs, perFrameTimeoutMs,
-                    out var request, out string startError))
+                    out var pending, out string startError))
             {
                 yield return BuildObserveJson(
                     "failed", startError, "not_supported",
@@ -395,14 +395,14 @@ namespace Pi.UnityHarness.Editor.Capabilities.Vision
             }
 
             float t0 = Time.realtimeSinceStartup;
-            while (!request.IsDone)
+            while (!pending.IsDone)
             {
                 if (Time.realtimeSinceStartup - t0 >= effectiveTimeoutMs / 1000f)
-                    request.CancelRequested = true;
+                    pending.CancelRequested = true;
                 yield return null;
             }
 
-            HarnessVisionPlaytestResult result = request.Result;
+            HarnessVisionPlaytestResult result = pending.Result;
             if (result == null || !result.Success)
             {
                 string errorType = result != null && result.TimedOut ? "timeout" : "runtime";
@@ -536,13 +536,13 @@ namespace Pi.UnityHarness.Editor.Capabilities.Vision
                 yield break;
             }
 
-            string resolvedPrefix = ResolvePathPrefix(
-                pathPrefix, DefaultAfterPrefix);
+            string resolvedPrefix = CapturePathService.ResolveWithoutCreate(
+                CapturePathProfile.PlaytestAfter, pathPrefix, ProjectRoot, DateTime.UtcNow);
             int effectiveTimeoutMs = timeoutMs > 0 ? timeoutMs : 15000;
 
             if (!HarnessVisionPlaytestRunner.TryStartCaptureAfter(
                     resolvedPrefix, normalizedMode, perFrameTimeoutMs,
-                    out var request, out string startError))
+                    out var pending, out string startError))
             {
                 yield return BuildCaptureAfterJson(
                     "failed", startError, "not_supported",
@@ -551,14 +551,14 @@ namespace Pi.UnityHarness.Editor.Capabilities.Vision
             }
 
             float t0 = Time.realtimeSinceStartup;
-            while (!request.IsDone)
+            while (!pending.IsDone)
             {
                 if (Time.realtimeSinceStartup - t0 >= effectiveTimeoutMs / 1000f)
-                    request.CancelRequested = true;
+                    pending.CancelRequested = true;
                 yield return null;
             }
 
-            HarnessVisionPlaytestResult result = request.Result;
+            HarnessVisionPlaytestResult result = pending.Result;
             if (result == null || !result.Success)
             {
                 string errorType = result != null && result.TimedOut ? "timeout" : "runtime";
@@ -610,25 +610,13 @@ namespace Pi.UnityHarness.Editor.Capabilities.Vision
             }
         }
 
-        // ─── helpers ───
-
         private static string NormalizeOverlay(string overlay)
         {
             string value = string.IsNullOrWhiteSpace(overlay) ? "both" : overlay.ToLowerInvariant();
             return value == "none" || value == "grid" || value == "annotations" ? value : "both";
         }
 
-        private static string ResolvePathPrefix(string requested, string fallback)
-        {
-            if (!string.IsNullOrWhiteSpace(requested))
-            {
-                string path = requested;
-                if (!Path.IsPathRooted(path))
-                    path = Path.Combine(ProjectRoot, path);
-                return Path.GetFullPath(path);
-            }
-            return Path.Combine(ProjectRoot, fallback);
-        }
+
 
         private static string ProjectRoot =>
             Directory.GetParent(Application.dataPath).FullName;

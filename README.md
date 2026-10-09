@@ -79,7 +79,7 @@ Unity Editor 打开后会自动初始化 native broker 并写入 `Library/PiUnit
 powershell -ExecutionPolicy Bypass -File .\scripts\build-native.ps1
 ```
 
-编译出的 `pi-unity.exe` 位于 `bin/` 和 `dist/`，可加入系统 PATH，或直接调用：
+编译出的 `pi-unity.exe` 位于 `bin/`，可加入系统 PATH，或直接调用：
 
 ```bash
 # live dashboard（无参）
@@ -133,7 +133,7 @@ pi-unity skills install --agents
 ### 1. 存储结构（`~/.pi-unity/`，可通过 `PI_UNITY_LOG_DIR` 覆盖）
 - `logs/events-YYYY-MM.jsonl`：统一事件流（单次调用记录一行，包含耗时、阶段耗时、退出码与 `errorType`，按月轮转）。
 - `logs/traces/YYYY-MM-DD/`：详细过程日志（命令失败或开启 `--trace` / `PI_UNITY_TRACE=1` 时落盘，保留 7 天）。
-- `sessions/current.json`：粘性会话注册表（TTL 12 小时；全用户一份，多 agent 并行会互相覆盖）。
+- `sessions/<projectHash>/<agentId>.json`：按项目与 agent 隔离的粘性会话注册表（TTL 12 小时）；`sessions/current.json` 仅保存兼容指针，不作为读取回退。
 
 ### 2. 会话与打点命令
 ```bash
@@ -163,6 +163,6 @@ pi-unity session end
 本项目集成了以下优秀的开源项目与组件，特此致谢：
 
 - **[UnityCliLoop (Uloop)](https://github.com/hatayama)** (MIT License) - 提供方法级热重载（Hot Reload V3）与暂停点（Pause Point）核心实现，位于 `unity/com.pi.unity-harness/Vendor/Uloop/`。
-- **[Lib.Harmony](https://github.com/pardeike/Harmony)** by Andreas Pardeike (MIT License) - 提供运行时 C# 方法体 IL 注入与 JIT Hook 支持（作为 `UnityCliLoop.0Harmony.dll` 引入，详见 `unity/com.pi.unity-harness/Vendor/Uloop/Editor/PausePoint/Plugins/LICENSE.md`）。
-- **[.NET Roslyn Libraries](https://github.com/dotnet/roslyn)** by .NET Foundation (MIT License) - 提供内存中 C# 动态代码分析与编译元数据支持，详见 `unity/com.pi.unity-harness/Vendor/Uloop/Editor/Compiler/Plugins/CodeAnalysis/LICENSE.md`。
+- **[Lib.Harmony](https://github.com/pardeike/Harmony)** by Andreas Pardeike (MIT License) - 提供运行时 C# 方法体 IL 注入与 JIT Hook 支持（作为 `UnityCliLoop.0Harmony.dll` 引入，详见 `unity/com.pi.unity-harness/Vendor/Uloop/Editor/FirstPartyTools/PausePoint/Plugins/LICENSE.md`）。
+- **[.NET Roslyn Libraries](https://github.com/dotnet/roslyn)** by .NET Foundation (MIT License) - 提供内存中 C# 动态代码分析与编译元数据支持，详见 `unity/com.pi.unity-harness/Vendor/Uloop/Editor/FirstPartyTools/ExecuteDynamicCode/Plugins/CodeAnalysis/LICENSE.md`。
 - **Unity.Pipeline** by Unity Technologies - `unity/com.pi.pipeline.compat/` 按 Unity Package Distribution License 协议发布，详见其子目录下的 [LICENSE.md](unity/com.pi.pipeline.compat/LICENSE.md)。

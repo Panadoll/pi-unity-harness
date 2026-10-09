@@ -10,6 +10,7 @@ using Unity.Pipeline.Models;
 using UnityEditor;
 using UnityEngine;
 #endif
+using Pi.UnityHarness.Editor.Protocol;
 
 namespace Pi.UnityHarness.Editor
 {
@@ -62,7 +63,7 @@ namespace Pi.UnityHarness.Editor
                     EnsurePolling();
                     return;
                 }
-                completeJson(requestId, PiUnityJsonHelper.ErrorJson(requestId, "busy", "run_tests request already in progress"));
+                completeJson(requestId, PipeEnvelope.Error(requestId, "busy", "run_tests request already in progress"));
                 return;
             }
 
@@ -75,21 +76,21 @@ namespace Pi.UnityHarness.Editor
 
             if (PipelineTestRunRunningProvider())
             {
-                completeJson(requestId, PiUnityJsonHelper.ErrorJson(requestId, "busy", "pipeline test run already in progress"));
+                completeJson(requestId, PipeEnvelope.Error(requestId, "busy", "pipeline test run already in progress"));
                 return;
             }
 
             JObject parameters;
             if (!PiUnityPipelineCommandExecutor.TryParseParameters(parametersJson, out parameters, out string parseError))
             {
-                completeJson(requestId, PiUnityJsonHelper.ErrorJson(requestId, "parameter_error", parseError));
+                completeJson(requestId, PipeEnvelope.Error(requestId, "parameter_error", parseError));
                 return;
             }
 
             string mode = NormalizeMode(ReadString(parameters, "mode", "all"));
             if (mode == null)
             {
-                completeJson(requestId, PiUnityJsonHelper.ErrorJson(requestId, "parameter_error", "mode must be editor, playmode, or all"));
+                completeJson(requestId, PipeEnvelope.Error(requestId, "parameter_error", "mode must be editor, playmode, or all"));
                 return;
             }
 
@@ -97,7 +98,7 @@ namespace Pi.UnityHarness.Editor
             // EditorMode 测试不受影响。守卫必须在设置 SessionState 之前返回，保证不进入测试执行路径。
             if (ShouldRejectPlaymodeRun(mode, IsPlayingProvider()))
             {
-                completeJson(requestId, PiUnityJsonHelper.ErrorJson(
+                completeJson(requestId, PipeEnvelope.Error(
                     requestId,
                     "playmode_active",
                     "Cannot run PlayMode tests while the editor is in play mode. Exit play mode (editor_stop) and retry."));
@@ -108,7 +109,7 @@ namespace Pi.UnityHarness.Editor
             string dirtyPolicyError = ApplyDirtyPolicy(parameters, "run_tests");
             if (dirtyPolicyError != null)
             {
-                completeJson(requestId, PiUnityJsonHelper.ErrorJson(requestId, "dirty_scene", dirtyPolicyError));
+                completeJson(requestId, PipeEnvelope.Error(requestId, "dirty_scene", dirtyPolicyError));
                 return;
             }
 
@@ -136,7 +137,7 @@ namespace Pi.UnityHarness.Editor
 
             EnsurePolling();
 #else
-            completeJson(requestId, PiUnityJsonHelper.ErrorJson(requestId, "pipeline_unavailable", "com.unity.pipeline is not installed or PI_UNITY_PIPELINE is not defined."));
+            completeJson(requestId, PipeEnvelope.Error(requestId, "pipeline_unavailable", "com.unity.pipeline is not installed or PI_UNITY_PIPELINE is not defined."));
 #endif
         }
 
@@ -458,7 +459,7 @@ namespace Pi.UnityHarness.Editor
         private static string ApplyDirtyPolicy(JObject parameters, string commandName)
         {
             string dirtyAction = ReadString(parameters, "dirty_action", "abort");
-            var action = Capabilities.PipelineCommands.DirtyScenePolicy.Parse(dirtyAction, commandName, out string parseError);
+            var action = Capabilities.Pipeline.CommandAdapters.DirtyScenePolicy.Parse(dirtyAction, commandName, out string parseError);
             if (parseError != null)
                 return parseError;
 
@@ -466,7 +467,7 @@ namespace Pi.UnityHarness.Editor
             for (int i = 0; i < UnityEngine.SceneManagement.SceneManager.sceneCount; i++)
                 openScenes.Add(UnityEngine.SceneManagement.SceneManager.GetSceneAt(i));
 
-            return Capabilities.PipelineCommands.DirtyScenePolicy.Apply(action, openScenes, commandName);
+            return Capabilities.Pipeline.CommandAdapters.DirtyScenePolicy.Apply(action, openScenes, commandName);
         }
 
         internal static bool HasPendingRequestForReload()
@@ -528,7 +529,7 @@ namespace Pi.UnityHarness.Editor
                 ["value"] = value,
             };
 
-            string response = PiUnityJsonHelper.SuccessJson(id, result.ToString(Formatting.None));
+            string response = PipeEnvelope.Success(id, result.ToString(Formatting.None));
             RememberCompletion(id, response);
             ClearSessionState();
             s_completeJson?.Invoke(id, response);
@@ -538,7 +539,7 @@ namespace Pi.UnityHarness.Editor
         private static void CompleteError(string errorType, string error)
         {
             string id = SessionState.GetString(SessionKey_PendingTestRequestId, string.Empty);
-            string response = PiUnityJsonHelper.ErrorJson(id, errorType, error);
+            string response = PipeEnvelope.Error(id, errorType, error);
             RememberCompletion(id, response);
             ClearSessionState();
             s_completeJson?.Invoke(id, response);

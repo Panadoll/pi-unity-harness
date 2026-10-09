@@ -10,7 +10,7 @@ pi-unity snapshot                        # 场景层级 + 选择 + 近期日志
 pi-unity pipeline uitree_snapshot -p interactive_only=true   # 可交互 UI 树
 
 # 用 node_ref / 文本定位目标后执行动作：
-# - 能 uitree 操作 → pi-unity pipeline uitree_click -p node_ref=...
+# - uitree 只负责查询；根据节点位置先 input_probe，再 input_click
 # - 否则先确认命中再点击
 pi-unity pipeline input_probe -p x=523 -p y=236     # 确认命中对象
 pi-unity pipeline input_click -p x=523 -p y=236     # 点击

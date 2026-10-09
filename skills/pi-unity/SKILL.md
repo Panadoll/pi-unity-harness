@@ -69,7 +69,7 @@ Unity 6 官方 0.8 与 compat 0.6 命令名不同，以 `list-commands` 为准�
 ## 退出码
 
 - `0` 成功，含幂等 no-op（文案含 already … (no-op)）
-- `1` 执行失败，含连不上 Unity、超时
+- `1` 执行失败，含连不上 Unity、超时、run-tests 的 failed/failureCount 大于 0、视觉领域 failed/unavailable
 - `2` 用法错误（缺参、未知 flag、未知子命令）
 
 `--json` 时 stdout 是 JSON。别把 stderr 拼进 JSON。默认 TOON。`--help` 永远合法。

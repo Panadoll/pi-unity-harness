@@ -347,7 +347,7 @@ Agent 在调用前能从命令目录得知"会不会改场景/资产、是否需
 - C#：`PiUnityPipelineCommandExecutor.cs`（合并 policy、`jsonType`）、新增 harness 侧 `PiCommandPolicyAttribute.cs`、`command-policy.json`、`PipelineCommandDiscoveryTests.cs` 补断言；不得修改 `unity/com.pi.pipeline.compat/` 中的 attribute 或命令实现。
 - Rust：`schema.rs` 透传 `policy`，`pi-unity pipeline list` 表格新增 `mutability` 列。
 - TS：`helpers.ts`、`index.ts` 注册逻辑；`helpers.test.ts` 补 `jsonType` 优先级用例。
-- 文档：`docs/safety-and-mutations.md` 改为引用 `policy` 字段，并列出 sidecar 初始条目。
+- 文档：`unity/com.pi.pipeline.compat/Documentation~/safety-and-mutations.md` 改为引用 `policy` 字段，并列出 sidecar 初始条目；该路径属于 compat，修改时仍需遵循其 PATCHES.md 更新规则。
 - fixture：S1 新增 `status/command_list_with_policy`。
 
 ### sidecar 初始条目要求

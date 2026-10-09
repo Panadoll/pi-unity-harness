@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{json, Map, Value};
 
-use super::client::CliError;
+use super::wire::CliError;
 use super::home;
 use super::toon;
 
