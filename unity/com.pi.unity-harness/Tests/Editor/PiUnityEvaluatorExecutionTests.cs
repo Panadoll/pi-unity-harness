@@ -66,6 +66,19 @@ namespace Pi.UnityHarness.Editor.Tests
             run("failed anonymous type compile keeps session state", FailedAnonymousTypeCompileKeepsSessionState);
             run("ordinary failure preserves cached anonymous types", OrdinaryFailurePreservesCachedAnonymousTypes);
             run("failed value return keeps session state", FailedValueReturnKeepsSessionState);
+            run("execution guard rejects before compile and honors allow pragma", ExecutionGuard);
+        }
+
+        private static void ExecutionGuard()
+        {
+            var evaluator = new PiUnityEvaluator();
+            var blocked = evaluator.Eval("System.Threading.Thread.Sleep(10);\n1");
+            Require(!blocked.Ok, "Thread.Sleep was not rejected.");
+            Contains(blocked.Error, "COMPILE ERROR: [guard]");
+            string validation = evaluator.Validate("UnityEditor.AssetDatabase.Refresh();\n1");
+            Require(validation.StartsWith("COMPILE ERROR: [guard]", StringComparison.Ordinal), validation);
+            Value(evaluator, "// #repl-allow: blocking\nSystem.Threading.Thread.Sleep(0);\n1", "1");
+            Value(evaluator, "var s = \"Thread.Sleep(1)\"; // AssetDatabase.Refresh()\ns.Length", "15");
         }
 
         /// <summary>

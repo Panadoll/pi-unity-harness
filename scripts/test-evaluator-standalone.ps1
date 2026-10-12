@@ -25,6 +25,7 @@ $sources = @(
   'unity/com.pi.unity-harness/Editor/PiUnityEvaluator.cs',
   'unity/com.pi.unity-harness/Editor/PiUnityEvaluator.CodeScanner.cs',
   'unity/com.pi.unity-harness/Editor/PiUnityEvaluator.Lint.cs',
+  'unity/com.pi.unity-harness/Editor/PiUnityEvaluator.Guard.cs',
   'unity/com.pi.unity-harness/Tests/Editor/PiUnityEvaluatorExecutionTests.cs'
 ) | ForEach-Object { Join-Path $repoRoot $_ }
 foreach ($required in @($mono, $csc, $MonoCSharpAssembly) + $sources) {

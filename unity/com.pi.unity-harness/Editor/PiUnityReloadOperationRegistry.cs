@@ -17,11 +17,12 @@ namespace Pi.UnityHarness.Editor
     {
         private static readonly List<IReloadAwareOperation> Operations = new List<IReloadAwareOperation>();
 
-        internal static void Configure(Action<string, bool, string, string> compileComplete, Action<string, string> testComplete)
+        internal static void Configure(Action<string, bool, string, string> compileComplete, Action<string, string> completeJson)
         {
             Operations.Clear();
             Register(new CompileReloadOperation(compileComplete));
-            Register(new TestReloadOperation(testComplete));
+            Register(new TestReloadOperation(completeJson));
+            Register(new StepJobReloadOperation(completeJson));
         }
 
         internal static void Register(IReloadAwareOperation operation)
@@ -127,6 +128,21 @@ namespace Pi.UnityHarness.Editor
             public bool HasPendingRequest() { return PiUnityTestCoordinator.HasPendingRequestForReload(); }
             public void BeforeReload() { }
             public void ResumeAfterReload() { PiUnityTestCoordinator.ResumeAfterReload(_complete); }
+        }
+
+        private sealed class StepJobReloadOperation : IReloadAwareOperation
+        {
+            private readonly Action<string, string> _complete;
+
+            public StepJobReloadOperation(Action<string, string> complete)
+            {
+                _complete = complete;
+            }
+
+            public string Name { get { return "step_jobs"; } }
+            public bool HasPendingRequest() { return PiUnityStepJobRunner.HasPendingRequest(); }
+            public void BeforeReload() { PiUnityStepJobRunner.BeforeReload(); }
+            public void ResumeAfterReload() { PiUnityStepJobRunner.ResumeAfterReload(_complete); }
         }
     }
 }

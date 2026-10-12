@@ -17,6 +17,9 @@ namespace Pi.UnityHarness.Editor
     internal static partial class PiUnityBridge
     {
         [DllImport(NativeDll, CallingConvention = CallingConvention.Cdecl)]
+        private static extern int pi_unity_abi_version();
+
+        [DllImport(NativeDll, CallingConvention = CallingConvention.Cdecl)]
         private static extern int pi_unity_init(
             byte[] project, int projectLen,
             byte[] pipe, int pipeLen,
@@ -89,6 +92,36 @@ namespace Pi.UnityHarness.Editor
 
         [DllImport("kernel32.dll")]
         private static extern uint GetCurrentThreadId();
+
+        /// <summary>
+        /// Must run before any other native call. Mono binds each DllImport lazily, so
+        /// refusing here keeps mismatched signatures from ever being invoked.
+        /// </summary>
+        private static string CheckNativeAbi()
+        {
+            int? nativeAbi;
+            try
+            {
+                nativeAbi = pi_unity_abi_version();
+            }
+            catch (EntryPointNotFoundException)
+            {
+                nativeAbi = null;
+            }
+            return DescribeNativeAbiMismatch(nativeAbi, NativeAbiVersion);
+        }
+
+        internal static string DescribeNativeAbiMismatch(int? nativeAbi, int expectedAbi)
+        {
+            if (nativeAbi == expectedAbi)
+                return null;
+            string loaded = nativeAbi.HasValue
+                ? "reports abi=" + nativeAbi.Value
+                : "does not export pi_unity_abi_version (built before ABI checks)";
+            return "[PiUnityHarness] native DLL ABI mismatch: managed code expects abi=" + expectedAbi +
+                ", loaded " + NativeDll + " " + loaded + ". The bridge stays disabled so no native function is called with a mismatched signature. " +
+                "Fix: close the Unity Editor (it locks the DLL), run scripts/build-native.ps1, then reopen the project.";
+        }
 
         private static void CheckNativeBuildInfo()
         {

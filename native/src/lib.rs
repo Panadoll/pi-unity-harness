@@ -3,6 +3,9 @@ pub const MANAGED_STATE_READY: i32 = 1;
 pub const MANAGED_STATE_RELOADING: i32 = 2;
 pub const MANAGED_STATE_QUITTING: i32 = 3;
 pub const NATIVE_PROTOCOL_VERSION: i32 = 1;
+/// 托管侧 DllImport 签名集的版本。任何导出函数的增删或签名变化都必须递增，
+/// 并同步 PiUnityBridge.NativeAbiVersion。
+pub const NATIVE_ABI_VERSION: i32 = 1;
 
 pub const BUILD_INFO_JSON: &str = concat!(
     "{\"crate\":\"", env!("CARGO_PKG_VERSION"),

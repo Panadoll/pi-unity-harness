@@ -5,6 +5,10 @@
 
 ## [Unreleased]
 
+### Security
+
+- native DLL ABI 版本校验：新增签名冻结的导出 `pi_unity_abi_version`，托管侧在任何其他 native 调用之前先校验，失配（含旧 DLL 缺少该导出）时桥接不启动并在 Console 给出重建步骤，不再带着可能不匹配的签名继续调用。native `init` 遇到协议版本不一致改为拒绝（返回 -2），不再只打日志。`status` 的 `native` 字段新增 `abiVersion`。**升级注意**：Editor 已加载旧 DLL 时，新托管代码会拒绝启动桥接，需要关闭 Editor、运行 `scripts/build-native.ps1` 后重开。
+
 ### Fixed
 
 - CLI observe 摘要先解包 Pipeline 的 `value` / JSON `output`，避免真实捕获成功后误报 0 帧、空 dHash 和空路径；保持公开参数、字段和默认模式不变。
@@ -14,6 +18,8 @@
 
 ### Added
 
+- eval 防呆检查：编译前按名字拒绝阻塞主线程（`Thread.Sleep`、`.GetAwaiter().GetResult()` 等）和触发域重载（`AssetDatabase.Refresh` 等）的调用，报 `COMPILE ERROR: [guard]` 并给出行号与替代写法；可用 `// #repl-allow: blocking|reload` 按类别显式放行。
+- 可跨域重载的 step job：`PiUnityStepJobRunner` 把显式可恢复的多步任务状态写入 SessionState，在新域里续跑，CLI 对这类命令跨 `managed_reloading` 重试时沿用原请求 id，托管侧挂回同一任务或回放已完成的结果。首个消费者是新命令 `playmode_enter` / `playmode_exit`：等 PlayMode 过渡（含域重载）稳定后才返回。
 - 初始开源版本：native broker、Unity Editor 包、pi 扩展、文档
 - 本地维护脚本 `scripts/command-inventory.py`：消费真实 list-commands metadata，比较 schema/policy 多重集，导出 extension 规则和实际 skill 校验；不接入 CI。协议 fixture 改为执行真实消费者。
 - 纯 CLI 架构（CLI-First / No-MCP）：新增 `pi-unity` 独立原生 CLI 二进制

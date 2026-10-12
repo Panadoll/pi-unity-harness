@@ -40,6 +40,7 @@ pi-unity pipeline input_drag -p from_x=640 -p from_y=200 -p to_x=640 -p to_y=500
 - `uitree_*`：UI 树。`uitree_find` 用 `query`；UI 流程先 `uitree_snapshot interactive_only=true`，再 find / probe，然后动作
 - `input_*`：点击、探测。坐标是 GameView 左上角。拖拽优先一次 `input_drag`，少拆 `input_drag_start/move/end`
 - `vision_*`：截图和分析
+- `playmode_enter` / `playmode_exit`：进 / 出 PlayMode，等过渡稳定（含域重载）后才返回，结果里 `reloads` 是途中经历的域重载次数。官方 `editor_play` / `editor_stop` 只发请求不等待。这两个命令只有走 harness 管道（`pi-unity pipeline`）才会等待；`--job` 提交时退化为只发请求
 
 ## 官方 0.8 与 compat 0.6
 

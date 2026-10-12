@@ -31,7 +31,8 @@ namespace Pi.UnityHarness.Editor
         private const int MaxSuggestionTextLength = 96;
         // Pure in-memory state: not persisted across domain reloads. On beforeAssemblyReload each
         // request is answered with a timeout error and cleared, because managed Tasks cannot be
-        // resumed after reload (contrast: PiUnityTestCoordinator uses SessionState across reloads).
+        // resumed after reload. Commands that must span a reload run as step jobs instead
+        // (PiUnityStepJobRunner); PiUnityTestCoordinator has its own SessionState path.
         private static readonly List<PendingTask> PendingTasks = new List<PendingTask>();
         private static bool s_updateRegistered;
 
@@ -139,6 +140,9 @@ namespace Pi.UnityHarness.Editor
                     completeJson(requestId, PipeEnvelope.Error(requestId, "parameter_error", bindError));
                     return;
                 }
+
+                if (Capabilities.Pipeline.CommandAdapters.PiEditorStatePipelineCommands.TryStartStepJob(command.Name, requestId, timeoutMs, completeJson))
+                    return;
 
                 object rawResult;
                 try

@@ -324,6 +324,10 @@ namespace Pi.UnityHarness.Editor
             if (pragmaError != null)
                 return EvalResult.Fail(pragmaError, "compile_error");
 
+            string guardError = CheckExecutionGuard(source);
+            if (guardError != null)
+                return EvalResult.Fail(guardError, "compile_error");
+
             ReplDiagnostic lintDiagnostic;
             source = PreLint(source, out lintDiagnostic);
 
@@ -380,6 +384,10 @@ namespace Pi.UnityHarness.Editor
             string pragmaError = ValidatePragmaMode(pragmaMode, source);
             if (pragmaError != null)
                 return pragmaError;
+
+            string guardError = CheckExecutionGuard(source);
+            if (guardError != null)
+                return guardError;
 
             ReplDiagnostic lintDiagnostic;
             source = PreLint(source, out lintDiagnostic);

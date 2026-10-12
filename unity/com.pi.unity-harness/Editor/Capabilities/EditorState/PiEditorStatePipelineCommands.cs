@@ -44,6 +44,39 @@ namespace Pi.UnityHarness.Editor.Capabilities.Pipeline.CommandAdapters
             return EditorApplicationGetState();
         }
 
+        [CliCommand("playmode_enter", "Enter PlayMode and return after the domain reload settles (reload-stable step job over the harness pipe)")]
+        public static string PlayModeEnter()
+        {
+            EditorApplication.isPlaying = true;
+            return PiPipelineSupport.OkMessage("playmode_enter", "PlayMode requested without waiting; call through the harness pipe for a reload-stable wait.");
+        }
+
+        [CliCommand("playmode_exit", "Exit PlayMode and return after the editor settles (reload-stable step job over the harness pipe)")]
+        public static string PlayModeExit()
+        {
+            EditorApplication.isPlaying = false;
+            return PiPipelineSupport.OkMessage("playmode_exit", "PlayMode exit requested without waiting; call through the harness pipe for a reload-stable wait.");
+        }
+
+        /// <summary>
+        /// Harness pipe entry: playmode_enter/exit run as step jobs so the reply survives the
+        /// domain reload. Other callers (detached jobs, the official server) get the
+        /// fire-and-forget command bodies above.
+        /// </summary>
+        internal static bool TryStartStepJob(string commandName, string requestId, int timeoutMs, Action<string, string> completeJson)
+        {
+            string target;
+            if (string.Equals(commandName, "playmode_enter", StringComparison.Ordinal))
+                target = PiUnityPlayModeStepJob.TargetEnter;
+            else if (string.Equals(commandName, "playmode_exit", StringComparison.Ordinal))
+                target = PiUnityPlayModeStepJob.TargetExit;
+            else
+                return false;
+
+            PiUnityStepJobRunner.Start(requestId, commandName, PiUnityPlayModeStepJob.KindName, PiUnityPlayModeStepJob.CreateData(target), timeoutMs, completeJson);
+            return true;
+        }
+
         [CliCommand("editor_selection_get", "Get Editor selection")]
         public static string EditorSelectionGet([CliArg("include_gameobjects", "Include GameObjects")] bool includeGameObjects = true, [CliArg("include_assets", "Include selected asset GUIDs")] bool includeAssets = true)
         {

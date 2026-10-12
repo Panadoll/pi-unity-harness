@@ -20,6 +20,8 @@ namespace Pi.UnityHarness.Editor
     {
         private const string NativeDll = "pi_unity_harness_native";
         private const int NativeProtocolVersion = 1;
+        // Must equal NATIVE_ABI_VERSION in native/src/lib.rs.
+        private const int NativeAbiVersion = 1;
         private const int ManagedStateInitializing = 0;
         private const int ManagedStateReady = 1;
         private const int ManagedStateReloading = 2;
@@ -144,6 +146,7 @@ namespace Pi.UnityHarness.Editor
         private static bool s_runInBackgroundApplied;
         private static bool s_nativeVersionMismatch;
         private static bool s_nativeVersionWarningLogged;
+        private static bool s_nativeAbiRejected;
         private static string s_lastMainThreadEditorStatus = "editing;focus=unknown;window=normal";
 
         static PiUnityBridge()
@@ -159,11 +162,19 @@ namespace Pi.UnityHarness.Editor
 
         private static void Start()
         {
-            if (s_started || !ShouldRunInCurrentProcess())
+            if (s_started || s_nativeAbiRejected || !ShouldRunInCurrentProcess())
                 return;
 
             try
             {
+                string abiError = CheckNativeAbi();
+                if (abiError != null)
+                {
+                    s_nativeAbiRejected = true;
+                    UnityEngine.Debug.LogError(abiError);
+                    return;
+                }
+
                 s_started = true;
                 s_projectPath = DetectProjectPath();
                 s_pipeName = GetOrCreatePipeName(s_projectPath);
@@ -225,6 +236,8 @@ namespace Pi.UnityHarness.Editor
 
         private static void OnBeforeReload()
         {
+            if (s_nativeAbiRejected)
+                return;
             PublishManagedState(ManagedStateReloading, "reloading");
             StopNativePumpThread();
             CancelAllPendingAsyncEvals("CANCELLED: domain reload");
@@ -237,6 +250,8 @@ namespace Pi.UnityHarness.Editor
         private static void OnAfterReload()
         {
             Start();
+            if (s_nativeAbiRejected)
+                return;
             // Complete registered operations only after the native pump is available again.
             PiUnityReloadOperationRegistry.ResumeAfterReloadAll();
         }
@@ -437,6 +452,8 @@ namespace Pi.UnityHarness.Editor
 
         internal static void CompleteJson(string id, string json)
         {
+            if (s_nativeAbiRejected)
+                return;
             byte[] idBytes = Utf8(id ?? string.Empty);
             byte[] responseBytes = Utf8(json ?? string.Empty);
             pi_unity_complete_request(idBytes, idBytes.Length, responseBytes, responseBytes.Length);

@@ -79,6 +79,52 @@ namespace Pi.UnityHarness.Editor.Tests
             Assert.IsNull(diagnostic.Warnings);
         }
 
+        // ── CheckExecutionGuard ────────────────────────────────────────────
+
+        [Test]
+        public void ExecutionGuard_RejectsBlockingCallsWithLineAndHint()
+        {
+            string error = PiUnityEvaluator.CheckExecutionGuard("var t = Load();\nt.GetAwaiter()\n  .GetResult()");
+
+            StringAssert.StartsWith("COMPILE ERROR: [guard]", error);
+            StringAssert.Contains(".GetAwaiter().GetResult() (blocking, line 2)", error);
+            StringAssert.Contains("#repl-allow: blocking", error);
+            StringAssert.DoesNotContain("[HINT] reload", error);
+        }
+
+        [Test]
+        public void ExecutionGuard_RejectsQualifiedCallsInBothCategories()
+        {
+            string error = PiUnityEvaluator.CheckExecutionGuard(
+                "System.Threading.Thread.Sleep(5);\nUnityEditor.Compilation.CompilationPipeline.RequestScriptCompilation();\nTask.WaitAll(a, b);");
+
+            StringAssert.Contains("Thread.Sleep (blocking, line 1)", error);
+            StringAssert.Contains("Task.WaitAll/WaitAny (blocking, line 3)", error);
+            StringAssert.Contains("CompilationPipeline.RequestScriptCompilation (reload, line 2)", error);
+            StringAssert.Contains("unity_recompile", error);
+        }
+
+        [Test]
+        public void ExecutionGuard_IgnoresStringsCommentsAndLookalikeNames()
+        {
+            Assert.IsNull(PiUnityEvaluator.CheckExecutionGuard("var s = \"Thread.Sleep(1)\";\ns"));
+            Assert.IsNull(PiUnityEvaluator.CheckExecutionGuard("var s = @\"AssetDatabase.Refresh()\";\ns"));
+            Assert.IsNull(PiUnityEvaluator.CheckExecutionGuard("// Thread.Sleep(1)\n/* AssetDatabase.Refresh(); */\n1"));
+            Assert.IsNull(PiUnityEvaluator.CheckExecutionGuard("MyThread.Sleep(1);\nrequest.Result"));
+            Assert.IsNull(PiUnityEvaluator.CheckExecutionGuard("await Task.Delay(10);\n1"));
+        }
+
+        [Test]
+        public void ExecutionGuard_AllowPragmaIsPerCategory()
+        {
+            const string code = "Thread.Sleep(1);\nAssetDatabase.Refresh();\n1";
+
+            Assert.IsNull(PiUnityEvaluator.CheckExecutionGuard("// #repl-allow: blocking, reload\n" + code));
+            string onlyBlocking = PiUnityEvaluator.CheckExecutionGuard("// #repl-allow: blocking\n" + code);
+            StringAssert.Contains("AssetDatabase.Refresh (reload", onlyBlocking);
+            StringAssert.DoesNotContain("Thread.Sleep", onlyBlocking);
+        }
+
         // ── HasTopLevelReturn ──────────────────────────────────────────────
 
         [Test]

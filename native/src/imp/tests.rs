@@ -27,6 +27,23 @@
             }
         }
 
+        #[test]
+        fn init_refuses_protocol_mismatch_before_starting_broker() {
+            let result = init(
+                "F:/Temp/PiUnityHarnessTests/protocol-mismatch".to_string(),
+                r"\\.\pipe\pi_unity_test_protocol_mismatch".to_string(),
+                "token".to_string(),
+                NATIVE_PROTOCOL_VERSION + 1,
+            );
+            assert_eq!(result, -2);
+        }
+
+        #[test]
+        fn abi_version_export_matches_constant_and_status() {
+            assert_eq!(crate::ffi::pi_unity_abi_version(), NATIVE_ABI_VERSION);
+            assert_eq!(native_info()["abiVersion"], json!(NATIVE_ABI_VERSION));
+        }
+
         fn response_json(line: Vec<u8>) -> Value {
             serde_json::from_slice(trim_ascii(&line)).unwrap()
         }

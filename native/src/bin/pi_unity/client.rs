@@ -34,6 +34,10 @@ pub(crate) fn normalize_pipe_name(pipe_name: &str) -> String {
 /// 预分发错误（managed_reloading / managed_not_ready）的重试间隔。
 const RETRY_POLL_MS: u64 = 300;
 
+/// 托管侧按请求 id 去重、可跨域重载续接的命令：broker 在重载开始时会让已派发请求
+/// 以 managed_reloading 失败，重试必须沿用原 id 才能挂回同一次操作。
+const RELOAD_RESUMABLE_COMMANDS: [&str; 3] = ["run_tests", "playmode_enter", "playmode_exit"];
+
 use super::wire::CliError;
 
 pub(crate) fn remaining_ms(deadline: Instant) -> u64 {
@@ -187,10 +191,13 @@ impl HarnessClient {
     ) -> Result<Value, CliError> {
         // 整个请求（连接 + 握手 + 重试）共享同一个 deadline，绝不按重试轮次重置。
         let deadline = Instant::now() + Duration::from_millis(timeout_ms);
-        // The test coordinator survives reloads and deduplicates by request id.
+        // The test coordinator and step-job runner survive reloads and deduplicate by request id.
         // Reuse it across managed-reloading replies, never across transport loss.
         let test_request_id = if req_type == "command"
-            && payload.get("name").and_then(Value::as_str) == Some("run_tests")
+            && payload
+                .get("name")
+                .and_then(Value::as_str)
+                .is_some_and(|name| RELOAD_RESUMABLE_COMMANDS.contains(&name))
         {
             self.req_counter += 1;
             Some(format!("cli-{}-{}-{}", std::process::id(), self.req_counter, now_ms()))
@@ -684,6 +691,37 @@ mod tests {
         assert_eq!(result["managedState"], "ready");
         assert_eq!(attempts.load(Ordering::SeqCst), 2);
         assert!(started.elapsed() < Duration::from_secs(3));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn reload_resumable_command_retries_with_the_same_request_id() {
+        let seen_ids = StdArc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let seen_clone = seen_ids.clone();
+        let broker = MockBroker::spawn_default(move |req| {
+            match req.get("type").and_then(Value::as_str).unwrap_or("") {
+                "bridge_capabilities" => caps_reply(),
+                "command" => {
+                    let mut ids = seen_clone.lock().unwrap();
+                    ids.push(req.get("id").and_then(Value::as_str).unwrap_or("").to_string());
+                    if ids.len() == 1 {
+                        json!({"ok": false, "error": "managed_reloading"})
+                    } else {
+                        json!({"ok": true, "result": {"value": {"isPlaying": true}}})
+                    }
+                }
+                _ => json!({"ok": false, "error": "unsupported"}),
+            }
+        });
+        let _bridge = broker.write_bridge(Some(std::process::id()));
+        let recorder = Arc::new(TraceRecorder::new("resumable-id-test"));
+        let mut client = HarnessClient::new_persistent(broker.bridge_dir.clone(), recorder).unwrap();
+        client
+            .send_request("command", json!({"name": "playmode_enter"}), 3000)
+            .await
+            .expect("managed_reloading 后应以同一 id 重试成功");
+        let ids = seen_ids.lock().unwrap();
+        assert_eq!(ids.len(), 2);
+        assert_eq!(ids[0], ids[1], "可续接命令重试必须沿用原请求 id");
     }
 
     #[tokio::test(flavor = "multi_thread")]

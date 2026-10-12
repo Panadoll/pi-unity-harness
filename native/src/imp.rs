@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU64, Ordering}; 
 use std::time::{Duration, SystemTime, UNIX_EPOCH}; use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader}; use tokio::net::windows::named_pipe::{NamedPipeServer, PipeMode, ServerOptions};
 use tokio::sync::{mpsc, Notify}; use super::{
-normalize_pipe_name, MANAGED_STATE_INITIALIZING, MANAGED_STATE_QUITTING, MANAGED_STATE_READY, MANAGED_STATE_RELOADING, NATIVE_PROTOCOL_VERSION,
+normalize_pipe_name, MANAGED_STATE_INITIALIZING, MANAGED_STATE_QUITTING, MANAGED_STATE_READY, MANAGED_STATE_RELOADING, NATIVE_ABI_VERSION, NATIVE_PROTOCOL_VERSION,
 }; const WRITER_CHANNEL_LIMIT: usize = 256;
 const REQUEST_BUFFER_LIMIT: usize = 1024 * 1024; const STATE_PLANE_MAGIC: u32 = 0x4855_4950;
 const STATE_PLANE_VERSION: u16 = 1; const STATE_PLANE_HEADER_SIZE: usize = 64;
@@ -28,7 +28,7 @@ const AUDIT_QUERY_MAX_LIMIT: usize = 200; const CAPABILITIES: [&str; 14] = [
 const YOLO_AUTO_CLICK_COOLDOWN_MS: i64 = 8_000; fn native_info() -> Value {
 json!({ "crateVersion": env!("CARGO_PKG_VERSION"),
 "gitRev": env!("PI_UNITY_GIT_REV"), "dirty": env!("PI_UNITY_GIT_DIRTY") == "true",
-"srcHash": env!("PI_UNITY_SRC_HASH"), "protocolVersion": NATIVE_PROTOCOL_VERSION, })
+"srcHash": env!("PI_UNITY_SRC_HASH"), "protocolVersion": NATIVE_PROTOCOL_VERSION, "abiVersion": NATIVE_ABI_VERSION, })
 } #[derive(Clone, Debug, PartialEq)]
 struct LifecycleSnapshot { managed: &'static str,
 transport: &'static str, main_thread: &'static str,
@@ -918,8 +918,8 @@ eprintln!("[pi-unity-native] wait-for-connection failed: {error}"); tokio::time:
 project_path: String, pipe_name: String,
 token: String, protocol_version: i32,
 ) -> i32 { if protocol_version != NATIVE_PROTOCOL_VERSION {
-eprintln!( "[pi-unity-native] protocol mismatch: managed={protocol_version}, native={NATIVE_PROTOCOL_VERSION}"
-); }
+eprintln!( "[pi-unity-native] protocol mismatch: managed={protocol_version}, native={NATIVE_PROTOCOL_VERSION}; init refused"
+); return -2; }
 let pipe_name = normalize_pipe_name(pipe_name); if let Some(broker) = broker() {
 broker.update_token(token); broker.set_managed_state(MANAGED_STATE_INITIALIZING, 0, None);
 return 0; }

@@ -2,6 +2,12 @@ use std::os::raw::c_int;
 
 use super::{slice_from_raw, string_from_raw};
 
+/// 签名永久冻结：托管侧在调用任何其他导出之前先调它，失配即不再调用。
+#[no_mangle]
+pub extern "C" fn pi_unity_abi_version() -> c_int {
+    crate::NATIVE_ABI_VERSION
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn pi_unity_init(
     project: *const u8,
