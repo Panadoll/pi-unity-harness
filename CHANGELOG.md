@@ -11,6 +11,7 @@
 
 ### Fixed
 
+- 插件 DLL 静默过期：`scripts/build-native.ps1` 在 Unity 锁住插件 DLL 时以前只打警告、保留旧文件，导致加入 ABI 校验的提交仍带着缺少 `pi_unity_abi_version` 的旧 DLL。现在先把被锁的 DLL 移到 `native/target/stale-plugins/` 再复制新文件，移不走就失败；构建结束自动跑 `check-versions.ps1`。DLL 构建信息标记新增 `abi` 与 `srcHash`，`check-versions.ps1` 校验 ABI（Rust 与 C# 两侧）并按 `build.rs` 同一算法重算源码哈希，DLL 不是当前源码构建时失败。
 - CLI observe 摘要先解包 Pipeline 的 `value` / JSON `output`，避免真实捕获成功后误报 0 帧、空 dHash 和空路径；保持公开参数、字段和默认模式不变。
 - CLI capture/observe 的 `--out` 与 `--interval` 改发 C# 声明的 `path` / `interval_ms`；此前这两个参数被静默忽略。
 - Harness 72 个无 C# 默认值的 `CliArg` 参数显式声明 `Required=true`，修正 discovery metadata、schema.required 与缺参绑定的一致性；保留官方及 compat 参数解析规则。

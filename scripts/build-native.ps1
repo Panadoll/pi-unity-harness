@@ -34,15 +34,27 @@ if (-not (Test-Path -LiteralPath $dllSource)) {
   throw "Native DLL not found after build: $dllSource"
 }
 
+# 被锁的旧 DLL 移到包外（同卷改名，Windows 允许对已加载的 DLL 这样做），不能留在包里，否则 Unity 会把它当成新资源导入。
+$staleDir = Join-Path $nativeDir 'target/stale-plugins'
+Get-ChildItem -LiteralPath $staleDir -Filter '*.dll' -ErrorAction SilentlyContinue |
+  ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue }
+
 try {
   Copy-Item -Force $dllSource $dllDest
   Write-Host 'native dll copied to Unity package plugin directory'
 } catch {
   if ($Strict -or -not (Test-Path -LiteralPath $dllDest)) {
     throw "Failed to copy DLL to Unity plugin directory: $_"
-  } else {
-    Write-Warning "Could not update DLL in Unity plugin directory (currently locked by running Unity Editor). Close Unity Editor and rerun build to refresh plugin DLL."
   }
+  New-Item -ItemType Directory -Force -Path $staleDir | Out-Null
+  $stalePath = Join-Path $staleDir ("pi_unity_harness_native.{0}.dll" -f [DateTime]::UtcNow.Ticks)
+  try {
+    Move-Item -LiteralPath $dllDest -Destination $stalePath
+    Copy-Item -Force $dllSource $dllDest
+  } catch {
+    throw "Plugin DLL is locked and could not be moved aside; close every Unity Editor using com.pi.unity-harness and rerun: $_"
+  }
+  Write-Warning 'Plugin DLL was in use by a running Unity Editor; old file moved to native/target/stale-plugins. Restart those Editors to load the new DLL.'
 }
 
 $binDir = Join-Path $root 'bin'
@@ -63,3 +75,5 @@ if (Test-Path -LiteralPath $cliSource) {
   }
   Write-Host 'pi-unity CLI binary copied to bin/'
 }
+
+& (Join-Path $PSScriptRoot 'check-versions.ps1')

@@ -276,7 +276,7 @@ before_dispatch      │ pipe closed    ──▶ client_disconnected（仅审�
 当前 DLL 不含任何可供 CI 扫描的嵌入构建信息；本节新增的是一个稳定的字节标记，而不是可复现构建或二进制 hash 契约。
 
 - 生成 `PI_UNITY_GIT_REV`（`git rev-parse --short HEAD`，失败则 `unknown`）、`PI_UNITY_GIT_DIRTY`（`git status --porcelain` 非空）、`PI_UNITY_BUILD_UTC`。
-- `lib.rs` 暴露 `pub const BUILD_INFO_JSON: &str`，并以固定前缀写入一个 `#[used] static` 字节串：`PIUH_BUILD_INFO:{"crate":"0.1.0","gitRev":"abc1234","dirty":false,"protocol":1,"builtUtc":"..."}`，便于 CI 直接扫描 DLL 字节。
+- `lib.rs` 暴露 `pub const BUILD_INFO_JSON: &str`，并以固定前缀写入一个 `#[used] static` 字节串：`PIUH_BUILD_INFO:{"crate":"0.1.0","gitRev":"abc1234","dirty":false,"protocol":1,"abi":1,"srcHash":"<16 位 hex>","builtUtc":"..."}`，便于 CI 直接扫描 DLL 字节。`protocol`、`abi` 由 `build.rs` 从 `lib.rs` 常量读出；`srcHash` 是 `build.rs` 对 `Cargo.toml + src/**` 算的 FNV-1a 64 源码哈希，与构建产物是否可复现无关。
 - `PIUH_BUILD_INFO:` 是 CI 的字节扫描锚点；CI MUST 校验标记后的 JSON 字段，不得比较 DLL hash 或要求构建可复现。
 
 **运行时暴露**：
@@ -289,7 +289,7 @@ before_dispatch      │ pipe closed    ──▶ client_disconnected（仅审�
 **CI 校验**（`scripts/check-versions.ps1`，新增；`.github/` 调用）：
 
 1. `native/Cargo.toml` version == `unity/com.pi.unity-harness/package.json` version，否则失败。
-2. 扫描已跟踪 DLL 中 `PIUH_BUILD_INFO:` 后的 JSON：`crate` 必须等于 Cargo 版本；`protocol` 必须等于 `NATIVE_PROTOCOL_VERSION`（从 `lib.rs` 正则提取）。
+2. 扫描已跟踪 DLL 中 `PIUH_BUILD_INFO:` 后的 JSON：`crate` 必须等于 Cargo 版本；`protocol` 必须等于 `NATIVE_PROTOCOL_VERSION`（从 `lib.rs` 正则提取）；`abi` 必须等于 `NATIVE_ABI_VERSION`，且 `PiUnityBridge.NativeAbiVersion` 与之一致；`srcHash` 必须等于脚本按 `build.rs` 同一算法重算的当前源码哈希（缺字段视为旧构建，失败）。`scripts/build-native.ps1` 结束时自动运行本脚本。
 3. 若 PR diff 触碰 `native/src/**` 或 `native/Cargo.*` 但未触碰 DLL → 失败并提示运行 `scripts/build-native.ps1`。
 4. 反向（只改 DLL 不改源码）→ 警告，不失败。
 

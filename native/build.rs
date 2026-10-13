@@ -58,5 +58,23 @@ fn main() {
     println!("cargo:rustc-env=PI_UNITY_GIT_REV={git_rev}");
     println!("cargo:rustc-env=PI_UNITY_GIT_DIRTY={git_dirty}");
     println!("cargo:rustc-env=PI_UNITY_BUILD_UTC={build_utc}");
-    println!("cargo:rustc-env=PI_UNITY_PROTOCOL_VERSION=1");
+    println!(
+        "cargo:rustc-env=PI_UNITY_PROTOCOL_VERSION={}",
+        lib_i32_const("NATIVE_PROTOCOL_VERSION")
+    );
+    println!(
+        "cargo:rustc-env=PI_UNITY_ABI_VERSION={}",
+        lib_i32_const("NATIVE_ABI_VERSION")
+    );
+}
+
+/// 构建信息标记只能拼字面量，从 lib.rs 读出常量，避免标记与代码各写一份。
+fn lib_i32_const(name: &str) -> i32 {
+    let source = fs::read_to_string("src/lib.rs").expect("read src/lib.rs");
+    let prefix = format!("pub const {name}: i32 = ");
+    source
+        .lines()
+        .find_map(|line| line.trim().strip_prefix(&prefix))
+        .and_then(|rest| rest.trim_end_matches(';').trim().parse().ok())
+        .unwrap_or_else(|| panic!("{name} not found in src/lib.rs"))
 }

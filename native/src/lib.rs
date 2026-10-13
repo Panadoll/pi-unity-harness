@@ -22,7 +22,9 @@ pub static PIUH_BUILD_INFO_MARKER: &[u8] = concat!(
     "\",\"gitRev\":\"", env!("PI_UNITY_GIT_REV"),
     "\",\"dirty\":", env!("PI_UNITY_GIT_DIRTY"),
     ",\"protocol\":", env!("PI_UNITY_PROTOCOL_VERSION"),
-    ",\"builtUtc\":\"", env!("PI_UNITY_BUILD_UTC"), "\"}\\0"
+    ",\"abi\":", env!("PI_UNITY_ABI_VERSION"),
+    ",\"srcHash\":\"", env!("PI_UNITY_SRC_HASH"),
+    "\",\"builtUtc\":\"", env!("PI_UNITY_BUILD_UTC"), "\"}\\0"
 ).as_bytes();
 
 unsafe fn slice_from_raw<'a>(ptr: *const u8, len: i32) -> &'a [u8] {
